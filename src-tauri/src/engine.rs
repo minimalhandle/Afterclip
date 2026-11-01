@@ -109,7 +109,7 @@ impl Engine {
         self.output_dir().join("Recordings")
     }
     pub fn thumbs_dir(&self) -> PathBuf {
-        self.output_dir().join(".thumbs")
+        self.home.join("thumbs")
     }
     fn bin_dir(&self) -> PathBuf {
         self.root.join("bin").join("64bit")
@@ -269,11 +269,14 @@ impl Engine {
         for dir in [self.clips_dir(), self.recordings_dir(), self.staging_dir(), config.clone()] {
             fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
         }
-        // Earlier versions unpacked a full OBS here. Nothing uses it any more.
-        let (old_obs, old_password) = (self.home.join("obs"), self.home.join("engine-password.txt"));
+        // It stays beside the clips so a finished file moves in at once, instead of being copied between drives.
+        crate::win32::hide_folder(&self.staging_dir());
+        // Earlier versions unpacked a full OBS here, and kept thumbnails beside the clips. Nothing uses them any more.
+        let (old_obs, old_password, old_thumbs) = (self.home.join("obs"), self.home.join("engine-password.txt"), self.output_dir().join(".thumbs"));
         thread::spawn(move || {
             let _ = fs::remove_dir_all(old_obs);
             let _ = fs::remove_file(old_password);
+            crate::data_move::remove_old_thumbnails(&old_thumbs);
         });
 
         let bin = self.bin_dir();
