@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px "Segoe UI", sans-serif; color: #d8d8d8; background: transparent; margin: 8px; }
+  label { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 8px; }
+  input { background: #3d3d3d; color: #fff; border: 0; border-radius: 3px; padding: 5px; }
+  p { color: #969696; font-size: 12px; margin: 8px 0 0 98px; }
+</style>
+</head>
+<body>
+<label>Clip seconds <input id="seconds" type="number" min="0" step="1" value="30"></label>
+<p>Use 0 to save the whole buffer.</p>
+<script>
+  // Stream Deck calls this global when the inspector opens.
+  function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const input = document.getElementById('seconds');
+    const saved = JSON.parse(actionInfo).payload.settings.seconds;
+    if (Number.isInteger(saved)) input.value = saved;
+    ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+    input.onchange = () => {
+      const seconds = Math.max(0, Math.round(Number(input.value)) || 0);
+      input.value = seconds;
+      ws.send(JSON.stringify({ event: 'setSettings', context: uuid, payload: { seconds } }));
+    };
+  }
+</script>
+</body>
+</html>
