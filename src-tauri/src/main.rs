@@ -957,6 +957,12 @@ fn main() {
             let open_at_start = !settings.start_minimized;
             let shared_settings = Arc::new(Mutex::new(settings.clone()));
 
+            // The startup entry follows the setting and this copy's location, because uninstalling an
+            // older version removes it, and a move would leave it pointing at nothing.
+            if settings.launch_on_startup && !api::is_test_instance() {
+                let _ = win32::set_launch_on_startup(true);
+            }
+
             // The task starts the elevated copy with no prompt. Without one it's UAC, and if that's
             // declined, carry on unelevated. Game capture will say if it needs more.
             if settings.run_as_admin && !api::is_test_instance() && !win32::is_self_elevated() {
