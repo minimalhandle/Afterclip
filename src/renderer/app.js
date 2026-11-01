@@ -194,6 +194,36 @@ function closeMenus() {
 function renderSelection() {
   $('selection').hidden = selected.size === 0;
   $('selection-count').textContent = `${selected.size} selected`;
+  disarmDelete();
+}
+
+// Deleting many at once takes a second click, so a slip can't clear out a selection.
+const DELETE_ARMED_MS = 4000;
+let deleteArmed = null;
+
+function disarmDelete() {
+  clearTimeout(deleteArmed);
+  deleteArmed = null;
+  $('delete-selected').textContent = 'Delete';
+}
+
+async function deleteSelected() {
+  if (selected.size > 1 && !deleteArmed) {
+    $('delete-selected').textContent = `Delete ${selected.size}?`;
+    deleteArmed = setTimeout(disarmDelete, DELETE_ARMED_MS);
+    return;
+  }
+  disarmDelete();
+  const files = [...selected];
+  const results = await Promise.allSettled(files.map(async (file) => {
+    await api.invoke('trash', file);
+    selected.delete(file);
+  }));
+  const failed = results.filter((r) => r.status === 'rejected');
+  if (failed.length) showBanner(`Couldn't delete ${failed.length} of ${files.length}. They may be open in another app.`, 'bad');
+  else showBanner(`Moved ${files.length} to the Recycle Bin`, 'good');
+  await refresh();
+  renderMedia();
 }
 
 // Dragging a clip hands it to Windows, which then carries it into any app, as File Explorer does.
@@ -356,7 +386,7 @@ function renderMedia() {
     };
     const pick = document.createElement('input');
     pick.type = 'checkbox';
-    pick.title = 'Select to edit together';
+    pick.title = 'Select to edit or delete together';
     pick.setAttribute('aria-label', `Select ${m.name}`);
     pick.checked = selected.has(m.file);
     pick.onchange = () => {
@@ -1286,6 +1316,7 @@ $('merge-selected').onclick = () => {
   selected.clear();
   renderMedia();
 };
+$('delete-selected').onclick = deleteSelected;
 $('clear-selected').onclick = () => { selected.clear(); renderMedia(); };
 $('restart-admin').onclick = () => api.invoke('restart-admin').catch((e) => showBanner(errorText(e), 'bad'));
 $('add-preset').onclick = () => { settings.presets.push({ seconds: 45, hotkey: '' }); renderPresets(); scheduleSave(); };

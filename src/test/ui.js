@@ -262,6 +262,33 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('dragging a clip drops the real file into another app', dropped.toLowerCase().endsWith('.mp4') && fs.existsSync(dropped), dropped || 'nothing dropped');
     check('dragging leaves the panel responding', (await panel.eval('1 + 1')) === 2);
 
+    // Deleting a selection, with two clips made for it, which go to the Recycle Bin.
+    await api.clip(2);
+    await sleep(1200);
+    await api.clip(2);
+    const clipFiles = () => fs.readdirSync(path.join(output, 'Clips'));
+    const listed = () => panel.eval("document.querySelectorAll('#media .item').length");
+    await waitFor(async () => (await listed()) === clipFiles().length, 10000, 'the new clips in the list');
+    const filesBefore = clipFiles();
+    const picks = "[...document.querySelectorAll('#media .item input[type=checkbox]')]";
+    const chosenFiles = await panel.eval(`(() => { const p = ${picks}.slice(0, 2); p.forEach((c) => c.click()); return window.afterclip.invoke('state').then((s) => s.media.slice(0, 2).map((m) => m.name)); })()`);
+    check('the selection offers Delete', await panel.eval("!document.getElementById('selection').hidden && !document.getElementById('delete-selected').hidden"));
+    await panel.eval("document.getElementById('delete-selected').click()");
+    check('deleting several asks first, with the count', (await panel.eval("document.getElementById('delete-selected').textContent")) === 'Delete 2?' && clipFiles().length === filesBefore.length);
+    await panel.eval("document.getElementById('delete-selected').click()");
+    await waitFor(() => clipFiles().length === filesBefore.length - 2, 10000, 'the clips to be deleted');
+    check('a second click deletes exactly the selected clips', chosenFiles.every((f) => !clipFiles().includes(f)));
+    await waitFor(async () => (await panel.eval("document.getElementById('selection').hidden")) && (await listed()) === clipFiles().length, 5000, 'the selection to clear');
+    check('the list updates and the selection clears', true);
+    check('it confirms in the panel', /Recycle Bin/.test(await panel.eval('document.body.innerText')));
+    await panel.eval(`${picks}[0].click()`);
+    const oneBefore = clipFiles().length;
+    await panel.eval("document.getElementById('delete-selected').click()");
+    await waitFor(() => clipFiles().length === oneBefore - 1, 10000, 'one clip to be deleted');
+    check('one selected clip deletes straight away, like its menu item', true);
+    await api.clip(2);
+    await waitFor(async () => (await listed()) === clipFiles().length && clipFiles().length === oneBefore, 10000, 'a replacement clip');
+
     // Favourites, renaming, search, sort and the game filter, through the real panel.
     const items = () => panel.eval("[...document.querySelectorAll('#media .item-title')].map((t) => t.textContent)");
     await panel.eval("document.querySelector('#media .star').click()");
