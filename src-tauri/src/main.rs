@@ -251,6 +251,29 @@ impl ApiHandlers for Api {
     fn add_marker(&self) -> Result<Value, String> {
         self.0.add_marker().map(|number| json!({ "marker": number }))
     }
+    fn open_panel(&self) -> Result<Value, String> {
+        show_panel(&self.0);
+        Ok(json!({}))
+    }
+    fn open_clips_folder(&self) -> Result<Value, String> {
+        let folder = self.0.engine.clips_dir();
+        fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        // The tests check the address without leaving Explorer windows on someone's desktop.
+        if !api::is_test_instance() && !shell_execute("open", folder.as_os_str(), None, None) {
+            return Err("Could not open the clips folder".into());
+        }
+        Ok(json!({ "folder": folder }))
+    }
+    fn edit_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        show_editor(&self.0, vec![clip.clone()]);
+        Ok(json!({ "file": clip }))
+    }
+    fn copy_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        win32::copy_file(Path::new(&clip))?;
+        Ok(json!({ "file": clip }))
+    }
     fn test_open(&self, what: &str) {
         match what {
             "panel" => show_panel(&self.0),
@@ -382,6 +405,11 @@ fn list_media(core: &Core) -> Vec<Media> {
     }
     media.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
     media
+}
+
+/// The newest saved clip. Recordings aren't clips, so they don't count.
+fn last_clip(core: &Shared) -> Result<String, String> {
+    list_media(core).into_iter().find(|m| m.kind == "clip").map(|m| m.file).ok_or_else(|| "No clips yet".to_string())
 }
 
 /// Keeps clips and recordings under the chosen size. Runs after saves, and regularly for recordings.

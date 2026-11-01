@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.5.0.0",
+  "Version": "0.6.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -308,6 +308,78 @@
       "States": [
         {
           "Image": "imgs/clip",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.open-panel",
+      "Name": "Open Afterclip",
+      "Tooltip": "Open Afterclip's panel.",
+      "Icon": "imgs/action-open-panel",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/open-panel",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.open-clips",
+      "Name": "Open Clips Folder",
+      "Tooltip": "Open the folder your clips are saved in.",
+      "Icon": "imgs/action-open-clips",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/open-clips",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.edit-last",
+      "Name": "Edit Last Clip",
+      "Tooltip": "Open your newest clip in the editor.",
+      "Icon": "imgs/action-edit-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/edit-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.copy-last",
+      "Name": "Copy Last Clip",
+      "Tooltip": "Copy your newest clip, ready to paste into a chat or another app.",
+      "Icon": "imgs/action-copy-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/copy-last",
           "ShowTitle": false
         }
       ]

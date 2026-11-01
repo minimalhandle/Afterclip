@@ -114,12 +114,14 @@ $script:visible = 0; [N.W]::EnumWindows({ param($h,$l) $o = [uint32]0; [void][N.
     event('willAppear', 'com.afterclip.clips.record', 'k2');
     await waitFor(() => received.filter((x) => x.event === 'setImage').length >= 2, 5000, 'key images');
     check('plugin draws keys', decodeURIComponent(received.find((x) => x.context === 'k1' && x.event === 'setImage').payload.image).includes('>7<'));
+    // A key confirms by drawing, starting from a picture marked for this.
+    const shown = (context) => received.some((x) => x.context === context && x.event === 'setImage' && /data-mark="(confirmed|pulsed)"/.test(decodeURIComponent(x.payload.image)));
     const beforeDeck = clips().length;
     event('keyDown', 'com.afterclip.clips.clip', 'k1', { seconds: 7 });
-    await waitFor(() => received.some((x) => x.event === 'showOk' && x.context === 'k1'), 15000, 'clip key ok');
+    await waitFor(() => shown('k1'), 15000, 'clip key ok');
     check('Stream Deck clip key', clips().length === beforeDeck + 1);
     event('keyDown', 'com.afterclip.clips.record', 'k2');
-    await waitFor(() => received.some((x) => x.event === 'showOk' && x.context === 'k2'), 15000, 'record key ok');
+    await waitFor(() => shown('k2'), 15000, 'record key ok');
     await waitFor(async () => (await api.status()).recording, 8000, 'recording on');
     await waitFor(() => received.filter((x) => x.context === 'k2' && x.event === 'setImage').some((x) => decodeURIComponent(x.payload.image).includes('STOP')), 6000, 'STOP image');
     check('Stream Deck record key shows live state', true);
