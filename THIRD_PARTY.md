@@ -7,4 +7,4 @@
 | Tauri and its Rust dependencies | The app's window, tray and backend | MIT or Apache-2.0 | https://github.com/tauri-apps/tauri |
 | Microsoft Visual C++ runtime | Redistributable DLLs that OBS's libraries need | Microsoft redistribution terms | Visual Studio |
 
-Because `afterclip-engine.exe` and `afterclip-media.exe` link to GPL libraries, they're GPL works: distribute `engine/` under the GPL along with them. OBS's licence text ships at `engine/LICENSE-OBS-gplv2.txt`.
+Afterclip itself is licensed under GPL-2.0-or-later: see [LICENSE](LICENSE). Because `afterclip-engine.exe` and `afterclip-media.exe` link to GPL libraries, they're GPL works: distribute `engine/` under the GPL along with them. OBS's licence text ships at `engine/LICENSE-OBS-gplv2.txt`.

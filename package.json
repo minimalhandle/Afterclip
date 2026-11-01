@@ -1,6 +1,7 @@
 {
   "name": "afterclip",
   "version": "1.0.0",
+  "license": "GPL-2.0-or-later",
   "description": "Clip game moments with hotkeys or Stream Deck, powered by libobs",
   "private": true,
   "scripts": {

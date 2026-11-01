@@ -191,6 +191,8 @@ npm run test:ui
 
 Set `AFTERCLIP_APP_EXE` to test a specific `afterclip.exe`.
 
-## Licences
+## Licence
 
-See [THIRD_PARTY.md](THIRD_PARTY.md). The engine and media helper link to GPL code, which adds obligations when you distribute Afterclip.
+Afterclip is free software, licensed under the [GNU General Public License, version 2 or any later version](LICENSE) (GPL-2.0-or-later). It comes with no warranty. If you distribute it or a modified version, you must also offer the source code under the same terms.
+
+It's built on OBS Studio, FFmpeg and other open-source projects. See [THIRD_PARTY.md](THIRD_PARTY.md).
