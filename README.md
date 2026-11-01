@@ -61,7 +61,7 @@ From a clip's menu you can also make a **vertical copy** for phones, which keeps
 
 **Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Storage** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
 
-Clips this good are big, so **Make 10 MB copy** (also 25 and 50 MB) re-encodes a smaller H.264 copy that fits, using your GPU where it can, with the main audio mix. Your original stays as it is.
+Clips this good are big, so **Compress** re-encodes a smaller H.264 copy, using your GPU where it can, with the main audio mix. It aims for 10 MB, lowering the resolution and frame rate as needed. A clip too long to look good at that size stops at a watchable 480p instead, and Afterclip tells you the size it reached. Your original stays as it is.
 
 ### A library that stays tidy
 

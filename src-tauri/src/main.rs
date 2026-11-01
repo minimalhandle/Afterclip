@@ -646,12 +646,6 @@ struct RenameArgs {
     game: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ShrinkArgs {
-    file: String,
-    megabytes: u64,
-}
-
 #[tauri::command(async)]
 fn state(core: tauri::State<Shared>) -> Value {
     let settings = core.settings.lock().unwrap().clone();
@@ -819,27 +813,26 @@ fn rename_clip(core: tauri::State<Shared>, payload: RenameArgs) -> Result<String
     Ok(target.to_string_lossy().into_owned())
 }
 
-/// Makes a copy small enough to share. The original is never changed.
+/// Makes a smaller copy to share. The original is never changed.
 #[tauri::command(async)]
-fn shrink_clip(core: tauri::State<Shared>, payload: ShrinkArgs) -> Result<String, String> {
+fn compress_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
     let core: Shared = Arc::clone(&core);
-    let path = own_media(&core, &payload.file)?;
-    if !(1..=4096).contains(&payload.megabytes) {
-        return Err("That size isn't possible".into());
-    }
+    let path = own_media(&core, &payload)?;
     // Reported as an event, because the panel may have closed by the time a long clip finishes.
     let toast = core.settings.lock().unwrap().toast_enabled;
-    match core.engine.shrink(&path, payload.megabytes) {
+    match core.engine.compress(&path) {
         Ok(output) => {
+            let bytes = fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+            let megabytes = (bytes as f64 / 1_000_000.0 * 10.0).ceil() / 10.0;
             if toast {
-                win32::show_toast(&format!("{} MB copy ready", payload.megabytes));
+                win32::show_toast(&format!("{megabytes} MB copy ready"));
             }
-            let _ = core.app.emit("feedback", json!({ "kind": "shrunk", "ok": true, "file": output, "megabytes": payload.megabytes }));
+            let _ = core.app.emit("feedback", json!({ "kind": "compressed", "ok": true, "file": output, "megabytes": megabytes, "overTarget": bytes > engine::COMPRESS_TARGET_BYTES }));
             enforce_storage_rules(&core);
             Ok(output.to_string_lossy().into_owned())
         }
         Err(message) => {
-            let _ = core.app.emit("feedback", json!({ "kind": "shrunk", "ok": false, "message": message }));
+            let _ = core.app.emit("feedback", json!({ "kind": "compressed", "ok": false, "message": message }));
             Err(message)
         }
     }
@@ -1486,7 +1479,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, shrink_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {

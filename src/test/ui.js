@@ -318,8 +318,10 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
 
     // A share-ready copy, reported when it's done.
     const shareFile = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.find((m) => m.size > 1000000).file)");
-    const shared = await panel.eval(`window.afterclip.invoke('shrink-clip', { file: ${JSON.stringify(shareFile)}, megabytes: 1 })`);
-    check('a shareable copy fits its size, beside the original', fs.statSync(shared).size <= 1000000 && fs.existsSync(shareFile), `${(fs.statSync(shared).size / 1e6).toFixed(2)} MB`);
+    const shared = await panel.eval(`window.afterclip.invoke('compress-clip', ${JSON.stringify(shareFile)})`);
+    check('a compressed copy is smaller, beside the original', fs.statSync(shared).size < fs.statSync(shareFile).size && /_small\.mp4$/.test(shared), `${(fs.statSync(shared).size / 1e6).toFixed(2)} MB`);
+    await waitFor(() => panel.eval("/MB copy is ready/.test(document.getElementById('banner').textContent)"), 5000, 'the compressed copy banner');
+    check('the panel says how big the copy is', true);
 
     // The storage limit removes the oldest, never favourites.
     const namesBefore = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.map((m) => m.name))");
@@ -523,12 +525,14 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a screenshot shows no video length', await panel.eval("document.querySelector('#media .item .length').hidden"));
     await panel.eval("document.querySelector('#media .item .more').click()");
     const shotMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
-    check('a screenshot has no video actions', !/Edit|MB copy|vertical/.test(shotMenu) && /Send to Discord/.test(shotMenu), shotMenu);
+    check('a screenshot has no video actions', !/Edit|Compress|vertical/.test(shotMenu) && /Send to Discord/.test(shotMenu), shotMenu);
     await panel.eval("document.body.click(); document.querySelector('.tab[data-kind=clip]').click()");
 
     // A vertical copy, chosen from the real menu.
     const beforeVertical = new Set(fs.readdirSync(clips));
     await panel.eval("document.querySelector('#media .item .more').click()");
+    const clipMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
+    check('a clip has one Compress item instead of fixed sizes', /Compress/.test(clipMenu) && !/MB copy/.test(clipMenu), clipMenu);
     await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Make vertical copy').click()");
     const verticalName = await waitFor(() => fs.readdirSync(clips).find((n) => !beforeVertical.has(n) && /_vertical\.mp4$/.test(n)), 30000, 'the vertical copy');
     await waitFor(() => panel.eval("/vertical copy is ready/.test(document.getElementById('banner').textContent)"), 30000, 'the vertical copy to finish');
