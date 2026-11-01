@@ -1,5 +1,12 @@
 use std::cell::Cell;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
+use windows::Win32::System::Com::IDataObject;
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::Foundation::GlobalFree;
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY};
+use windows::Win32::UI::Shell::{BHID_DataObject, IShellItem, SHCreateItemFromParsingName, SHDoDragDrop, DROPFILES};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, Once};
 use std::thread;
@@ -118,6 +125,51 @@ pub fn accept_second_instance_message(identifier: &str) {
             let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
         }
     }
+}
+
+/// Drags a file out of the app, as dragging it from File Explorer would. Waits for the drop, so call it on
+/// the main thread, which keeps windows running while it waits. Always offers a copy, so the clip stays put.
+pub fn drag_file(path: &Path) -> Result<(), String> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    unsafe {
+        let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).map_err(|e| e.to_string())?;
+        let data: IDataObject = item.BindToHandler(None, &BHID_DataObject).map_err(|e| e.to_string())?;
+        SHDoDragDrop(None, &data, None, DROPEFFECT_COPY).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Puts a file on the clipboard, ready to paste into a chat or a folder. Plain clipboard data, so unlike
+/// dragging it works from an elevated app to any other.
+pub fn copy_file(path: &Path) -> Result<(), String> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let header = std::mem::size_of::<DROPFILES>();
+    let bytes = wide.len() * 2;
+    unsafe {
+        let memory = GlobalAlloc(GMEM_MOVEABLE, header + bytes).map_err(|e| e.to_string())?;
+        let target = GlobalLock(memory) as *mut u8;
+        if target.is_null() {
+            let _ = GlobalFree(Some(memory));
+            return Err("Could not copy the file".into());
+        }
+        let description = DROPFILES { pFiles: header as u32, fWide: true.into(), ..Default::default() };
+        std::ptr::write_unaligned(target as *mut DROPFILES, description);
+        std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, target.add(header), bytes);
+        let _ = GlobalUnlock(memory);
+        if let Err(e) = OpenClipboard(None) {
+            let _ = GlobalFree(Some(memory));
+            return Err(format!("The clipboard is in use: {e}"));
+        }
+        let _ = EmptyClipboard();
+        // Windows owns the memory once this succeeds.
+        let stored = SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(memory.0)));
+        let _ = CloseClipboard();
+        if let Err(e) = stored {
+            let _ = GlobalFree(Some(memory));
+            return Err(e.to_string());
+        }
+    }
+    Ok(())
 }
 
 pub fn system_dpi() -> u32 {

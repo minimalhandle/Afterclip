@@ -452,6 +452,32 @@ fn reveal(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Hands a clip to Windows to drag into another app. The panel stays open during the drag, because moving
+/// to another app takes its focus, then closes if the drop left that app focused.
+#[tauri::command(async)]
+fn start_drag(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
+    let core: Shared = Arc::clone(&core);
+    let path = own_media(&core, &payload)?;
+    let was_held = core.keep_panel_open.swap(true, Ordering::SeqCst);
+    let (done, finished) = std::sync::mpsc::channel();
+    let result = core
+        .app
+        .run_on_main_thread(move || { let _ = done.send(win32::drag_file(&path)); })
+        .map_err(|e| e.to_string())
+        .and_then(|_| finished.recv().map_err(|e| e.to_string())?);
+    core.keep_panel_open.store(was_held, Ordering::SeqCst);
+    let focused = core.app.get_webview_window(PANEL).is_some_and(|w| w.is_focused().unwrap_or(false));
+    if !was_held && !focused {
+        on_panel_blur(&core);
+    }
+    result
+}
+
+#[tauri::command(async)]
+fn copy_file(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
+    win32::copy_file(&own_media(&core, &payload)?)
+}
+
 #[tauri::command(async)]
 fn trash(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
     let path = own_media(&core, &payload)?;
@@ -936,7 +962,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, set_volume, set_meters, levels, stats, close_panel, open, reveal, trash, thumbnail, pick_folder, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, thumbnail, pick_folder, audio_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {

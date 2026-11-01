@@ -125,6 +125,44 @@ async function main() {
     check('clip shows a thumbnail and length', /\d:\d\d/.test(await panel.eval("document.querySelector('#media .length').textContent")));
     await panel.shot('2-panel-clip');
 
+    // A second and third clip, then one more than the home screen shows.
+    for (let i = 0; i < 3; i++) await api.clip(2);
+    await waitFor(() => panel.eval("/View all \\(4\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the fourth clip');
+    check('home shows only the three newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 3);
+    await panel.eval("document.getElementById('view-all').click()");
+    const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('halo')).display, editor: !document.getElementById('open-editor').hidden })");
+    check('View all opens every clip in a grid, with the editor link', library.items === 4 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
+    await panel.shot('2b-library');
+
+    // Copy file, keeping whatever text was on the clipboard before.
+    const clipFile = await panel.eval("window.afterclip.invoke('state').then((s) => s.media[0].file)");
+    const oldClipboard = powershell('Get-Clipboard -Raw');
+    await panel.eval(`window.afterclip.invoke('copy-file', ${JSON.stringify(clipFile)})`);
+    const copied = powershell('(Get-Clipboard -Format FileDropList).FullName');
+    if (oldClipboard) execFileSync('powershell', ['-NoProfile', '-Command', '$input | Set-Clipboard'], { input: oldClipboard, windowsHide: true });
+    check('Copy file puts the clip on the clipboard', copied.toLowerCase() === clipFile.toLowerCase(), copied);
+    const refused = await panel.eval("window.afterclip.invoke('start-drag', 'C:\\\\Windows\\\\win.ini').then(() => 'allowed', (e) => e.message)");
+    check('dragging refuses files outside your clips', /Not a Afterclip file/.test(refused), refused);
+
+    // A real drag with the real mouse, onto a small test window that accepts dropped files.
+    const dropResult = path.join(session.home, 'dropped.txt');
+    const dropTarget = spawn('powershell', ['-NoProfile', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = 'Afterclip drop test'; $f.AllowDrop = $true; $f.TopMost = $true; $f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; $f.Left = 60; $f.Top = 60; $f.Width = 400; $f.Height = 400; $f.Add_DragEnter({ param($s,$e) $e.Effect = 'Copy' }); $f.Add_DragDrop({ param($s,$e) ($e.Data.GetData('FileDrop') -join ';') | Set-Content -LiteralPath '${dropResult}'; $s.Close() }); $t = New-Object Windows.Forms.Timer; $t.Interval = 20000; $t.Add_Tick({ $f.Close() }); $t.Start(); [void]$f.ShowDialog()`], { windowsHide: false, stdio: 'ignore' });
+    await sleep(3000);
+    const spot = await panel.eval("(() => { const r = document.querySelector('#media .item .item-text').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, scale: devicePixelRatio }; })()");
+    const place = windowInfo(app.pid).find((w) => w.title === 'Afterclip');
+    const from = { x: Math.round(place.x + spot.x * spot.scale), y: Math.round(place.y + spot.y * spot.scale) };
+    powershell(`Add-Type -Name M -Namespace N -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, int x, int y, uint d, System.UIntPtr e); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'; [void][N.M]::SetProcessDPIAware();
+[void][N.M]::SetCursorPos(${from.x}, ${from.y}); Start-Sleep -Milliseconds 300; [N.M]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 150;
+foreach ($i in 1..4) { [void][N.M]::SetCursorPos(${from.x} - $i * 8, ${from.y}); Start-Sleep -Milliseconds 60 }; Start-Sleep -Milliseconds 900;
+foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) * $i / 10, ${from.y} + (250 - ${from.y}) * $i / 10); Start-Sleep -Milliseconds 50 }; Start-Sleep -Milliseconds 500; [N.M]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`);
+    const dropped = await waitFor(() => fs.existsSync(dropResult) && fs.readFileSync(dropResult, 'utf8').trim(), 6000, 'the dropped file').catch(() => '');
+    dropTarget.kill();
+    check('dragging a clip drops the real file into another app', dropped.toLowerCase().endsWith('.mp4') && fs.existsSync(dropped), dropped || 'nothing dropped');
+    check('dragging leaves the panel responding', (await panel.eval('1 + 1')) === 2);
+
+    await panel.eval("document.getElementById('library-back').click()");
+    check('Back returns to the ring', await panel.eval("getComputedStyle(document.getElementById('halo')).display !== 'none'"));
+
     await panel.eval("document.getElementById('open-settings').click()");
     await waitFor(() => panel.eval("document.querySelectorAll('#audio-list select option').length > 0"), 8000, 'audio devices');
     const counts = await panel.eval(`window.afterclip.invoke('audio-choices').then((c) => ({ outputs: c.outputs.length, inputs: c.inputs.length, apps: c.apps.length, discord: c.apps.some((a) => /discord/i.test(a.id)) }))`);
