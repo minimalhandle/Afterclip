@@ -67,6 +67,40 @@ function renderStatus() {
   $('admin-text').textContent = capture.needsAdmin
     ? `${capture.app} is running as administrator, so Afterclip is recording its monitor instead.`
     : `Afterclip couldn't capture ${capture.app} directly, so it's recording its monitor. Running as administrator may fix this.`;
+  renderHalo();
+}
+
+// The ring: its full length is the buffer, the colour is what's filled so far, and the white part, starting
+// at the arrowhead, is what Save would keep. It only ticks while the buffer is still filling.
+let haloTimer = null;
+function renderHalo() {
+  if (!settings) return;
+  const buffer = Math.max(1, settings.bufferSeconds);
+  const filled = status.buffering && status.bufferingSince ? Math.min(buffer, Math.max(0, (Date.now() - status.bufferingSince) / 1000)) : 0;
+  const wanted = chosenLength > 0 ? chosenLength : buffer;
+  const kept = Math.min(wanted, filled);
+  const percent = (seconds) => (100 * seconds) / buffer;
+  $('halo').classList.toggle('recording', status.recording);
+  $('halo-filled').setAttribute('stroke-dasharray', `${percent(filled)} 100`);
+  $('halo-selected').setAttribute('stroke-dasharray', `${percent(kept)} 100`);
+  $('halo-filled').classList.toggle('empty', filled <= 0);
+  $('halo-selected').classList.toggle('empty', kept <= 0);
+  $('halo-time').textContent = clockLabel(filled);
+  $('halo-note').textContent = !status.buffering ? 'Not buffering'
+    : wanted >= buffer ? 'Whole buffer selected'
+      : kept < wanted ? `Filling to ${lengthLabel(wanted)}`
+        : `Last ${lengthLabel(wanted)} selected`;
+  const filling = status.buffering && filled < buffer;
+  if (filling && !haloTimer) haloTimer = setInterval(renderHalo, 1000);
+  if (!filling && haloTimer) { clearInterval(haloTimer); haloTimer = null; }
+}
+
+function pulseHalo() {
+  const halo = $('halo');
+  halo.classList.remove('saved');
+  // Reading layout restarts the animation when clips are saved close together.
+  void halo.offsetWidth;
+  halo.classList.add('saved');
 }
 
 function renderSummary() {
@@ -101,6 +135,7 @@ function renderLengths() {
   } else {
     hint.textContent = 'Set a hotkey in Settings to save in-game';
   }
+  renderHalo();
 }
 
 const parseName = (name) => {
@@ -156,7 +191,7 @@ function renderMedia() {
   const shown = media.filter((m) => m.kind === kind);
   const empty = $('empty');
   empty.hidden = shown.length > 0;
-  empty.textContent = kind === 'clip' ? 'No clips yet. Save your first moment with the button below or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
+  empty.textContent = kind === 'clip' ? 'No clips yet. Save your first moment with the button above or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
   observer.disconnect();
   $('media').replaceChildren(...shown.map((m) => {
     const li = document.createElement('li');
@@ -748,6 +783,7 @@ window.addEventListener('focus', updateLiveViews);
 document.addEventListener('visibilitychange', updateLiveViews);
 api.on('feedback', (f) => {
   if (f.kind === 'clip' && f.ok) {
+    pulseHalo();
     if (f.short) showBanner(`Only ${Math.round(f.actualSeconds)}s was buffered, so the clip is shorter than the ${f.requestedSeconds}s you asked for.`);
     else showBanner(`Saved ${Math.round(f.actualSeconds)}s clip`, 'good');
   } else if (f.kind === 'recording-saved') {

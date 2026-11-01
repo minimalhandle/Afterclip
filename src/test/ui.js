@@ -118,6 +118,9 @@ async function main() {
     check('Save button creates a clip in the list', true);
     const toasts = await toastSeen;
     check('a saved clip shows the popup', toasts === 'True', toasts);
+    check('the ring pulses when a clip saves', await panel.eval("document.getElementById('halo').classList.contains('saved')"));
+    const ring = await panel.eval("({ filled: parseFloat(document.getElementById('halo-filled').getAttribute('stroke-dasharray')), kept: parseFloat(document.getElementById('halo-selected').getAttribute('stroke-dasharray')), time: document.getElementById('halo-time').textContent })");
+    check('the ring shows the buffer filling and the selected length', ring.filled > 0 && ring.kept > 0 && ring.kept <= ring.filled && /^0:\d\d$/.test(ring.time), JSON.stringify(ring));
     await waitFor(() => panel.eval("!!document.querySelector('#media img')?.src"), 10000, 'thumbnail');
     check('clip shows a thumbnail and length', /\d:\d\d/.test(await panel.eval("document.querySelector('#media .length').textContent")));
     await panel.shot('2-panel-clip');

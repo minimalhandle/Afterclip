@@ -57,6 +57,29 @@
     </div>
   </section>
 
+  <section class="halo" id="halo" aria-label="Replay buffer">
+    <svg class="halo-ring" viewBox="0 0 200 200" aria-hidden="true">
+      <defs>
+        <linearGradient id="halo-fill" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c9c1ff"/><stop offset="1" stop-color="#5b49e6"/></linearGradient>
+      </defs>
+      <path class="halo-track" pathLength="100" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
+      <path id="halo-filled" class="halo-filled empty" pathLength="100" stroke="url(#halo-fill)" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
+      <path id="halo-selected" class="halo-selected empty" pathLength="100" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
+      <path class="halo-head" d="M119.55 8.06L115.39 27.62L79.68 18.49Z"/>
+    </svg>
+    <div class="halo-text">
+      <div class="halo-label">Buffered</div>
+      <div id="halo-time" class="halo-time">0:00</div>
+      <div id="halo-note" class="halo-note"></div>
+    </div>
+  </section>
+
+  <footer class="save">
+    <div id="lengths" class="lengths" role="radiogroup" aria-label="Clip length"></div>
+    <button id="save-clip" class="save-button">Save clip</button>
+    <div id="hint" class="hint"></div>
+  </footer>
+
   <div class="tabs" role="tablist">
     <button class="tab active" data-kind="clip" role="tab">Clips</button>
     <button class="tab" data-kind="recording" role="tab">Recordings</button>
@@ -70,12 +93,6 @@
     <button id="merge-selected" class="small primary">Open in editor</button>
     <button id="clear-selected" class="small">Clear</button>
   </div>
-
-  <footer class="save">
-    <div id="lengths" class="lengths" role="radiogroup" aria-label="Clip length"></div>
-    <button id="save-clip" class="save-button">Save clip</button>
-    <div id="hint" class="hint"></div>
-  </footer>
 </div>
 
 <div id="settings" class="view" hidden>
