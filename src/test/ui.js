@@ -539,6 +539,26 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     editor = await Page.open(/editor.html/);
     await waitFor(() => editor.eval("document.querySelectorAll('.segment').length >= 1"), 10000, 'the last clip in the editor');
     check('it opens in the editor', true);
+
+    // A crash in the browser behind the windows, as an overlay hook can cause. The windows must come back.
+    editor.close(); editor = null;
+    const browserPids = () => powershell(`@(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -match '${path.basename(session.home)}' -and $_.CommandLine -notmatch '--type=' } | ForEach-Object { $_.ProcessId }) -join ' '`);
+    const killed = browserPids();
+    check('the browser to crash is found', /^\d+$/.test(killed), killed);
+    powershell(`Stop-Process -Id ${killed} -Force`);
+    const pagesOpen = async () => (await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json()).catch(() => [])).map((t) => t.url);
+    await waitFor(() => fs.existsSync(path.join(session.home, 'ui.log')) && /browser stopped/.test(fs.readFileSync(path.join(session.home, 'ui.log'), 'utf8')), 10000, 'the crash to be noticed');
+    check('a browser crash is noticed', true);
+    await sleep(2000);
+    await api.call('/test/open/panel', 'POST');
+    await waitFor(async () => (await pagesOpen()).some((u) => PANEL_URL.test(u)), 20000, 'the panel after a browser crash');
+    panel = await Page.open(PANEL_URL);
+    await waitFor(() => panel.eval("document.readyState === 'complete' && !!document.getElementById('open-settings')"), 15000, 'the panel page');
+    check('the panel opens again after a browser crash', browserPids() !== killed && (await panel.eval('1 + 1')) === 2);
+    check('capture keeps running through a browser crash', (await api.status()).buffering);
+    await api.call('/test/open/editor', 'POST');
+    await waitFor(async () => (await pagesOpen()).some((u) => /editor\.html/.test(u)), 20000, 'the editor after a browser crash');
+    check('the editor opens again after a browser crash', true);
   } catch (e) {
     const pages = await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json()).then((l) => l.map((t) => t.url).join(', ')).catch((err) => err.message);
     const uiLog = path.join(session.home, 'ui.log');
