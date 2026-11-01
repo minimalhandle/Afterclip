@@ -8,6 +8,7 @@ const zlib = require('node:zlib');
 const BRAND = [0x7c, 0x6c, 0xff];
 const INK = [0x12, 0x0f, 0x2e];
 const WHITE = [0xff, 0xff, 0xff];
+const TRAY_TILE = [0x5b, 0x49, 0xe6];
 const hex = (c) => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 
 // All in a unit square. Screen angles: 0 is right and -90 is up.
@@ -103,6 +104,36 @@ const markPng = (size, colour, zoom = MARK_ZOOM) => encodePng(size, (x, y) => (
   inMark(C + (x - C) / zoom, C + (y - C) / zoom) ? [...colour, 1] : [0, 0, 0, 0]
 ));
 
+/**
+ * The tray has at most 32 pixels, and Windows draws a bare mark smaller than its neighbours. So it gets its own
+ * bolder drawing: a tile that fills the whole space, with a thicker ring and a solid A, in white so it reads on
+ * light and dark taskbars.
+ */
+const TRAY_RING_R = 0.345;
+const TRAY_RING_W = 0.115;
+const TRAY_CORNER = 0.22;
+const TRAY_HEAD = [
+  polar(HEAD_AT, TRAY_RING_R + 0.115), polar(HEAD_AT, TRAY_RING_R - 0.115), polar(HEAD_AT - 36, TRAY_RING_R),
+];
+const TRAY_A = [[0.5, 0.385], [0.375, 0.655], [0.625, 0.655]];
+
+function inTrayMark(x, y) {
+  const r = Math.hypot(x - C, y - C);
+  if (Math.abs(r - TRAY_RING_R) <= TRAY_RING_W / 2) {
+    let a = (Math.atan2(y - C, x - C) * 180) / Math.PI;
+    if (a < HEAD_AT) a += 360;
+    if (a <= GAP_FROM + 360) return true;
+  }
+  return inTriangle([x, y], ...TRAY_HEAD) || inTriangle([x, y], ...TRAY_A);
+}
+
+const trayPng = (size) => encodePng(size, (x, y) => {
+  const qx = Math.abs(x - 0.5) - (0.5 - TRAY_CORNER);
+  const qy = Math.abs(y - 0.5) - (0.5 - TRAY_CORNER);
+  if (Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) > TRAY_CORNER) return [0, 0, 0, 0];
+  return inTrayMark(x, y) ? [...WHITE, 1] : [...TRAY_TILE, 1];
+});
+
 /** Just the rewind ring, as SVG for a 144px key, so a number can sit where the A does. `COLOUR` is filled in later. */
 function ringForKey(zoom = MARK_ZOOM) {
   const n = (v) => +(v * 144).toFixed(2);
@@ -139,5 +170,7 @@ if (require.main === module) {
   fs.writeFileSync(path.join(brand, 'afterclip-mark.svg'), svg({ tile: false, zoom: MARK_ZOOM }));
   fs.writeFileSync(path.join(brand, 'afterclip-icon-1024.png'), tilePng(1024));
   fs.writeFileSync(path.join(root, 'src', 'renderer', 'logo.svg'), svg({ tile: false, zoom: MARK_ZOOM }));
-  fs.writeFileSync(path.join(root, 'src-tauri', 'icons', 'tray.png'), markPng(64, BRAND));
+  // One exact size per display scale, because Windows blurs any it has to resize.
+  for (const size of [16, 20, 24, 32]) fs.writeFileSync(path.join(root, 'src-tauri', 'icons', `tray-${size}.png`), trayPng(size));
+  fs.rmSync(path.join(root, 'src-tauri', 'icons', 'tray.png'), { force: true });
 }

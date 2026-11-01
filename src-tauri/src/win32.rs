@@ -104,6 +104,10 @@ fn token_elevated(process: HANDLE) -> Option<bool> {
     }
 }
 
+pub fn system_dpi() -> u32 {
+    unsafe { GetDpiForSystem() }
+}
+
 pub fn is_self_elevated() -> bool {
     token_elevated(unsafe { GetCurrentProcess() }) == Some(true)
 }
