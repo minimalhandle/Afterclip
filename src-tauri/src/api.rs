@@ -18,6 +18,7 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn test_hold_panel(&self, hold: bool);
     /// Pretends this program is the running game. Empty means none. Only reachable in a test instance.
     fn test_game(&self, exe: &str);
+    fn test_controller(&self, kind: &str, report: &str);
     fn clip(&self, seconds: i64) -> Result<Value, String>;
     fn toggle_record(&self) -> Result<Value, String>;
     fn toggle_mic(&self) -> Result<Value, String>;
@@ -75,6 +76,11 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
         }
         (Method::Post, game) if game.starts_with("/test/game/") && is_test_instance() => {
             handlers.test_game(game.trim_start_matches("/test/game/"));
+            Ok(json!({}))
+        }
+        (Method::Post, pad) if pad.starts_with("/test/controller/") && is_test_instance() => {
+            let mut parts = pad.trim_start_matches("/test/controller/").splitn(2, '/');
+            handlers.test_controller(parts.next().unwrap_or(""), parts.next().unwrap_or(""));
             Ok(json!({}))
         }
         (Method::Post, "/test/panel-hold/on" | "/test/panel-hold/off") if is_test_instance() => {

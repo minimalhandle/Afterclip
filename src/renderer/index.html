@@ -285,6 +285,39 @@
     </div>
   </div>
 
+  <div class="pane" data-pane="controller" hidden>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Use a controller</div><div id="controller-seen" class="setting-desc">Turn this on, then press a button to check your controller is found.</div></div>
+        <input id="controllerEnabled" class="switch" type="checkbox" aria-label="Use a controller">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Hold Create, View or −, then press</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Save a clip</div></div>
+        <select id="controllerClip" class="controller-combo" aria-label="Save a clip"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clip length</div></div>
+        <select id="controllerClipSeconds" aria-label="Controller clip length"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Record</div></div>
+        <select id="controllerRecord" class="controller-combo" aria-label="Record"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Mute mic</div></div>
+        <select id="controllerMic" class="controller-combo" aria-label="Mute mic"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Add marker</div></div>
+        <select id="controllerMarker" class="controller-combo" aria-label="Add marker"></select>
+      </div>
+    </div>
+    <p class="note">Works with DualSense, Xbox and Switch Pro controllers, while any game is running. Your game receives these presses too, so R3 might also melee or crouch. Switch Pro needs Bluetooth, unless Steam is running.</p>
+  </div>
+
   <div class="pane" data-pane="recording" hidden>
     <div class="card">
       <div class="setting">

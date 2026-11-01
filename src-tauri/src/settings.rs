@@ -115,6 +115,15 @@ pub struct Settings {
     pub auto_update: bool,
     /// The version someone chose to skip, which isn't offered again.
     pub skipped_update: String,
+    /// Lets a controller run the actions below, each with View, Create or Minus held.
+    pub controller_enabled: bool,
+    /// The second button for each action, by position, as controller::button reads it. Empty is off.
+    pub controller_clip: String,
+    pub controller_record: String,
+    pub controller_mic: String,
+    pub controller_marker: String,
+    /// How much a controller clip keeps. 0 means the whole buffer.
+    pub controller_clip_seconds: i64,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
     pub test_pattern: bool,
 }
@@ -167,6 +176,12 @@ impl Settings {
             game_profiles: Vec::new(),
             auto_update: true,
             skipped_update: String::new(),
+            controller_enabled: false,
+            controller_clip: "r3".into(),
+            controller_record: String::new(),
+            controller_mic: String::new(),
+            controller_marker: String::new(),
+            controller_clip_seconds: 30,
             test_pattern: false,
         }
     }
