@@ -27,6 +27,9 @@ pub struct EngineStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub buffering: bool,
+    /// When the buffer started filling, in milliseconds since 1970, so the UI can show how full it is.
+    #[serde(rename = "bufferingSince", skip_serializing_if = "Option::is_none")]
+    pub buffering_since: Option<u128>,
     pub recording: bool,
 }
 
@@ -77,7 +80,7 @@ impl Engine {
             home,
             root,
             settings: Mutex::new(settings),
-            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, recording: false }),
+            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false }),
             running: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             saved: Mutex::new(None),
@@ -169,6 +172,9 @@ impl Engine {
                 let unexpected = !active && !self.stopping.load(Ordering::SeqCst) && self.status().state == "ready";
                 self.update(|s| {
                     s.buffering = active;
+                    s.buffering_since = active.then(|| {
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
+                    });
                     if unexpected {
                         s.state = "error";
                         s.message = Some(format!("Replay buffer stopped unexpectedly (code {code})"));

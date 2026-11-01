@@ -746,7 +746,7 @@ fn show_panel(core: &Shared) {
         return;
     }
     let built = build_window(&core.app, PANEL, "index.html")
-        .inner_size(420.0, 660.0)
+        .inner_size(420.0, 700.0)
         .resizable(false)
         .decorations(false)
         .skip_taskbar(true)
@@ -920,11 +920,15 @@ fn main() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if let Some(core) = app.try_state::<Shared>() {
                 let core: Shared = Arc::clone(&core);
-                if args.iter().any(|a| a == "--editor") {
-                    show_editor(&core, Vec::new());
-                } else {
-                    show_panel(&core);
-                }
+                // The second copy is waiting on this message, and windows must open off this thread.
+                let editor = args.iter().any(|a| a == "--editor");
+                thread::spawn(move || {
+                    if editor {
+                        show_editor(&core, Vec::new());
+                    } else {
+                        show_panel(&core);
+                    }
+                });
             }
         }));
     }
@@ -980,6 +984,7 @@ fn main() {
                 }
             }
             if win32::is_self_elevated() {
+                win32::accept_second_instance_message(&app.config().identifier);
                 let _ = fs::create_dir_all(&home);
                 sync_elevated_task(&home.join("ui.log"), settings.run_as_admin);
             }

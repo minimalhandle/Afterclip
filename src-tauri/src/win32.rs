@@ -15,7 +15,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, MSGFLT_ALLOW, WM_COPYDATA, DispatchMessageW, GetClientRect, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
     RegisterClassW, SetLayeredWindowAttributes, SetTimer, ShowWindow, LWA_ALPHA, MSG, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY,
     WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -34,7 +34,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -101,6 +101,22 @@ fn token_elevated(process: HANDLE) -> Option<bool> {
         let _ = CloseHandle(token);
         result.ok()?;
         Some(elevation.TokenIsElevated != 0)
+    }
+}
+
+/// Windows blocks normal programs from messaging an elevated one, so opening Afterclip from the Start menu
+/// would do nothing. This lets through the one message that says "open the panel", on the one hidden window
+/// that receives it. The message can only open the panel or editor, so it gives a sender nothing else.
+pub fn accept_second_instance_message(identifier: &str) {
+    let wide = |text: String| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let (class, title) = (wide(format!("{identifier}-sic")), wide(format!("{identifier}-siw")));
+    unsafe {
+        let Ok(hwnd) = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) else { return };
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut owner));
+        if owner == GetCurrentProcessId() {
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
+        }
     }
 }
 
