@@ -187,7 +187,7 @@ mod tests {
         let folder = r"C:\Program Files";
         assert!(is_inside(r"c:\program files\Afterclip\afterclip.exe", folder));
         assert!(!is_inside(r"C:\Program Files Evil\afterclip.exe", folder));
-        assert!(!is_inside(r"C:\Users\Josh\AppData\Local\Afterclip\afterclip.exe", folder));
+        assert!(!is_inside(r"C:\Users\You\AppData\Local\Afterclip\afterclip.exe", folder));
     }
 
     #[test]
