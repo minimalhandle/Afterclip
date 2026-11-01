@@ -129,6 +129,8 @@ async function main() {
     for (let i = 0; i < 3; i++) await api.clip(2);
     await waitFor(() => panel.eval("/View all \\(4\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the fourth clip');
     check('home shows only the three newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 3);
+    await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 3"), 8000, 'all three thumbnails').catch(() => undefined);
+    check('all three home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 3);
     await panel.eval("document.getElementById('view-all').click()");
     const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('halo')).display, editor: !document.getElementById('open-editor').hidden })");
     check('View all opens every clip in a grid, with the editor link', library.items === 4 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
