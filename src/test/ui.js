@@ -176,6 +176,29 @@ async function main() {
     await sleep(6000);
     await api.clip(2);
 
+    // The game picker lists what's open, with a real window to choose. Nothing is typed.
+    const pickerTitle = `Picker Test ${process.pid}`;
+    const pickerWindow = spawn('powershell', ['-NoProfile', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${pickerTitle}'; $f.ShowDialog()`], { windowsHide: false, stdio: 'ignore' });
+    try {
+      await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=\"games\"]').click()");
+      const pickerRow = `[...document.querySelectorAll('#game-picker .picker-row')].find((r) => r.textContent.includes(${JSON.stringify(pickerTitle)}))`;
+      await waitFor(() => panel.eval(`!!${pickerRow}`), 15000, 'the open window in the picker');
+      check('the game picker lists an open window', true);
+      const running = await panel.eval("window.afterclip.invoke('running-apps')");
+      check('the picker leaves out Afterclip and browsers', !running.some((a) => /^(afterclip|chrome|msedge|explorer)\.exe$/.test(a.exe)));
+      check('the picker shows its icon', await panel.eval(`!!${pickerRow}.querySelector('canvas')`));
+      check('there is no box to type a program name', await panel.eval("!document.getElementById('profile-exe')"));
+      await panel.eval(`${pickerRow}.click()`);
+      check('choosing it adds the game with its name', await panel.eval(`[...document.querySelectorAll('#profiles .profile')].some((c) => c.dataset.exe === 'powershell.exe' && c.textContent.includes(${JSON.stringify(pickerTitle)}))`));
+      check('an added game leaves the picker', await panel.eval(`!${pickerRow}`));
+      await panel.eval("document.querySelector('#profiles .profile[data-exe=\"powershell.exe\"] .danger').click()");
+      await waitFor(() => panel.eval(`!!${pickerRow}`), 5000, 'the removed game back in the picker');
+      check('a removed game returns to the picker', true);
+      await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click(); document.getElementById('view-all').click()");
+    } finally {
+      pickerWindow.kill();
+    }
+
     // A real drag with the real mouse, onto a small test window that accepts dropped files.
     const dropResult = path.join(session.home, 'dropped.txt');
     const dropTarget = spawn('powershell', ['-NoProfile', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = 'Afterclip drop test'; $f.AllowDrop = $true; $f.TopMost = $true; $f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; $f.Left = 60; $f.Top = 60; $f.Width = 400; $f.Height = 400; $f.Add_DragEnter({ param($s,$e) $e.Effect = 'Copy' }); $f.Add_DragDrop({ param($s,$e) ($e.Data.GetData('FileDrop') -join ';') | Set-Content -LiteralPath '${dropResult}'; $s.Close() }); $t = New-Object Windows.Forms.Timer; $t.Interval = 20000; $t.Add_Tick({ $f.Close() }); $t.Start(); [void]$f.ShowDialog()`], { windowsHide: false, stdio: 'ignore' });

@@ -1,5 +1,12 @@
+use base64::Engine as _;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt;
+use windows::core::BOOL;
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Gdi::{CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};
+use windows::Win32::UI::Shell::ExtractIconExW;
+use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, EnumWindows, GetWindow, GetWindowLongW, IsWindowVisible, DI_NORMAL, GWL_EXSTYLE, GW_OWNER, HICON};
 use std::path::Path;
 use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
@@ -74,21 +81,163 @@ fn to_hwnd(value: isize) -> HWND {
     HWND(value as *mut core::ffi::c_void)
 }
 
-fn exe_of(pid: u32) -> String {
+fn exe_path_of(pid: u32) -> Option<String> {
     unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return String::new();
-        };
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
         let mut size = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut size).is_ok();
         let _ = CloseHandle(handle);
-        if !ok {
-            return String::new();
-        }
-        let full = String::from_utf16_lossy(&buf[..size as usize]);
-        Path::new(&full).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ok.then(|| String::from_utf16_lossy(&buf[..size as usize]))
     }
+}
+
+fn exe_of(pid: u32) -> String {
+    exe_path_of(pid).and_then(|full| Path::new(&full).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+}
+
+/// Some games pad their titles with invisible characters, Call of Duty among them.
+pub fn clean_title(title: &str) -> String {
+    let visible: String = title.chars().filter(|c| !c.is_control() && !('\u{200B}'..='\u{200F}').contains(c) && *c != '\u{FEFF}').collect();
+    visible.trim().to_string()
+}
+
+/// An open program someone could pick as a game.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RunningApp {
+    /// The program name, in lower case, which is what per-game settings look for.
+    pub exe: String,
+    pub name: String,
+    /// Its icon as base64 RGBA pixels, ICON_SIZE square.
+    pub icon: Option<String>,
+    /// Fullscreen, or installed where games are installed.
+    pub game: bool,
+}
+
+const ICON_SIZE: i32 = 48;
+const GAME_FOLDERS: [&str; 9] = [
+    "\\steamapps\\common\\", "\\epic games\\", "\\gog games\\", "\\gog galaxy\\games\\", "\\xboxgames\\", "\\riot games\\", "\\ea games\\", "\\ubisoft game launcher\\games\\", "\\games\\",
+];
+
+fn in_game_folder(path: &str) -> bool {
+    let path = path.to_lowercase();
+    !path.contains("\\launcher\\") && GAME_FOLDERS.iter().any(|folder| path.contains(folder))
+}
+
+unsafe extern "system" fn collect_window(hwnd: HWND, list: LPARAM) -> BOOL {
+    (*(list.0 as *mut Vec<isize>)).push(hwnd.0 as isize);
+    true.into()
+}
+
+/// A window someone would call open: on screen or minimised, not a tool window, popup or hidden shell surface.
+fn is_app_window(hwnd: HWND) -> bool {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+            return false;
+        }
+        if GetWindow(hwnd, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()) {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        let read = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4);
+        read.is_err() || cloaked == 0
+    }
+}
+
+fn covers_its_monitor(hwnd: HWND) -> bool {
+    unsafe {
+        let mut rect = RECT::default();
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if IsIconic(hwnd).as_bool() || GetWindowRect(hwnd, &mut rect).is_err() || !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info).as_bool() {
+            return false;
+        }
+        let m = info.rcMonitor;
+        rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom
+    }
+}
+
+/// Draws a program's icon to RGBA pixels. Only reads the file on disk, so a running game is never touched.
+fn read_icon(path: &str) -> Option<String> {
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let mut icon = HICON::default();
+        if ExtractIconExW(PCWSTR(wide.as_ptr()), 0, Some(&mut icon), None, 1) == 0 || icon.is_invalid() {
+            return None;
+        }
+        let dc = CreateCompatibleDC(None);
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: ICON_SIZE,
+                biHeight: -ICON_SIZE,
+                biPlanes: 1,
+                biBitCount: 32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let mut pixels = None;
+        if let Ok(bitmap) = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+            let old = SelectObject(dc, bitmap.into());
+            if DrawIconEx(dc, 0, 0, icon, ICON_SIZE, ICON_SIZE, 0, None, DI_NORMAL).is_ok() {
+                pixels = Some(std::slice::from_raw_parts(bits as *const u8, (ICON_SIZE * ICON_SIZE * 4) as usize).to_vec());
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+        }
+        let _ = DeleteDC(dc);
+        let _ = DestroyIcon(icon);
+        let mut pixels = pixels?;
+        // Old icons have no alpha at all, and their cut-out parts draw as black.
+        let no_alpha = pixels.chunks_exact(4).all(|p| p[3] == 0);
+        for p in pixels.chunks_exact_mut(4) {
+            let alpha = if no_alpha { if p[..3] == [0, 0, 0] { 0 } else { 255 } } else { p[3] };
+            let straight = |v: u8| if alpha == 0 { 0 } else { (v as u32 * 255 / alpha as u32).min(255) as u8 };
+            (p[0], p[1], p[2], p[3]) = (straight(p[2]), straight(p[1]), straight(p[0]), alpha);
+        }
+        Some(base64::engine::general_purpose::STANDARD.encode(pixels))
+    }
+}
+
+/// Programs with an open window, with likely games first. It only looks, and never touches them.
+pub fn running_apps() -> Vec<RunningApp> {
+    static ICONS: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    let mut windows: Vec<isize> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), LPARAM(&mut windows as *mut Vec<isize> as isize));
+    }
+    let mut apps: Vec<RunningApp> = Vec::new();
+    for hwnd in windows.into_iter().map(to_hwnd) {
+        if !is_app_window(hwnd) {
+            continue;
+        }
+        let mut pid = 0u32;
+        let mut buf = [0u16; 512];
+        let n = unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            GetWindowTextW(hwnd, &mut buf)
+        };
+        let title = clean_title(&String::from_utf16_lossy(&buf[..n.max(0) as usize]));
+        if title.is_empty() || pid == std::process::id() {
+            continue;
+        }
+        let Some(path) = exe_path_of(pid) else { continue };
+        let Some(exe) = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_lowercase()) else { continue };
+        let stem = exe.strip_suffix(".exe").unwrap_or(&exe);
+        if NOT_GAMES.contains(&stem) || stem == "systemsettings" {
+            continue;
+        }
+        let game = covers_its_monitor(hwnd) || in_game_folder(&path);
+        if let Some(known) = apps.iter_mut().find(|a| a.exe == exe) {
+            known.game |= game;
+            continue;
+        }
+        let icon = ICONS.lock().unwrap().get_or_insert_default().entry(path.clone()).or_insert_with(|| read_icon(&path)).clone();
+        apps.push(RunningApp { exe, name: title, icon, game });
+    }
+    apps.sort_by_key(|a| (!a.game, a.name.to_lowercase()));
+    apps
 }
 
 /// Returns whether the token is elevated, or None when it can't be opened.
