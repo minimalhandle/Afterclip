@@ -9,6 +9,13 @@ let chosenLength = null;
 let audioChoices = { outputs: [], inputs: [], apps: [] };
 const selected = new Set();
 const info = new Map(); // file|mtime -> { url, duration }
+let activeProfile = null;
+let activeBuffer = null; // The running game's profile can use a different buffer from Settings.
+let renaming = null;
+let favouritesOnly = false;
+let update = { status: 'idle' };
+let appVersion = '';
+let storageUsed = 0;
 
 const errorText = (e) => String(e.message ?? e);
 const lengthLabel = (s) => (s > 0 ? (s >= 60 && s % 60 === 0 ? `${s / 60}m` : `${s}s`) : 'All');
@@ -75,7 +82,7 @@ function renderStatus() {
 let haloTimer = null;
 function renderHalo() {
   if (!settings) return;
-  const buffer = Math.max(1, settings.bufferSeconds);
+  const buffer = Math.max(1, activeBuffer ?? settings.bufferSeconds);
   const filled = status.buffering && status.bufferingSince ? Math.min(buffer, Math.max(0, (Date.now() - status.bufferingSince) / 1000)) : 0;
   const wanted = chosenLength > 0 ? chosenLength : buffer;
   const kept = Math.min(wanted, filled);
@@ -106,7 +113,9 @@ function pulseHalo() {
 function renderSummary() {
   if (!settings) return;
   const quality = settings.quality === 'full' ? 'Full' : settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
-  $('summary').textContent = `${quality} · ${bufferLabel(settings.bufferSeconds)} buffer · ${settings.fps} FPS`;
+  $('summary').textContent = activeProfile
+    ? `${settings.gameProfiles.find((p) => p.exe === activeProfile)?.name ?? activeProfile} profile · ${bufferLabel(activeBuffer ?? settings.bufferSeconds)} buffer`
+    : `${quality} · ${bufferLabel(settings.bufferSeconds)} buffer · ${settings.fps} FPS`;
 }
 
 function renderLengths() {
@@ -193,7 +202,7 @@ let justDragged = false;
 function wireDrag(li, m) {
   li.addEventListener('dragstart', (e) => e.preventDefault());
   li.addEventListener('mousedown', (down) => {
-    if (down.button !== 0 || down.target.closest('.more, input, .menu')) return;
+    if (down.button !== 0 || down.target.closest('.more, .star, input, .menu')) return;
     const stop = () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', stop);
@@ -221,17 +230,81 @@ function setLibrary(open) {
   $('summary').hidden = open;
   $('view-all').hidden = open;
   $('open-editor').hidden = !open;
+  $('library-tools').hidden = !open;
   renderMedia();
+}
+
+const gameOf = (m) => m.game ?? parseName(m.name).game;
+
+/** The game filter only offers games you have clips of, plus whatever's chosen. */
+function renderGameFilter(all) {
+  const select = $('library-game');
+  const chosen = select.value;
+  const games = [...new Set(all.map(gameOf))].sort((a, b) => a.localeCompare(b));
+  const options = [['', 'All games'], ...games.map((g) => [g, g])].map(([value, label]) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    return o;
+  });
+  select.replaceChildren(...options);
+  select.value = games.includes(chosen) ? chosen : '';
+}
+
+const SORTS = {
+  newest: (a, b) => b.mtime - a.mtime,
+  oldest: (a, b) => a.mtime - b.mtime,
+  largest: (a, b) => b.size - a.size,
+  name: (a, b) => a.name.localeCompare(b.name),
+};
+
+function filtered(all) {
+  const words = $('library-search').value.trim().toLowerCase();
+  const game = $('library-game').value;
+  return all
+    .filter((m) => !favouritesOnly || m.favourite)
+    .filter((m) => !game || gameOf(m) === game)
+    .filter((m) => !words || `${m.name} ${gameOf(m)}`.toLowerCase().includes(words))
+    .sort(SORTS[$('library-sort').value] ?? SORTS.newest);
+}
+
+function renameField(m, title) {
+  const input = document.createElement('input');
+  input.className = 'rename-field';
+  input.value = title;
+  input.setAttribute('aria-label', 'New clip name');
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    renaming = null;
+    if (save && input.value.trim() && input.value.trim() !== title) {
+      await api.invoke('rename-clip', { file: m.file, name: input.value, game: gameOf(m) }).catch((e) => showBanner(errorText(e), 'bad'));
+      await refresh();
+    } else {
+      renderMedia();
+    }
+  };
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+  };
+  input.onblur = () => finish(true);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+  return input;
 }
 
 function renderMedia() {
   const all = media.filter((m) => m.kind === kind);
-  const shown = libraryOpen ? all : all.slice(0, HOME_CLIPS);
+  renderGameFilter(all);
+  const shown = libraryOpen ? filtered(all) : all.slice(0, HOME_CLIPS);
   $('view-all').textContent = `View all (${all.length})`;
   $('library-title').textContent = kind === 'clip' ? 'All clips' : 'All recordings';
   const empty = $('empty');
   empty.hidden = shown.length > 0;
-  empty.textContent = kind === 'clip' ? 'No clips yet. Save your first moment with the button above or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
+  const nothingMatches = libraryOpen && all.length > 0;
+  empty.textContent = nothingMatches ? 'Nothing matches that.' : kind === 'clip' ? 'No clips yet. Save your first moment with the button above or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
   observer.disconnect();
   $('media').replaceChildren(...shown.map((m) => {
     const li = document.createElement('li');
@@ -259,12 +332,15 @@ function renderMedia() {
     text.className = 'item-text';
     const title = document.createElement('div');
     title.className = 'item-title';
-    title.textContent = parseName(m.name).game;
+    const shownName = parseName(m.name).game;
+    title.textContent = shownName;
     const sub = document.createElement('div');
     sub.className = 'item-sub';
-    sub.textContent = `${timeAgo(m.mtime)} · ${sizeLabel(m.size)}`;
+    // A renamed clip's title no longer says which game it came from.
+    sub.textContent = `${m.game && m.game !== shownName ? `${m.game} · ` : ''}${timeAgo(m.mtime)} · ${sizeLabel(m.size)}`;
     sub.title = m.name;
-    text.append(title, sub);
+    if (renaming === m.file) text.append(renameField(m, shownName), sub);
+    else text.append(title, sub);
 
     const actions = document.createElement('div');
     actions.className = 'item-actions';
@@ -288,13 +364,27 @@ function renderMedia() {
       li.classList.toggle('selected', pick.checked);
       renderSelection();
     };
-    actions.append(more, pick);
+    const star = document.createElement('button');
+    star.className = 'star';
+    star.classList.toggle('on', !!m.favourite);
+    star.setAttribute('aria-pressed', String(!!m.favourite));
+    star.setAttribute('aria-label', `${m.favourite ? 'Remove from favourites' : 'Add to favourites'}: ${m.name}`);
+    star.title = m.favourite ? 'Remove from favourites' : 'Add to favourites';
+    star.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8l-5.5 2.9 1.2-6.1-4.5-4.2 6.1-.8z"/></svg>';
+    star.onclick = async (e) => {
+      e.stopPropagation();
+      await api.invoke('set-favourite', { file: m.file, on: !m.favourite }).catch((error) => showBanner(errorText(error), 'bad'));
+      refresh();
+    };
+    actions.append(star, more, pick);
     li.append(thumb, text, actions);
     wireDrag(li, m);
     return li;
   }));
   renderSelection();
 }
+
+const SHARE_SIZES_MB = [10, 25, 50];
 
 function buildMenu(m) {
   const menu = document.createElement('div');
@@ -309,7 +399,12 @@ function buildMenu(m) {
   menu.append(
     item('Play', () => api.invoke('open', m.file)),
     item('Edit', () => api.invoke('open-editor', [m.file])),
+    item('Rename', () => { renaming = m.file; renderMedia(); }),
     item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
+    ...SHARE_SIZES_MB.map((mb) => item(`Make ${mb} MB copy`, () => {
+      showBanner(`Making a ${mb} MB copy. A long clip can take a while, and you can keep playing.`);
+      api.invoke('shrink-clip', { file: m.file, megabytes: mb }).catch(() => undefined);
+    })),
     item('Show in folder', () => api.invoke('reveal', m.file)),
     item('Delete', async () => {
       await api.invoke('trash', m.file).catch((e) => showBanner(errorText(e), 'bad'));
@@ -325,6 +420,14 @@ async function refresh() {
   status = state.status;
   capture = state.capture;
   media = state.media;
+  activeProfile = state.activeProfile ?? null;
+  activeBuffer = state.activeBufferSeconds ?? null;
+  update = state.update ?? update;
+  appVersion = state.version ?? appVersion;
+  storageUsed = state.storageUsedBytes ?? 0;
+  renderUpdate();
+  renderStorageUsed();
+  renderCurrentGame();
   // Only this comes from the backend after startup: the form owns the rest while it's being edited.
   if (settings) {
     settings.micMuted = state.settings.micMuted;
@@ -334,7 +437,8 @@ async function refresh() {
   const files = new Set(media.map((m) => m.file));
   for (const f of selected) if (!files.has(f)) selected.delete(f);
   renderStatus();
-  renderMedia();
+  // Redrawing would throw away a name being typed.
+  if (!renaming) renderMedia();
   return state;
 }
 
@@ -694,15 +798,160 @@ function renderEncoderNote(inUse) {
   $('encoder-note').textContent = name ? `Currently recording with ${name}.` : '';
 }
 
+/* Updates */
+
+const UPDATE_COUNTDOWN_REFRESH_MS = 30000;
+let updateTimer = null;
+function renderUpdate() {
+  const { status: state, version, message, installsAt } = update;
+  const card = $('update-card');
+  card.hidden = !['downloading', 'ready', 'installing', 'failed'].includes(state);
+  $('update-actions').hidden = state !== 'ready';
+  const line = (heading, detail) => {
+    const b = document.createElement('b');
+    b.textContent = heading;
+    $('update-text').replaceChildren(b, detail);
+  };
+  if (state === 'downloading') line(`Downloading update ${version}`, 'It installs when you say so, or when you\'re not playing.');
+  if (state === 'installing') line(`Installing update ${version}`, 'Afterclip will restart by itself.');
+  if (state === 'failed') line('Update problem', message ?? 'The update didn\'t work. Afterclip will try again later.');
+  if (state === 'ready') {
+    const minutes = installsAt ? Math.max(1, Math.ceil((installsAt - Date.now()) / 60000)) : null;
+    line(`Update ${version} is ready`, minutes ? `Installs in about ${minutes} min unless you skip it. Waits while you're in a game or recording.` : 'Restarting clears the buffer, so install it when it suits you.');
+  }
+  clearInterval(updateTimer);
+  updateTimer = state === 'ready' && installsAt ? setInterval(renderUpdate, UPDATE_COUNTDOWN_REFRESH_MS) : null;
+
+  $('version-note').textContent = appVersion ? `Version ${appVersion}` : '';
+  const notes = {
+    checking: 'Checking for updates.',
+    current: 'You have the latest version.',
+    downloading: `Downloading ${version}.`,
+    ready: `Version ${version} is ready. See the top of the main screen.`,
+    failed: message ?? '',
+  };
+  const skipped = settings?.skippedUpdate;
+  $('update-note').textContent = notes[state] ?? (skipped ? `You skipped version ${skipped}. Check now to get it anyway.` : '');
+  $('check-update').disabled = ['checking', 'downloading', 'installing'].includes(state);
+}
+
+/* Storage */
+
+function renderStorageUsed() {
+  const gb = storageUsed / 1e9;
+  $('storage-used').textContent = `Your clips and recordings use ${gb >= 0.1 ? `${gb.toFixed(1)} GB` : `${Math.round(storageUsed / 1e6)} MB`}.`;
+}
+
+/* Per-game settings */
+
+function renderCurrentGame() {
+  const button = $('profile-current');
+  const known = settings?.gameProfiles.some((p) => p.exe === capture.exe);
+  button.hidden = !capture.exe || known;
+  if (capture.exe) button.textContent = `Add ${capture.app ?? capture.exe}`;
+}
+
+function profileSelect(label, value, options, onChange) {
+  const row = document.createElement('div');
+  row.className = 'setting';
+  const name = document.createElement('div');
+  name.className = 'setting-text setting-name';
+  name.textContent = label;
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', label);
+  for (const [v, text] of options) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = text;
+    select.append(o);
+  }
+  select.value = value ?? '';
+  select.onchange = () => { onChange(select.value); scheduleSave(); };
+  row.append(name, select);
+  return row;
+}
+
+const USE_DEFAULT = ['', 'Use my normal setting'];
+
+function renderProfiles() {
+  $('profiles').replaceChildren(...settings.gameProfiles.map((p) => {
+    const card = document.createElement('div');
+    card.className = 'card profile';
+    card.dataset.exe = p.exe;
+    const head = document.createElement('div');
+    head.className = 'profile-head';
+    const name = document.createElement('div');
+    name.className = 'profile-name';
+    name.textContent = p.name;
+    const exe = document.createElement('div');
+    exe.className = 'profile-exe';
+    exe.textContent = p.exe;
+    name.append(exe);
+    const remove = document.createElement('button');
+    remove.className = 'small danger';
+    remove.textContent = 'Remove';
+    remove.onclick = () => {
+      settings.gameProfiles = settings.gameProfiles.filter((g) => g !== p);
+      renderProfiles();
+      renderCurrentGame();
+      scheduleSave();
+    };
+    head.append(name, remove);
+
+    const record = document.createElement('div');
+    record.className = 'setting';
+    const recordText = document.createElement('div');
+    recordText.className = 'setting-text';
+    recordText.innerHTML = '<div class="setting-name">Auto-record</div><div class="setting-desc">Record the whole session when this game opens, and stop when it closes.</div>';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.className = 'switch auto-record';
+    toggle.setAttribute('aria-label', `Auto-record ${p.name}`);
+    toggle.checked = p.autoRecord;
+    toggle.onchange = () => { p.autoRecord = toggle.checked; scheduleSave(); };
+    record.append(recordText, toggle);
+
+    const optional = (text) => text || undefined;
+    card.append(
+      head,
+      record,
+      profileSelect('Quality', p.quality, [USE_DEFAULT, ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['full', 'Full quality']], (v) => { p.quality = optional(v); }),
+      profileSelect('Frame rate', p.frameRate, [USE_DEFAULT, ['60', '60 fps'], ['120', '120 fps'], ['native', 'Native']], (v) => { p.frameRate = optional(v); }),
+      profileSelect('Buffer', p.bufferSeconds, [USE_DEFAULT, ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes'], ['600', '10 minutes'], ['1800', '30 minutes']], (v) => { p.bufferSeconds = v ? Number(v) : undefined; }),
+      profileSelect('Game audio', p.gameAudio === undefined || p.gameAudio === null ? '' : String(p.gameAudio), [USE_DEFAULT, ['true', 'On'], ['false', 'Off']], (v) => { p.gameAudio = v ? v === 'true' : undefined; }),
+    );
+    return card;
+  }));
+}
+
+function addProfile(exe, name) {
+  const clean = exe.trim().toLowerCase();
+  if (!clean) return;
+  const file = clean.endsWith('.exe') ? clean : `${clean}.exe`;
+  if (!settings.gameProfiles.some((p) => p.exe === file)) {
+    settings.gameProfiles.push({ exe: file, name: name ?? file.replace(/\.exe$/, ''), autoRecord: false });
+  }
+  $('profile-exe').value = '';
+  renderProfiles();
+  renderCurrentGame();
+  scheduleSave();
+}
+
 function fillForm() {
   for (const k of ['encoder', 'outputDir', 'quality', 'codec', 'encoderPreset']) $(k).value = settings[k];
+  ensureOption($('storageLimitGb'), settings.storageLimitGb, `${settings.storageLimitGb} GB`);
+  $('storageLimitGb').value = settings.storageLimitGb;
+  renderProfiles();
+  renderCurrentGame();
+  renderStorageUsed();
+  renderUpdate();
   $('multipass').value = String(settings.multipass);
   fillVideoOptions();
   describeQuality();
   const minutes = +(settings.bufferSeconds / 60).toFixed(2);
   ensureOption($('bufferMinutes'), minutes, `Custom (${settings.bufferSeconds} seconds)`);
   $('bufferMinutes').value = minutes;
-  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray']) $(k).checked = settings[k];
+  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate']) $(k).checked = settings[k];
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
   bindHotkey($('markerHotkey'), () => settings.markerHotkey, (v) => { settings.markerHotkey = v; scheduleSave(); });
@@ -761,8 +1010,9 @@ async function saveNow() {
 function readForm() {
   settings.bitrateKbps = Number($('bitrateKbps').value);
   settings.recordSplitSeconds = Number($('recordSplit').value);
+  settings.storageLimitGb = Number($('storageLimitGb').value);
   settings.bufferSeconds = Math.round(Number($('bufferMinutes').value) * 60);
-  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray']) settings[k] = $(k).checked;
+  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate']) settings[k] = $(k).checked;
   for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder']) settings[k] = $(k).value;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
@@ -776,8 +1026,9 @@ const SECTIONS = [
   ['audio', 'Audio', 'Game audio, devices, apps, tracks', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
   ['hotkeys', 'Hotkeys', 'Clip lengths and keyboard shortcuts', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
   ['recording', 'Recording', 'Split long recordings and markers', '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>'],
+  ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
   ['performance', 'Performance', 'Live frame rate, dropped frames, CPU', '<path d="M3 13h4l3 7 4-16 3 9h4"/>'],
-  ['storage', 'Storage', 'Where clips are saved', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+  ['storage', 'Storage', 'Where clips are saved, and how much to keep', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
 ];
 let currentPane = null;
 
@@ -821,7 +1072,9 @@ function showView(name) {
 /* Wiring */
 
 api.on('status', (s) => { status = s; renderStatus(); });
-api.on('capture', (c) => { capture = c; renderStatus(); });
+api.on('capture', (c) => { capture = c; renderStatus(); renderCurrentGame(); });
+api.on('update', (u) => { update = u; renderUpdate(); });
+api.on('profile', (p) => { activeProfile = p.game ?? null; activeBuffer = p.bufferSeconds; renderSummary(); renderHalo(); });
 api.on('panel-shown', () => { refresh(); updateLiveViews(); });
 window.addEventListener('focus', updateLiveViews);
 document.addEventListener('visibilitychange', updateLiveViews);
@@ -832,6 +1085,10 @@ api.on('feedback', (f) => {
     else showBanner(`Saved ${Math.round(f.actualSeconds)}s clip`, 'good');
   } else if (f.kind === 'recording-saved') {
     showBanner('Recording saved', 'good');
+  } else if (f.kind === 'shrunk' && f.ok) {
+    showBanner(`Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
+  } else if (f.kind === 'storage') {
+    showBanner(`Moved ${f.removed} old ${f.removed === 1 ? 'clip' : 'clips'} to the Recycle Bin to stay under your storage limit.`, 'good');
   } else if (f.kind === 'exported') {
     showBanner('Edited clip saved', 'good');
   } else if (f.kind === 'clean-mic' && f.ok) {
@@ -856,6 +1113,24 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => addAudio(b.dataset.add); });
 $('open-settings').onclick = () => showView('settings');
+$('library-search').oninput = () => renderMedia();
+$('library-game').onchange = () => renderMedia();
+$('library-sort').onchange = () => renderMedia();
+$('library-favourites').onclick = () => {
+  favouritesOnly = !favouritesOnly;
+  $('library-favourites').setAttribute('aria-pressed', String(favouritesOnly));
+  renderMedia();
+};
+$('update-now').onclick = () => api.invoke('install-update').catch((e) => showBanner(errorText(e), 'bad'));
+$('update-skip').onclick = () => api.invoke('skip-update').then(() => {
+  settings.skippedUpdate = update.version ?? settings.skippedUpdate;
+  return refresh();
+}).catch((e) => showBanner(errorText(e), 'bad'));
+$('check-update').onclick = () => api.invoke('check-update');
+$('autoUpdate').onchange = () => scheduleSave();
+$('storageLimitGb').onchange = () => scheduleSave();
+$('profile-add').onclick = () => addProfile($('profile-exe').value);
+$('profile-current').onclick = () => addProfile(capture.exe, capture.app);
 $('view-all').onclick = () => setLibrary(true);
 $('library-back').onclick = () => setLibrary(false);
 $('close-panel').onclick = () => { if (saveTimer) saveNow(); api.invoke('close-panel'); };

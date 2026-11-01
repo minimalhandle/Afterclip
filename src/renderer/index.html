@@ -36,6 +36,13 @@
 </header>
 
 <div id="home" class="view">
+  <section id="update-card" class="update-card" hidden>
+    <div id="update-text" class="update-text"></div>
+    <div id="update-actions" class="row">
+      <button id="update-now" class="small primary">Update now</button>
+      <button id="update-skip" class="small">Skip this version</button>
+    </div>
+  </section>
   <section id="capture-card" class="capture-card">
     <div class="capture-line">
       <span id="capture-dot" class="dot"></span>
@@ -92,6 +99,18 @@
     <button id="view-all" class="tab-action">View all</button>
     <button id="open-editor" class="tab-action" hidden>Open editor</button>
   </div>
+  <div id="library-tools" class="library-tools" hidden>
+    <input id="library-search" type="search" placeholder="Search clips" aria-label="Search clips">
+    <div class="row">
+      <select id="library-game" aria-label="Filter by game"></select>
+      <select id="library-sort" aria-label="Sort by">
+        <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="largest">Largest</option><option value="name">Name</option>
+      </select>
+      <button id="library-favourites" class="star-filter" aria-pressed="false" aria-label="Show favourites only" title="Show favourites only">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8l-5.5 2.9 1.2-6.1-4.5-4.2 6.1-.8z"/></svg>
+      </button>
+    </div>
+  </div>
   <div id="banner" class="banner" hidden></div>
   <ul id="media" class="media"></ul>
   <p id="empty" class="empty" hidden></p>
@@ -133,6 +152,17 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Beeps</div><div class="setting-desc">Sounds for saved clips, recording, mic mute and errors.</div></div>
         <input id="beepEnabled" class="switch" type="checkbox" aria-label="Beeps">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Updates</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Automatic updates</div><div class="setting-desc">Downloads new versions and installs them when you're not in a game or recording. You can skip any version.</div></div>
+        <input id="autoUpdate" class="switch" type="checkbox" aria-label="Automatic updates">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div id="version-note" class="setting-name"></div><div id="update-note" class="setting-desc"></div></div>
+        <button id="check-update" class="small">Check now</button>
       </div>
     </div>
     <button id="quit" class="small danger">Quit Afterclip</button>
@@ -268,6 +298,19 @@
     <p class="note">Press the marker key while recording to add a chapter you can jump to in most video players. Changes apply to your next recording.</p>
   </div>
 
+  <div class="pane" data-pane="games" hidden>
+    <p class="note games-note">Different settings for each game, used while it runs. A change that needs it restarts capture when the game opens, which clears the buffer. Settings go back 10 minutes after the game closes, so you can still clip its last moments.</p>
+    <div id="profiles"></div>
+    <div class="card">
+      <div class="card-title">Add a game</div>
+      <div class="row wrap">
+        <button id="profile-current" class="small primary" hidden></button>
+        <input id="profile-exe" placeholder="Program name, such as cod.exe" aria-label="Game program name">
+        <button id="profile-add" class="small">Add</button>
+      </div>
+    </div>
+  </div>
+
   <div class="pane" data-pane="performance" hidden>
     <p id="perf-health" class="perf-health">Checking.</p>
     <div class="card">
@@ -286,6 +329,14 @@
         <div class="setting-text"><div class="setting-name">Save location</div><div class="setting-desc">Clips and recordings are saved here.</div></div>
         <div class="row"><input id="outputDir" readonly aria-label="Save location"><button id="pick-folder" class="small">Change</button></div>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Storage limit</div><div class="setting-desc">Above this, your oldest clips and recordings go to the Recycle Bin. Favourites are never touched.</div></div>
+        <select id="storageLimitGb" aria-label="Storage limit">
+          <option value="0">No limit</option><option value="10">10 GB</option><option value="25">25 GB</option><option value="50">50 GB</option>
+          <option value="100">100 GB</option><option value="250">250 GB</option><option value="500">500 GB</option><option value="1000">1 TB</option>
+        </select>
+      </div>
+      <p id="storage-used" class="note"></p>
     </div>
   </div>
 

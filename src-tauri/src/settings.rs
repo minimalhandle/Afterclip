@@ -43,6 +43,26 @@ impl AudioSource {
     }
 }
 
+/// Settings for one game, applied while it's being captured. Anything left out uses the normal setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameProfile {
+    /// The game's program name, in lower case, such as cod.exe.
+    pub exe: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buffer_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_audio: Option<bool>,
+    /// Starts a recording when the game opens, and stops it when the game closes.
+    #[serde(default)]
+    pub auto_record: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -88,6 +108,13 @@ pub struct Settings {
     pub marker_hotkey: String,
     /// Relaunches through UAC at every start, which some games need for game capture.
     pub run_as_admin: bool,
+    /// Moves the oldest clips and recordings to the Recycle Bin above this size. 0 keeps everything.
+    pub storage_limit_gb: f64,
+    pub game_profiles: Vec<GameProfile>,
+    /// Checks for updates and installs them when it's safe to.
+    pub auto_update: bool,
+    /// The version someone chose to skip, which isn't offered again.
+    pub skipped_update: String,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
     pub test_pattern: bool,
 }
@@ -136,6 +163,10 @@ impl Settings {
             record_split_seconds: 0,
             marker_hotkey: "Alt+Shift+K".into(),
             run_as_admin: false,
+            storage_limit_gb: 0.0,
+            game_profiles: Vec::new(),
+            auto_update: true,
+            skipped_update: String::new(),
             test_pattern: false,
         }
     }
@@ -161,7 +192,40 @@ impl Settings {
         self
     }
 
+    /// What capture should use while this game runs. Keep the quality levels in step with QUALITY in app.js.
+    pub fn with_profile(&self, profile: &GameProfile, display: (u32, u32, u32)) -> Settings {
+        let mut s = self.clone();
+        if let Some(quality) = &profile.quality {
+            let level = match quality.as_str() {
+                "low" => Some(("720", "60", 8000, "p1", false)),
+                "medium" => Some(("1080", "60", 20000, "p3", false)),
+                "high" => Some(("native", "60", 40000, "p3", false)),
+                "full" => Some(("native", "native", 150000, "p5", true)),
+                _ => None,
+            };
+            if let Some((resolution, frame_rate, bitrate, preset, multipass)) = level {
+                s.quality = quality.clone();
+                s.resolution = resolution.into();
+                s.frame_rate = frame_rate.into();
+                s.bitrate_kbps = bitrate;
+                s.encoder_preset = preset.into();
+                s.multipass = multipass;
+            }
+        }
+        if let Some(frame_rate) = &profile.frame_rate {
+            s.frame_rate = frame_rate.clone();
+        }
+        if let Some(seconds) = profile.buffer_seconds {
+            s.buffer_seconds = seconds;
+        }
+        if let Some(on) = profile.game_audio {
+            s.game_audio = on;
+        }
+        s.resolved_for(display).sanitized()
+    }
+
     pub fn sanitized(mut self) -> Self {
+        self.storage_limit_gb = self.storage_limit_gb.max(0.0);
         self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
         self.fps = self.fps.clamp(10, 240);
         self.bitrate_kbps = self.bitrate_kbps.clamp(1000, 200_000);

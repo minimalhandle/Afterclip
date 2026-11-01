@@ -18,6 +18,9 @@ pub struct CaptureState {
     pub mode: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The program name, in lower case, which is what per-game settings look for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
     /// The app runs above Afterclip's privilege level, so game capture can't reach it.
     pub needs_admin: bool,
     /// The hook failed for an unknown reason, and running as administrator is worth trying.
@@ -37,6 +40,7 @@ impl CaptureManager {
             state: Mutex::new(CaptureState {
                 mode: "desktop",
                 app: None,
+                exe: None,
                 needs_admin: false,
                 suggest_admin: false,
                 elevated: is_self_elevated(),
@@ -81,6 +85,7 @@ impl CaptureManager {
             self.publish(on_change, |s| {
                 s.mode = "desktop";
                 s.app = None;
+                s.exe = None;
                 s.needs_admin = false;
                 s.suggest_admin = false;
             });
@@ -106,10 +111,12 @@ impl CaptureManager {
             let visible: String = app.title.chars().filter(|c| !c.is_control() && !('\u{200B}'..='\u{200F}').contains(c) && *c != '\u{FEFF}').collect();
             let name = if visible.trim().is_empty() { app.exe.clone() } else { visible.trim().to_string() };
             let blocked = app.blocked_by_elevation;
+            let exe = app.exe.to_lowercase();
             engine.set_game(Some(name.clone()));
             self.publish(on_change, |s| {
                 s.mode = "detecting";
                 s.app = Some(name);
+                s.exe = Some(exe);
                 s.needs_admin = blocked;
                 s.suggest_admin = false;
             });
@@ -127,6 +134,7 @@ impl CaptureManager {
             self.publish(on_change, |s| {
                 s.mode = "desktop";
                 s.app = None;
+                s.exe = None;
                 s.needs_admin = false;
                 s.suggest_admin = false;
             });

@@ -53,13 +53,31 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 - **Clean Mic** removes background noise and keyboard sound with one click.
 - **Mic mute** silences your mic in clips and recordings only, so calls aren't affected.
 
-### Share by dragging
+### Share anywhere
 
 Drag a clip straight into Discord or any other app, the same way you would from File Explorer. Or choose **Copy file** from its menu and paste it.
 
+Clips this good are big, so **Make 10 MB copy** (also 25 and 50 MB) re-encodes a smaller H.264 copy that fits, using your GPU where it can, with the main audio mix. Your original stays as it is.
+
+### A library that stays tidy
+
+**View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, and rename clips to something you'll recognise. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched.
+
+### Settings for each game
+
+Give any game its own quality, frame rate, buffer length and game audio setting, used while it runs. **Auto-record** starts a full recording when a game opens and stops it when it closes.
+
+<p align="center">
+  <img src="docs/screenshots/games.png" width="32%" alt="Per-game settings, with auto-record">
+</p>
+
 ### A lossless editor
 
-Trim with drag handles, reorder clips, and merge them into one video. Nothing is re-encoded, your originals are never changed, and separate audio tracks are kept.
+Trim with drag handles, reorder clips, and merge them into one video. Nothing is re-encoded, your originals are never changed, and separate audio tracks are kept. Turn any track up, down or off before saving, and only that track is re-encoded.
+
+### Automatic updates
+
+Afterclip downloads new versions by itself and shows a countdown before installing, so you can **Skip this version**. It waits while you're in a game or recording, and refuses any update that isn't signed.
 
 <p align="center">
   <img src="docs/screenshots/editor.png" width="80%" alt="The editor, with trim handles and a merge timeline">
@@ -136,6 +154,10 @@ You can change these and add more clip lengths in Settings.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
 - **Not detected:** windowed games aren't detected, so they're only recorded if they're on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
+- **Game profiles:** a profile that changes capture settings restarts capture when the game opens, which clears the buffer. Normal settings return 10 minutes after the game closes, so you can still clip its last moments. Neither happens during a recording.
+- **Sharing long clips:** a very long clip can't fit a small size and still look watchable, so Afterclip asks you to trim it or pick a larger size.
+- **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
+- **Updates:** installing by itself needs Run as administrator, because otherwise Windows would show a UAC prompt out of nowhere. Without it, updates wait for you to click **Update now**. Turn **Automatic updates** off in General to stop Afterclip checking GitHub.
 - **HEVC and AV1:** these give smaller files, but not every app can play them, and the editor's preview may not.
 
 ## How it works
@@ -150,7 +172,8 @@ Some details:
 
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
-- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
+- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
+- **Library data:** favourites, and which game a renamed clip came from, are kept in `%APPDATA%\Afterclip\library.json`. Clips stay ordinary files.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.
 
 `npm run build:engine` downloads the official OBS release and its FFmpeg headers, verifies their checksums, compiles the engine and media helper, and assembles `vendor/engine` with only the files they need (about 56 MB). To change version, edit `OBS_VERSION` in `scripts/fetch-obs.js` and `DEPS_VERSION` in `scripts/build-engine.js`.
@@ -189,7 +212,21 @@ Drives the real panel and editor with the real mouse and clipboard, and reads pi
 npm run test:ui
 ```
 
+Normal builds only accept updates over HTTPS, so the updater checks need a special build. Never ship this one. Run these one at a time, then rebuild normally:
+
+```bash
+npx tauri build --no-bundle --config src-tauri/tauri.updater-test.conf.json
+```
+
+```powershell
+$env:AFTERCLIP_TEST_UPDATER = '1'; npm run test:ui
+```
+
 Set `AFTERCLIP_APP_EXE` to test a specific `afterclip.exe`.
+
+## Releasing
+
+`npm run release` builds the installer and signs it, and writes the `latest.json` that existing copies read. Upload the installer, its `.sig` and `latest.json` to the GitHub release. It needs the private signing key at `%USERPROFILE%\.afterclip\updater.key`. Keep a backup of that key somewhere safe and never commit it: without it, existing copies won't accept any future update.
 
 ## Licence
 

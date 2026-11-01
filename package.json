@@ -8,6 +8,7 @@
     "build:engine": "node scripts/fetch-obs.js && node scripts/build-engine.js && node scripts/build-plugin.js",
     "start": "npm run build:engine && tauri dev",
     "dist": "npm run build:engine && tauri build",
+    "release": "node scripts/build-release.js",
     "test:media": "node src/test/media-test.js",
     "test:e2e": "node src/test/e2e.js",
     "test:capture": "node src/test/capture.js",
