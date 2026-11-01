@@ -324,7 +324,10 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('hidden panel is destroyed after 20s', !targets.some((t) => PANEL_URL.test(t.url)));
   } catch (e) {
     const pages = await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json()).then((l) => l.map((t) => t.url).join(', ')).catch((err) => err.message);
-    check('no exceptions', false, `${e.message} | pages: ${pages} | windows: ${JSON.stringify(windowInfo(app.pid))}`);
+    const uiLog = path.join(session.home, 'ui.log');
+    const logged = fs.existsSync(uiLog) ? fs.readFileSync(uiLog, 'utf8').trim() : 'nothing logged';
+    const browsers = powershell(`@(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -match '${path.basename(session.home)}' }).Count`);
+    check('no exceptions', false, `${e.message} | pages: ${pages} | windows: ${JSON.stringify(windowInfo(app.pid))} | webview processes: ${browsers} | ui.log: ${logged}`);
   } finally {
     panel?.close();
     editor?.close();
