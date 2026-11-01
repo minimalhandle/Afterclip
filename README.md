@@ -85,7 +85,7 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Record**, **Mute Mic In Clips**, and **Save Custom Length**. They show live state, including when recording or when Afterclip isn't running.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip** and **Copy Last Clip**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
 
 <p align="center">
   <img src="branding/streamdeck-keys-preview.png" width="60%" alt="Afterclip's Stream Deck keys">

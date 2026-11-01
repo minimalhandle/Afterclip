@@ -520,6 +520,25 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await sleep(23000);
     const targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
     check('hidden panel is destroyed after 20s', !targets.some((t) => PANEL_URL.test(t.url)));
+
+    // The routes behind the Stream Deck keys. Last, because they open windows the checks above expect closed.
+    const clipsFolder = path.join(output, 'Clips');
+    const lastClip = fs.readdirSync(clipsFolder).map((f) => path.join(clipsFolder, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+    const keyRoute = async (route) => (await api.call(route, 'POST')).json();
+    const clipboardBefore = powershell('Get-Clipboard -Raw');
+    check('the Copy Last Clip route finds the newest clip', (await keyRoute('/last-clip/copy')).file === lastClip);
+    const pasted = powershell('(Get-Clipboard -Format FileDropList).FullName');
+    if (clipboardBefore) execFileSync('powershell', ['-NoProfile', '-Command', '$input | Set-Clipboard'], { input: clipboardBefore, windowsHide: true });
+    check('Copy Last Clip puts it on the clipboard', pasted.toLowerCase() === lastClip.toLowerCase(), pasted);
+    check('the Open Clips Folder route finds the folder', (await keyRoute('/open/clips')).folder.toLowerCase() === clipsFolder.toLowerCase());
+    await api.call('/open/panel', 'POST');
+    await waitFor(async () => (await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()).some((t) => PANEL_URL.test(t.url)), 15000, 'the panel from its route');
+    check('the Open Afterclip route opens the panel', true);
+    check('the Edit Last Clip route finds the newest clip', (await keyRoute('/last-clip/edit')).file === lastClip);
+    editor?.close();
+    editor = await Page.open(/editor.html/);
+    await waitFor(() => editor.eval("document.querySelectorAll('.segment').length >= 1"), 10000, 'the last clip in the editor');
+    check('it opens in the editor', true);
   } catch (e) {
     const pages = await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json()).then((l) => l.map((t) => t.url).join(', ')).catch((err) => err.message);
     const uiLog = path.join(session.home, 'ui.log');

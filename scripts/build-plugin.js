@@ -27,7 +27,7 @@ const action = (name, title, tooltip, extra = {}) => ({
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.5.0.0';
+manifest.Version = '0.6.0.0';
 manifest.Actions = [
   ...LENGTHS.map(([n, unit]) => action(`save-${n}-${unit}`, `Save Last ${n} ${unit === 'sec' ? 'Sec' : 'Min'}`, `Save the last ${n} ${unit === 'sec' ? 'seconds' : n === 1 ? 'minute' : 'minutes'} of your buffer.`)),
   action('save-full', 'Save Full Buffer', 'Save everything in your buffer.'),
@@ -36,6 +36,10 @@ manifest.Actions = [
   action('clean-mic', 'Clean Mic', 'Turn noise suppression and the noise gate on or off for your mic in clips.'),
   action('marker', 'Add Marker', 'Mark this moment in the running recording.'),
   action('clip', 'Save Custom Length', "Save a length you choose in the key's settings.", { PropertyInspectorPath: 'ui/clip.html' }),
+  action('open-panel', 'Open Afterclip', "Open Afterclip's panel."),
+  action('open-clips', 'Open Clips Folder', 'Open the folder your clips are saved in.'),
+  action('edit-last', 'Edit Last Clip', 'Open your newest clip in the editor.'),
+  action('copy-last', 'Copy Last Clip', 'Copy your newest clip, ready to paste into a chat or another app.'),
 ];
 fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -51,6 +55,10 @@ for (const [name, list, face] of [
   ['clean-mic', 'N', { symbol: 'clean', small: 'CLEAN MIC' }],
   ['marker', 'K', { symbol: 'marker', small: 'MARKER' }],
   ['clip', 'C', { big: '30', small: 'SEC' }],
+  ['open-panel', 'O', { symbol: 'panel', small: 'OPEN' }],
+  ['open-clips', 'L', { symbol: 'folder', small: 'CLIPS' }],
+  ['edit-last', 'E', { symbol: 'edit', small: 'EDIT LAST' }],
+  ['copy-last', 'P', { symbol: 'copy', small: 'COPY LAST' }],
 ]) {
   fs.writeFileSync(path.join(imgs, `action-${name}.svg`), listIcon(list));
   fs.writeFileSync(path.join(imgs, `${name}.svg`), keySvg(face));

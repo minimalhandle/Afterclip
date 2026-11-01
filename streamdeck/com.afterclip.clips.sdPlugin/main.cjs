@@ -1,7 +1,7 @@
 // Stream Deck launches this with: -port <n> -pluginUUID <id> -registerEvent <name> -info <json>
 const fs = require('node:fs');
 const path = require('node:path');
-const { keySvg } = require('./key-art.cjs');
+const { keySvg, confirmSvg } = require('./key-art.cjs');
 
 const arg = (name) => process.argv[process.argv.indexOf(`-${name}`) + 1];
 const API = process.env.AFTERCLIP_API ?? 'http://127.0.0.1:4467';
@@ -11,12 +11,30 @@ const REQUEST_TIMEOUT_MS = 90_000; // Saving a long buffer takes a moment.
 const STATUS_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
 const DEFAULT_CUSTOM_SECONDS = 30;
+// The saved animation. Fast enough to read as motion, without flooding the hardware.
+const CONFIRM_FRAMES = 9;
+const CONFIRM_FRAME_MS = 70;
+const CONFIRM_HOLD_MS = 650;
+const PULSE_MS = 220;
+const FAIL_HOLD_MS = 1200;
 
 const RECORD = 'com.afterclip.clips.record';
 const MIC = 'com.afterclip.clips.mic';
 const CLEAN = 'com.afterclip.clips.clean-mic';
 const MARKER = 'com.afterclip.clips.marker';
 const SAVE_FULL = 'com.afterclip.clips.save-full';
+const OPEN_PANEL = 'com.afterclip.clips.open-panel';
+const OPEN_CLIPS = 'com.afterclip.clips.open-clips';
+const EDIT_LAST = 'com.afterclip.clips.edit-last';
+const COPY_LAST = 'com.afterclip.clips.copy-last';
+// Keys that do one thing and don't depend on the capture state.
+const SIMPLE_KEYS = {
+  [OPEN_PANEL]: { route: '/open/panel', symbol: 'panel', small: 'OPEN' },
+  [OPEN_CLIPS]: { route: '/open/clips', symbol: 'folder', small: 'CLIPS' },
+  [EDIT_LAST]: { route: '/last-clip/edit', symbol: 'edit', small: 'EDIT LAST' },
+  [COPY_LAST]: { route: '/last-clip/copy', symbol: 'copy', small: 'COPY LAST', confirm: 'COPIED' },
+};
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /** The length built into an action's UUID, such as save-15-sec, or null if it doesn't have one. */
 function fixedSeconds(action) {
@@ -34,7 +52,7 @@ async function call(method, route, timeout = REQUEST_TIMEOUT_MS) {
   const tokenFile = TOKEN_FILES.find((file) => fs.existsSync(file)) ?? TOKEN_FILES[0];
   const token = fs.readFileSync(tokenFile, 'utf8').trim(); // Read each time: Afterclip may have just created it.
   const res = await fetch(API + route, { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeout) });
-  if (!res.ok) throw new Error(`Afterclip returned ${res.status}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Afterclip returned ${res.status}`);
   return res.json();
 }
 
@@ -47,6 +65,8 @@ function lengthFace(seconds) {
 }
 
 function faceFor(key) {
+  const simple = SIMPLE_KEYS[key.action];
+  if (simple) return { symbol: simple.symbol, small: status ? simple.small : 'OFF', tone: status ? 'normal' : 'off' };
   if (key.action === RECORD) {
     if (!status) return { symbol: 'record', small: 'OFF', tone: 'off' };
     return status.recording ? { symbol: 'stop', small: 'STOP', tone: 'active' } : { symbol: 'record', small: 'REC' };
@@ -71,7 +91,7 @@ function faceFor(key) {
 
 function draw(context) {
   const key = keys.get(context);
-  if (!key) return;
+  if (!key || key.playing) return;
   const picture = image(faceFor(key));
   // Only sends a change, because this runs every poll and the hardware doesn't need the traffic.
   if (picture !== key.drawn) {
@@ -81,6 +101,41 @@ function draw(context) {
 }
 
 const drawAll = () => { for (const context of keys.keys()) draw(context); };
+
+/** Shows a run of pictures on a key, then returns it to its live face. A newer run replaces this one. */
+async function play(context, pictures) {
+  const key = keys.get(context);
+  if (!key) return;
+  key.run = (key.run ?? 0) + 1;
+  const run = key.run;
+  key.playing = true;
+  for (const [picture, ms] of pictures) {
+    if (keys.get(context) !== key || key.run !== run) return;
+    sd('setImage', context, { image: picture });
+    await sleep(ms);
+  }
+  if (key.run !== run) return;
+  key.playing = false;
+  key.drawn = null;
+  draw(context);
+}
+
+const confirmed = (context, label) => play(context, [...Array(CONFIRM_FRAMES).keys()].map((i) => {
+  const last = i === CONFIRM_FRAMES - 1;
+  const picture = `data:image/svg+xml;charset=utf8,${encodeURIComponent(confirmSvg(label, i / (CONFIRM_FRAMES - 1), i === 0 ? 'confirmed' : undefined))}`;
+  return [picture, last ? CONFIRM_HOLD_MS : CONFIRM_FRAME_MS];
+}));
+
+/** A toggle's new state shows on the key itself, so it only needs a brief lit moment. */
+const pulsed = (context) => {
+  const key = keys.get(context);
+  if (key) play(context, [[image({ ...faceFor(key), tone: 'active', mark: 'pulsed' }), PULSE_MS]]);
+};
+
+function failed(context, action, reason) {
+  const small = !status ? 'NOT OPEN' : action === MARKER && !status.recording ? 'NO REC' : reason;
+  play(context, [[image({ symbol: 'alert', small, tone: 'fail', mark: 'failed' }), FAIL_HOLD_MS]]);
+}
 
 async function poll() {
   if (keys.size === 0) return;
@@ -96,28 +151,37 @@ const secondsFor = (action, settings) => fixedSeconds(action) ?? customSeconds(s
 
 async function press(context, action, settings) {
   const key = keys.get(context);
+  const simple = SIMPLE_KEYS[action];
+  let finish;
   try {
-    if (action === RECORD) {
-      await call('POST', '/record/toggle');
-    } else if (action === MIC) {
-      await call('POST', '/mic/toggle');
-    } else if (action === CLEAN) {
-      await call('POST', '/mic/clean');
+    if (action === RECORD || action === MIC || action === CLEAN) {
+      await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean' }[action]);
+      finish = () => pulsed(context);
     } else if (action === MARKER) {
       await call('POST', '/marker');
+      finish = () => confirmed(context, 'MARKED');
+    } else if (simple) {
+      await call('POST', simple.route);
+      // Opening a window is its own confirmation.
+      finish = simple.confirm ? () => confirmed(context, simple.confirm) : () => pulsed(context);
     } else {
       if (key?.saving) return; // A second press mid-save would save the same moment twice.
-      if (key) { key.saving = true; draw(context); }
+      if (key) {
+        key.saving = true;
+        key.run = (key.run ?? 0) + 1;
+        key.playing = false;
+        draw(context);
+      }
       await call('POST', `/clip/${secondsFor(action, settings)}`);
+      finish = () => confirmed(context, 'SAVED');
     }
-    sd('showOk', context);
-  } catch {
-    sd('showAlert', context);
-  } finally {
-    if (key) key.saving = false;
+  } catch (error) {
     await poll();
-    draw(context);
+    finish = () => failed(context, action, /No clips/.test(error.message) ? 'NO CLIPS' : 'FAILED');
   }
+  if (key) key.saving = false;
+  await poll();
+  finish();
 }
 
 ws.addEventListener('open', () => {
@@ -129,7 +193,8 @@ ws.addEventListener('message', ({ data }) => {
   const { event, action, context, payload } = JSON.parse(data);
   if (event === 'willAppear' || event === 'didReceiveSettings') {
     const existing = keys.get(context);
-    keys.set(context, { action, seconds: secondsFor(action, payload.settings), saving: existing?.saving ?? false, drawn: existing?.drawn });
+    if (existing) existing.seconds = secondsFor(action, payload.settings);
+    else keys.set(context, { action, seconds: secondsFor(action, payload.settings), saving: false, playing: false, drawn: undefined });
     draw(context);
     if (!existing) poll();
   } else if (event === 'willDisappear') {
