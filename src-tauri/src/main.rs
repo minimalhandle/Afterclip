@@ -2,6 +2,7 @@
 
 mod api;
 mod capture;
+mod elevated_task;
 mod engine;
 mod settings;
 mod win32;
@@ -531,6 +532,10 @@ fn save_settings(core: tauri::State<Shared>, payload: Settings) -> Result<Value,
     if clean.launch_on_startup != current.launch_on_startup && !api::is_test_instance() {
         win32::set_launch_on_startup(clean.launch_on_startup)?;
     }
+    // Unelevated, it can wait: an off setting never uses the task, and the next elevated start tidies it.
+    if clean.run_as_admin != current.run_as_admin && win32::is_self_elevated() {
+        sync_elevated_task(&core.ui_log, clean.run_as_admin);
+    }
     clean.save(&core.settings_file).map_err(|e| format!("Could not save settings: {e}"))?;
     let clean_size = (clean.width, clean.height, clean.fps);
     *core.settings.lock().unwrap() = clean;
@@ -562,7 +567,16 @@ fn close_panel(core: tauri::State<Shared>) {
     }
 }
 
-/// Relaunches through UAC. The buffer can't survive this, so it only ever runs from the user's click.
+/// A failure only means the next start asks through UAC again, so it's logged rather than shown.
+fn sync_elevated_task(ui_log: &Path, wanted: bool) {
+    if let Err(e) = elevated_task::sync(wanted) {
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(ui_log) {
+            let _ = writeln!(file, "{} could not update the administrator task: {e}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        }
+    }
+}
+
+/// Relaunches elevated, through the task or UAC. The buffer can't survive this, so it only ever runs from the user's click.
 /// The engine and API let go first, and come back if UAC is declined.
 #[tauri::command(async)]
 fn restart_admin(core: tauri::State<Shared>) -> Result<(), String> {
@@ -579,7 +593,8 @@ fn restart_admin(core: tauri::State<Shared>) -> Result<(), String> {
 
     core.keep_panel_open.store(true, Ordering::SeqCst);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let accepted = shell_execute("runas", exe.as_os_str(), None, std::env::current_dir().ok().as_deref());
+    let use_task = core.settings.lock().unwrap().run_as_admin;
+    let accepted = (use_task && elevated_task::start()) || shell_execute("runas", exe.as_os_str(), None, std::env::current_dir().ok().as_deref());
     core.keep_panel_open.store(false, Ordering::SeqCst);
     if accepted {
         core.quitting.store(true, Ordering::SeqCst);
@@ -688,11 +703,13 @@ fn build_window<'a>(app: &'a AppHandle, label: &str, page: &str) -> WebviewWindo
         // Hidden until the page reports it has rendered, on a dark background rather than white.
         .visible(false)
         .background_color(BACKGROUND);
-    if let Some(home) = std::env::var_os("AFTERCLIP_HOME") {
-        builder = builder.data_directory(PathBuf::from(home).join("webview"));
-    }
-    if let Ok(port) = std::env::var("AFTERCLIP_DEBUG_PORT") {
-        builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
+    if api::is_test_instance() {
+        if let Some(home) = std::env::var_os("AFTERCLIP_HOME") {
+            builder = builder.data_directory(PathBuf::from(home).join("webview"));
+        }
+        if let Ok(port) = std::env::var("AFTERCLIP_DEBUG_PORT") {
+            builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
+        }
     }
     builder
 }
@@ -888,6 +905,9 @@ mod tests {
 }
 
 fn main() {
+    if win32::is_self_elevated() {
+        elevated_task::clear_unsafe_environment();
+    }
     let mut builder = tauri::Builder::default();
     // A test copy stays separate, so running the tests can't hand over to someone's real running app.
     if !api::is_test_instance() {
@@ -921,7 +941,7 @@ fn main() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
-            let test_home = std::env::var_os("AFTERCLIP_HOME").map(PathBuf::from);
+            let test_home = std::env::var_os("AFTERCLIP_HOME").filter(|_| api::is_test_instance()).map(PathBuf::from);
             let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
             let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
             let home = test_home.clone().unwrap_or_else(|| local.join("Afterclip"));
@@ -937,14 +957,19 @@ fn main() {
             let open_at_start = !settings.start_minimized;
             let shared_settings = Arc::new(Mutex::new(settings.clone()));
 
-            // If UAC is declined, carry on unelevated. Game capture will say if it needs more.
+            // The task starts the elevated copy with no prompt. Without one it's UAC, and if that's
+            // declined, carry on unelevated. Game capture will say if it needs more.
             if settings.run_as_admin && !api::is_test_instance() && !win32::is_self_elevated() {
                 // Without this the elevated copy would see this one and quit as a second instance.
                 tauri_plugin_single_instance::destroy(&handle);
                 let exe = std::env::current_exe()?;
-                if shell_execute("runas", exe.as_os_str(), None, std::env::current_dir().ok().as_deref()) {
+                if elevated_task::start() || shell_execute("runas", exe.as_os_str(), None, std::env::current_dir().ok().as_deref()) {
                     std::process::exit(0);
                 }
+            }
+            if win32::is_self_elevated() {
+                let _ = fs::create_dir_all(&home);
+                sync_elevated_task(&home.join("ui.log"), settings.run_as_admin);
             }
 
             let events = handle.clone();
