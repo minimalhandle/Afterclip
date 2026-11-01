@@ -11,19 +11,10 @@
   ${EndIf}
 !macroend
 
-; The startup entry follows the app to where it's now installed.
-!macro NSIS_HOOK_POSTINSTALL
-  ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
-  ${If} $R0 != ""
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" `"$INSTDIR\${MAINBINARYNAME}.exe"`
-  ${EndIf}
-!macroend
-
-; An update keeps the task and startup entry. A real uninstall removes both.
+; An update keeps the task. A real uninstall removes it.
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $UpdateMode <> 1
     nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-ScheduledTask -TaskName 'Afterclip-Elevated-*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$$false"`
     Pop $R1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
   ${EndIf}
 !macroend
