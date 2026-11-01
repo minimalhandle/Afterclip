@@ -6,8 +6,9 @@ use tiny_http::{Header, Method, Response, Server};
 const DEFAULT_PORT: &str = "4467";
 
 /// True for a copy started by the tests, which must not touch a real running copy.
+/// Never while elevated: these variables redirect files and open a debug port, and anything can set them.
 pub fn is_test_instance() -> bool {
-    std::env::var_os("AFTERCLIP_HOME").is_some()
+    std::env::var_os("AFTERCLIP_HOME").is_some() && !crate::win32::is_self_elevated()
 }
 
 pub trait ApiHandlers: Send + Sync + 'static {

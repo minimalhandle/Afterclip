@@ -76,7 +76,9 @@ Afterclip checks the foreground window every second.
 2. **Fullscreen app found:** this covers exclusive and borderless fullscreen. It tries game capture, and records that app's monitor underneath so there's footage during the hook.
 3. **Hook works:** the app's picture replaces the monitor, monitor capture turns off to save GPU, and the status shows `Game`.
 4. **Hook fails:** after 10 seconds the status shows `Monitor fallback`, and it keeps retrying the hook.
-5. **Administrator:** if the app runs elevated, or the hook fails, a banner offers **Restart as administrator**. Restarting clears the buffer, so it only happens when you click it.
+5. **Administrator:** if a game runs elevated, or the hook fails, a banner offers **Restart as administrator**. Restarting clears the buffer, so it only happens when you click it.
+
+**Run as administrator** in General keeps it elevated. Windows asks once, and Afterclip then registers a scheduled task (`Afterclip-Elevated-<your SID>`) so later starts don't prompt. It only does this when installed in Program Files, which is why the installer installs there and asks for permission itself. Turning the setting off removes the task the next time Afterclip runs elevated, and uninstalling always removes it.
 
 Browsers and video players in fullscreen count as normal desktop use. Windowed games aren't detected, so they're only recorded if they're on the primary monitor.
 
@@ -131,7 +133,7 @@ Drives the real panel and editor, and reads pixels off the screen to catch blank
 npm run test:ui
 ```
 
-Set `AFTERCLIP_APP_EXE` to test a specific `afterclip.exe`. Setting `AFTERCLIP_DEBUG_PORT` opens WebView2's debugging port, which only these tests should do.
+Set `AFTERCLIP_APP_EXE` to test a specific `afterclip.exe`. Setting `AFTERCLIP_DEBUG_PORT` opens WebView2's debugging port, which only these tests should do. An elevated Afterclip ignores all of these test settings, so run the tests from a normal, non-administrator terminal.
 
 ## Licences
 
