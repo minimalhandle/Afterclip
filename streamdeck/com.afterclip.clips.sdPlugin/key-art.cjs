@@ -23,6 +23,7 @@ const SYMBOLS = {
   folder: (fill) => `<path d="M48 49a4 4 0 0 1 4-4h13l6 7h21a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H52a4 4 0 0 1-4-4z" fill="${fill}"/>`,
   edit: (fill) => `<path d="M52 42h40v42H52z" fill="none" stroke="${fill}" stroke-width="4.5" stroke-linejoin="round"/><path d="M63 42v42M81 42v42" stroke="${fill}" stroke-width="4"/><path d="M52 55h11M52 71h11M81 55h11M81 71h11" stroke="${fill}" stroke-width="3.5"/>`,
   copy: (fill, background) => `<rect x="50" y="38" width="30" height="36" rx="5" fill="none" stroke="${fill}" stroke-width="4.5"/><rect x="62" y="50" width="30" height="36" rx="5" fill="${background}" stroke="${fill}" stroke-width="4.5"/>`,
+  camera: (fill, background) => `<path d="M50 50h9l5-8h16l5 8h9a3 3 0 0 1 3 3v27a3 3 0 0 1-3 3H50a3 3 0 0 1-3-3V53a3 3 0 0 1 3-3z" fill="${fill}"/><circle cx="72" cy="65" r="10" fill="${background}"/>`,
   alert: (fill) => `<rect x="67.5" y="38" width="9" height="30" rx="4.5" fill="${fill}"/><circle cx="72" cy="79" r="5.5" fill="${fill}"/>`,
 };
 

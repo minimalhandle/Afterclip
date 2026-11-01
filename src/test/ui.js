@@ -155,7 +155,7 @@ async function main() {
     // Thumbnails live with the app's data, and only clips, recordings and a hidden .staging stay in the save folder.
     await waitFor(() => fs.existsSync(path.join(session.home, 'thumbs')) && fs.readdirSync(path.join(session.home, 'thumbs')).some((f) => f.endsWith('.jpg')), 15000, 'a thumbnail in the app data');
     check('thumbnails are kept in the app data', true);
-    check('the save folder holds only clips, recordings and .staging', fs.readdirSync(output).sort().join() === '.staging,Clips,Recordings', fs.readdirSync(output).join());
+    check('the save folder holds only clips, recordings, screenshots and .staging', fs.readdirSync(output).sort().join() === '.staging,Clips,Recordings,Screenshots', fs.readdirSync(output).join());
     check('.staging is hidden', /Hidden/.test(powershell(`(Get-Item -Force '${path.join(output, '.staging')}').Attributes`)));
     check('window data is kept in the app data', fs.existsSync(path.join(session.home, 'webview', 'EBWebView')));
 
@@ -237,7 +237,8 @@ async function main() {
       check('there is no box to type a program name', await panel.eval("!document.getElementById('profile-exe')"));
       await panel.eval(`${pickerRow}.click()`);
       check('choosing it adds the game with its name', await panel.eval(`[...document.querySelectorAll('#profiles .profile')].some((c) => c.dataset.exe === 'powershell.exe' && c.textContent.includes(${JSON.stringify(pickerTitle)}))`));
-      check('an added game leaves the picker', await panel.eval(`!${pickerRow}`));
+      await waitFor(() => panel.eval(`!${pickerRow}`), 5000, 'the added game to leave the picker');
+      check('an added game leaves the picker', true);
       await panel.eval("document.querySelector('#profiles .profile[data-exe=\"powershell.exe\"] .danger').click()");
       await waitFor(() => panel.eval(`!!${pickerRow}`), 5000, 'the removed game back in the picker');
       check('a removed game returns to the picker', true);
@@ -498,6 +499,105 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const asset = await editor.eval(`fetch(window.afterclip.videoUrl('C:\\\\Windows\\\\win.ini')).then((r) => r.status, () => 'blocked')`);
     check('video access is limited to your clips', asset !== 200, `${asset}`);
 
+    // The editor took focus above, so the panel has hidden and would be freed part way through these checks.
+    await api.call('/test/panel-hold/on', 'POST');
+    await api.call('/test/open/panel', 'POST');
+    panel.close();
+    panel = await Page.open(PANEL_URL);
+
+    // Screenshots, through the real engine: the colour card is a known green, so wrong colours or a bad frame show.
+    await panel.eval("document.getElementById('screenshot').click()");
+    const shotsFolder = path.join(output, 'Screenshots');
+    const shotName = await waitFor(() => fs.existsSync(shotsFolder) && fs.readdirSync(shotsFolder).find((n) => n.endsWith('.png')), 10000, 'the screenshot');
+    const shotFile = path.join(shotsFolder, shotName);
+    const shotInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', shotFile], { encoding: 'utf8', windowsHide: true }).stderr;
+    check('a screenshot is a PNG at the capture size', /png/.test(shotInfo) && shotInfo.includes(`${mode.width}x${mode.height}`), /Video:.*/.exec(shotInfo)?.[0]);
+    const shotPixel = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', shotFile, '-vf', 'scale=1:1:flags=area', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer', windowsHide: true }).stdout;
+    // The card is 0xff2a8c3f in ABGR, which is 3f8c2a.
+    check('a screenshot has the true colours', Math.abs(shotPixel[0] - 0x3f) < 6 && Math.abs(shotPixel[1] - 0x8c) < 6 && Math.abs(shotPixel[2] - 0x2a) < 6, [...shotPixel].join());
+    check('the frame is not left behind in staging', !fs.readdirSync(path.join(output, '.staging')).some((n) => n.endsWith('.nv12')));
+    check('the screenshot route saves one too', /\.png$/.test((await (await api.call('/screenshot', 'POST')).json()).file ?? ''));
+    await panel.eval("document.querySelector('.tab[data-kind=screenshot]').click()");
+    await waitFor(() => panel.eval("document.querySelectorAll('#media .item').length >= 1 && !!document.querySelector('#media .item img').getAttribute('src')"), 10000, 'the screenshot in its tab');
+    check('screenshots have their own tab, with thumbnails', true);
+    check('a screenshot shows no video length', await panel.eval("document.querySelector('#media .item .length').hidden"));
+    await panel.eval("document.querySelector('#media .item .more').click()");
+    const shotMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
+    check('a screenshot has no video actions', !/Edit|MB copy|vertical/.test(shotMenu) && /Send to Discord/.test(shotMenu), shotMenu);
+    await panel.eval("document.body.click(); document.querySelector('.tab[data-kind=clip]').click()");
+
+    // A vertical copy, chosen from the real menu.
+    const beforeVertical = new Set(fs.readdirSync(clips));
+    await panel.eval("document.querySelector('#media .item .more').click()");
+    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Make vertical copy').click()");
+    const verticalName = await waitFor(() => fs.readdirSync(clips).find((n) => !beforeVertical.has(n) && /_vertical\.mp4$/.test(n)), 30000, 'the vertical copy');
+    await waitFor(() => panel.eval("/vertical copy is ready/.test(document.getElementById('banner').textContent)"), 30000, 'the vertical copy to finish');
+    const verticalInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', path.join(clips, verticalName)], { encoding: 'utf8', windowsHide: true }).stderr;
+    const verticalSize = /(\d{3,4})x(\d{3,4})/.exec(verticalInfo);
+    check('a vertical copy is 9:16',Math.abs(verticalSize[1] / verticalSize[2] - 9 / 16) < 0.01 && +verticalSize[2] === Math.min(mode.height, 1920), /Video:.*/.exec(verticalInfo)?.[0]);
+
+    // Send to Discord, against a pretend Discord on this PC, since a test must not post anywhere real.
+    const uploads = [];
+    let discordAnswer = 204;
+    const discordServer = http.createServer((req, res) => {
+      const parts = [];
+      req.on('data', (d) => parts.push(d));
+      req.on('end', () => {
+        const body = Buffer.concat(parts);
+        uploads.push({ type: req.headers['content-type'], size: body.length, name: /filename="?([^"\r\n]+)/.exec(body.subarray(0, 1000).toString('latin1'))?.[1], field: /name="([^"]+)"/.exec(body.subarray(0, 1000).toString('latin1'))?.[1], fileType: /Content-Type: ([^\r\n]+)/.exec(body.subarray(0, 1000).toString('latin1'))?.[1] });
+        res.statusCode = discordAnswer;
+        res.end();
+      });
+    });
+    await new Promise((resolve) => discordServer.listen(0, '127.0.0.1', resolve));
+    const discordFile = fs.readdirSync(clips).map((n) => path.join(clips, n)).find((f) => f.endsWith('.mp4'));
+    const sendToDiscord = (file) => panel.eval(`window.afterclip.invoke('send-to-discord', ${JSON.stringify(file)}).then(() => 'sent', (e) => e.message)`);
+    check('Send to Discord asks for a webhook first', /Add your Discord webhook/.test(await sendToDiscord(discordFile)));
+    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=sharing]').click()");
+    await panel.eval("(() => { const f = document.getElementById('discordWebhook'); f.value = 'https://example.com/not-discord'; f.dispatchEvent(new Event('input')); })()");
+    check('the panel says when a webhook looks wrong', await panel.eval("document.getElementById('discord-note').classList.contains('warn')"));
+    await waitFor(() => JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).discordWebhook === 'https://example.com/not-discord', 5000, 'the wrong webhook to save');
+    check('a webhook that is not Discord gets nothing', /Add your Discord webhook/.test(await sendToDiscord(discordFile)) && uploads.length === 0);
+    const webhook = `http://127.0.0.1:${discordServer.address().port}/api/webhooks/1/secret-token`;
+    await panel.eval(`(() => { const f = document.getElementById('discordWebhook'); f.value = ${JSON.stringify(webhook)}; f.dispatchEvent(new Event('input')); })()`);
+    await waitFor(() => JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).discordWebhook === webhook, 5000, 'the webhook to save');
+    check('Send to Discord posts the clip', (await sendToDiscord(discordFile)) === 'sent' && uploads.at(-1)?.name === path.basename(discordFile), JSON.stringify(uploads.at(-1)));
+    check('it posts the way Discord expects', uploads.at(-1).field === 'files[0]' && /multipart\/form-data/.test(uploads.at(-1).type) && uploads.at(-1).fileType === 'video/mp4', JSON.stringify(uploads.at(-1)));
+    check('a screenshot posts as an image', (await sendToDiscord(shotFile)) === 'sent' && uploads.at(-1).fileType === 'image/png', JSON.stringify(uploads.at(-1)));
+    const bigClip = path.join(clips, 'Big clip.mp4');
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=15', '-f', 'lavfi', '-i', 'sine=f=440:d=15', '-c:v', 'libx264', '-b:v', '12M', '-c:a', 'aac', bigClip], { windowsHide: true });
+    check('the big test clip is over the limit', fs.statSync(bigClip).size > 10 * 1024 * 1024, `${Math.round(fs.statSync(bigClip).size / 1e6)} MB`);
+    const beforeBig = fs.readdirSync(clips).sort().join();
+    const sentBig = await sendToDiscord(bigClip);
+    check('a clip over the limit goes as a smaller copy', sentBig === 'sent' && uploads.at(-1).size <= 10.5 * 1024 * 1024 && /_10MB\.mp4$/.test(uploads.at(-1).name), `${sentBig} ${JSON.stringify(uploads.at(-1))}`);
+    check('that smaller copy is not kept', fs.readdirSync(clips).sort().join() === beforeBig);
+    discordAnswer = 404;
+    const noWebhook = await sendToDiscord(discordFile);
+    check('a deleted webhook gets a clear message', /doesn't recognise this webhook/.test(noWebhook), noWebhook);
+    discordServer.closeAllConnections();
+    await new Promise((resolve) => discordServer.close(resolve));
+    const offline = await sendToDiscord(discordFile);
+    check('a failed upload never shows the secret address', /Couldn't reach Discord/.test(offline) && !offline.includes('secret-token'), offline);
+    check('the secret address stays out of the log', !fs.existsSync(path.join(session.home, 'ui.log')) || !fs.readFileSync(path.join(session.home, 'ui.log'), 'utf8').includes('secret-token'));
+    await panel.eval("document.querySelector('.tab[data-kind=clip]').click()");
+
+    // Cleaning up by age: an old clip goes, a new one stays, and so does an old favourite.
+    const longAgo = new Date(Date.now() - 45 * 86400000);
+    const oldClip = path.join(clips, 'Old clip.mp4');
+    const oldFavourite = path.join(clips, 'Old favourite.mp4');
+    fs.copyFileSync(discordFile, oldClip);
+    fs.copyFileSync(discordFile, oldFavourite);
+    fs.utimesSync(oldClip, longAgo, longAgo);
+    fs.utimesSync(oldFavourite, longAgo, longAgo);
+    await panel.eval(`window.afterclip.invoke('set-favourite', { file: ${JSON.stringify(oldFavourite)}, on: true })`);
+    await panel.eval("(() => { const s = document.getElementById('deleteAfterDays'); s.value = '30'; s.dispatchEvent(new Event('change')); })()");
+    await waitFor(() => !fs.existsSync(oldClip), 15000, 'the old clip to be cleaned up');
+    check('a clip older than the setting goes to the Recycle Bin', true);
+    check('an old favourite is kept', fs.existsSync(oldFavourite));
+    check('a new clip is kept', fs.existsSync(discordFile));
+    await panel.eval("(() => { const s = document.getElementById('deleteAfterDays'); s.value = '0'; s.dispatchEvent(new Event('change')); })()");
+    await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click()");
+
     // The updater, against a pretend release on this PC. The test copy stops short of running the installer.
     // Normal builds only accept updates over HTTPS, so this needs the build described in the README.
     if (process.env.AFTERCLIP_TEST_UPDATER) {
@@ -543,6 +643,8 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
       updateServer.close();
     }
 
+    await api.call('/test/panel-hold/off', 'POST');
+    await panel.eval("document.getElementById('open-editor').click()");
     panel.close(); panel = null;    console.log('  waiting for the hidden panel to free its memory');
     await sleep(23000);
     const targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();

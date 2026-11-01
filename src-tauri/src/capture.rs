@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use crate::win32::{active_endpoints_of, clean_title, foreground_fullscreen_app, init_com_for_thread, is_self_elevated, window_still_open, FullscreenApp};
+use crate::win32::{active_endpoints_of, clean_title, foreground_game_app, init_com_for_thread, is_self_elevated, window_still_open, FullscreenApp};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,7 +14,7 @@ const AUDIO_CHECK_EVERY: u32 = 3;
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureState {
-    /// desktop: primary monitor. detecting: fullscreen app found, hooking. game: hooked. fallback: hook failed, recording its monitor.
+    /// desktop: primary monitor. detecting: game found, hooking. game: hooked. fallback: hook failed, recording its monitor.
     pub mode: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
@@ -28,14 +28,14 @@ pub struct CaptureState {
     pub elevated: bool,
 }
 
-/// Chooses what to record. It always tries the fullscreen app with game capture while its monitor
-/// records underneath, so footage exists during the hook and if the hook never lands.
+/// Chooses what to record. It always tries the fullscreen app, or a game you've added in any window,
+/// with game capture while its monitor records underneath, so footage exists during the hook and if the hook never lands.
 pub struct CaptureManager {
     state: Mutex<CaptureState>,
 }
 
 impl CaptureManager {
-    pub fn start(engine: Arc<Engine>, enabled: impl Fn() -> bool + Send + 'static, on_change: impl Fn(&CaptureState) + Send + 'static) -> Arc<Self> {
+    pub fn start(engine: Arc<Engine>, enabled: impl Fn() -> bool + Send + 'static, added_games: impl Fn() -> Vec<String> + Send + 'static, on_change: impl Fn(&CaptureState) + Send + 'static) -> Arc<Self> {
         let manager = Arc::new(CaptureManager {
             state: Mutex::new(CaptureState {
                 mode: "desktop",
@@ -53,7 +53,7 @@ impl CaptureManager {
             loop {
                 thread::sleep(POLL);
                 if engine.status().state == "ready" && enabled() {
-                    me.tick(&engine, &mut watcher, &on_change);
+                    me.tick(&engine, &mut watcher, &added_games(), &on_change);
                 }
             }
         });
@@ -73,7 +73,7 @@ impl CaptureManager {
         }
     }
 
-    fn tick(&self, engine: &Engine, w: &mut Watcher, on_change: &impl Fn(&CaptureState)) {
+    fn tick(&self, engine: &Engine, w: &mut Watcher, added_games: &[String], on_change: &impl Fn(&CaptureState)) {
         // Every engine start rebuilds the scene on the desktop, so detection starts over too.
         if engine.generation() != w.generation {
             w.generation = engine.generation();
@@ -90,7 +90,7 @@ impl CaptureManager {
                 s.suggest_admin = false;
             });
         }
-        let found = foreground_fullscreen_app();
+        let found = foreground_game_app(added_games);
         // Needs two polls in a row, so a window flashing past doesn't reconfigure capture.
         let stable = found.as_ref().filter(|f| Some(f.hwnd) == w.candidate);
         w.candidate = found.as_ref().map(|f| f.hwnd);

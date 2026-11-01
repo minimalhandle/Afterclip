@@ -24,6 +24,7 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn toggle_mic(&self) -> Result<Value, String>;
     fn toggle_clean_mic(&self) -> Result<Value, String>;
     fn add_marker(&self) -> Result<Value, String>;
+    fn screenshot(&self) -> Result<Value, String>;
     fn open_panel(&self) -> Result<Value, String>;
     fn open_clips_folder(&self) -> Result<Value, String>;
     fn edit_last_clip(&self) -> Result<Value, String>;
@@ -74,6 +75,7 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
         (Method::Post, "/mic/toggle") => handlers.toggle_mic(),
         (Method::Post, "/mic/clean") => handlers.toggle_clean_mic(),
         (Method::Post, "/marker") => handlers.add_marker(),
+        (Method::Post, "/screenshot") => handlers.screenshot(),
         (Method::Post, "/open/panel") => handlers.open_panel(),
         (Method::Post, "/open/clips") => handlers.open_clips_folder(),
         (Method::Post, "/last-clip/edit") => handlers.edit_last_clip(),

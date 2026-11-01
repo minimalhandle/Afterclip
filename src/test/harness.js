@@ -58,7 +58,7 @@ async function startApp(settings) {
   const output = path.join(home, 'out');
   const userData = path.join(home, 'userData');
   fs.mkdirSync(userData, { recursive: true });
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ outputDir: output, ...settings }));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ outputDir: output, screenshotHotkey: '', ...settings }));
   // AFTERCLIP_HOME makes this a separate test copy, with its own folders and port, beside any real running app.
   const app = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, AFTERCLIP_HOME: home, AFTERCLIP_API_PORT: TEST_PORT } });
 

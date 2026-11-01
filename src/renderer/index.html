@@ -60,6 +60,9 @@
         <button id="marker" class="mic-toggle" aria-label="Add marker to recording" title="Add marker to recording" hidden>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 21V4M6 4h11l-2.5 4L17 12H6"/></svg>
         </button>
+        <button id="screenshot" class="mic-toggle" aria-label="Take a screenshot" title="Take a screenshot">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        </button>
         <button id="record" class="record-toggle">Record</button>
       </div>
     </div>
@@ -96,6 +99,7 @@
   <div class="tabs" role="tablist">
     <button class="tab active" data-kind="clip" role="tab">Clips</button>
     <button class="tab" data-kind="recording" role="tab">Recordings</button>
+    <button class="tab" data-kind="screenshot" role="tab">Screenshots</button>
     <button id="view-all" class="tab-action">View all</button>
     <button id="open-editor" class="tab-action" hidden>Open editor</button>
   </div>
@@ -283,6 +287,10 @@
         <div class="setting-text"><div class="setting-name">Add marker</div><div class="setting-desc">Mark a moment in a running recording.</div></div>
         <input id="markerHotkey" readonly aria-label="Add marker hotkey" class="key-field">
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Screenshot</div><div class="setting-desc">Save a picture of what's being captured.</div></div>
+        <input id="screenshotHotkey" readonly aria-label="Screenshot hotkey" class="key-field">
+      </div>
     </div>
   </div>
 
@@ -315,6 +323,10 @@
         <div class="setting-text"><div class="setting-name">Add marker</div></div>
         <select id="controllerMarker" class="controller-combo" aria-label="Add marker"></select>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Screenshot</div></div>
+        <select id="controllerScreenshot" class="controller-combo" aria-label="Screenshot"></select>
+      </div>
     </div>
     <p class="note">Works with DualSense, Xbox and Switch Pro controllers, while any game is running. Your game receives these presses too, so R3 might also melee or crouch. Switch Pro needs Bluetooth, unless Steam is running.</p>
   </div>
@@ -333,7 +345,7 @@
   </div>
 
   <div class="pane" data-pane="games" hidden>
-    <p class="note games-note">Different settings for each game, used while it runs. A change that needs it restarts capture when the game opens, which clears the buffer. Settings go back 10 minutes after the game closes, so you can still clip its last moments.</p>
+    <p class="note games-note">Add a game to have it captured even in a window, and to give it its own settings, used while it runs. A change that needs it restarts capture when the game opens, which clears the buffer. Settings go back 10 minutes after the game closes, so you can still clip its last moments.</p>
     <div id="profiles"></div>
     <div class="card">
       <div class="card-title">Add a game</div>
@@ -357,10 +369,21 @@
     </div>
   </div>
 
+  <div class="pane" data-pane="sharing" hidden>
+    <div class="card">
+      <div class="card-title">Discord</div>
+      <div class="setting wide">
+        <div class="setting-text"><div class="setting-name">Webhook address</div><div id="discord-note" class="setting-desc">Lets Send to Discord post to one channel. In Discord, open the channel's settings, then Integrations, then Webhooks, and copy the address here.</div></div>
+        <input id="discordWebhook" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…" aria-label="Discord webhook address">
+      </div>
+    </div>
+    <p class="note">Anyone with this address can post to that channel, so it's hidden here. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
+  </div>
+
   <div class="pane" data-pane="storage" hidden>
     <div class="card">
       <div class="setting wide">
-        <div class="setting-text"><div class="setting-name">Save location</div><div class="setting-desc">Clips and recordings are saved here.</div></div>
+        <div class="setting-text"><div class="setting-name">Save location</div><div class="setting-desc">Clips, recordings and screenshots are saved here.</div></div>
         <div class="row"><input id="outputDir" readonly aria-label="Save location"><button id="pick-folder" class="small">Change</button></div>
       </div>
       <div class="setting">
@@ -368,6 +391,13 @@
         <select id="storageLimitGb" aria-label="Storage limit">
           <option value="0">No limit</option><option value="10">10 GB</option><option value="25">25 GB</option><option value="50">50 GB</option>
           <option value="100">100 GB</option><option value="250">250 GB</option><option value="500">500 GB</option><option value="1000">1 TB</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clean up old files</div><div class="setting-desc">Anything older than this goes to the Recycle Bin, starting straight away. Favourites are never touched.</div></div>
+        <select id="deleteAfterDays" aria-label="Clean up old files">
+          <option value="0">Keep everything</option><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option>
+          <option value="60">After 60 days</option><option value="90">After 90 days</option><option value="180">After 180 days</option><option value="365">After a year</option>
         </select>
       </div>
       <p id="storage-used" class="note"></p>

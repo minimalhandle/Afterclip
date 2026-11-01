@@ -4,6 +4,7 @@ mod api;
 mod capture;
 mod controller;
 mod data_move;
+mod discord;
 mod elevated_task;
 mod engine;
 mod library;
@@ -15,7 +16,7 @@ use api::{start_api, ApiHandlers};
 use base64::Engine as _;
 use capture::CaptureManager;
 use engine::{ClipResult, Engine, EngineEvent};
-use library::{clean_file_stem, over_limit, LibraryData, StoredClip};
+use library::{clean_file_stem, older_than, over_limit, LibraryData, StoredClip};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use settings::{estimate_buffer_mb, Settings};
@@ -132,7 +133,7 @@ impl Core {
                 }));
                 if let Some(core) = self.app.try_state::<Shared>() {
                     let core: Shared = Arc::clone(&core);
-                    thread::spawn(move || enforce_storage_limit(&core));
+                    thread::spawn(move || enforce_storage_rules(&core));
                 }
                 Ok(result)
             }
@@ -224,6 +225,28 @@ impl Core {
         }
     }
 
+    fn screenshot(&self) -> Result<PathBuf, String> {
+        match self.engine.screenshot() {
+            Ok(file) => {
+                self.tone(&[1320.0]);
+                if self.settings.lock().unwrap().toast_enabled {
+                    win32::show_toast("Screenshot saved");
+                }
+                let _ = self.app.emit("feedback", json!({ "kind": "screenshot", "ok": true, "file": file }));
+                if let Some(core) = self.app.try_state::<Shared>() {
+                    let core: Shared = Arc::clone(&core);
+                    thread::spawn(move || enforce_storage_rules(&core));
+                }
+                Ok(file)
+            }
+            Err(message) => {
+                self.tone(&[220.0, 220.0]);
+                let _ = self.app.emit("feedback", json!({ "kind": "screenshot", "ok": false, "message": message }));
+                Err(message)
+            }
+        }
+    }
+
     fn capture_state(&self) -> Value {
         self.capture.get().map(|c| json!(c.state())).unwrap_or(json!({ "mode": "desktop" }))
     }
@@ -233,6 +256,7 @@ impl Core {
         let scope = self.app.asset_protocol_scope();
         let _ = scope.allow_directory(self.engine.clips_dir(), false);
         let _ = scope.allow_directory(self.engine.recordings_dir(), false);
+        let _ = scope.allow_directory(self.engine.screenshots_dir(), false);
     }
 }
 
@@ -253,6 +277,9 @@ impl ApiHandlers for Api {
     }
     fn add_marker(&self) -> Result<Value, String> {
         self.0.add_marker().map(|number| json!({ "marker": number }))
+    }
+    fn screenshot(&self) -> Result<Value, String> {
+        self.0.screenshot().map(|file| json!({ "file": file }))
     }
     fn open_panel(&self) -> Result<Value, String> {
         show_panel(&self.0);
@@ -354,6 +381,10 @@ fn register_hotkeys(core: &Shared) {
         let core = Arc::clone(core);
         thread::spawn(move || { let _ = core.add_marker(); });
     }));
+    register(&settings.screenshot_hotkey, Box::new(|core| {
+        let core = Arc::clone(core);
+        thread::spawn(move || { let _ = core.screenshot(); });
+    }));
     *core.hotkey_failures.lock().unwrap() = failures;
 }
 
@@ -384,13 +415,14 @@ fn list_media(core: &Core) -> Vec<Media> {
     let active = core.engine.active_recording();
     let library = core.library.lock().unwrap();
     let mut media = Vec::new();
-    for (dir, kind) in [(core.engine.clips_dir(), "clip"), (core.engine.recordings_dir(), "recording")] {
+    const VIDEOS: &[&str] = &["mp4", "mkv", "mov"];
+    for (dir, kind, extensions) in [(core.engine.clips_dir(), "clip", VIDEOS), (core.engine.recordings_dir(), "recording", VIDEOS), (core.engine.screenshots_dir(), "screenshot", &["png"])] {
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_video = path.extension().and_then(|e| e.to_str())
-                .is_some_and(|e| ["mp4", "mkv", "mov"].contains(&e.to_lowercase().as_str()));
-            if !is_video || active.as_deref() == Some(path.as_path()) {
+            let wanted = path.extension().and_then(|e| e.to_str())
+                .is_some_and(|e| extensions.contains(&e.to_lowercase().as_str()));
+            if !wanted || active.as_deref() == Some(path.as_path()) {
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };
@@ -415,24 +447,33 @@ fn last_clip(core: &Shared) -> Result<String, String> {
     list_media(core).into_iter().find(|m| m.kind == "clip").map(|m| m.file).ok_or_else(|| "No clips yet".to_string())
 }
 
-/// Keeps clips and recordings under the chosen size. Runs after saves, and regularly for recordings.
-fn enforce_storage_limit(core: &Shared) {
-    let limit_gb = core.settings.lock().unwrap().storage_limit_gb;
-    if limit_gb <= 0.0 {
+/// Applies the chosen age and size limits. Runs after saves, and regularly for recordings and for clips getting older.
+fn enforce_storage_rules(core: &Shared) {
+    let (limit_gb, days) = {
+        let settings = core.settings.lock().unwrap();
+        (settings.storage_limit_gb, settings.delete_after_days)
+    };
+    if limit_gb <= 0.0 && days <= 0 {
         return;
     }
     let _one_at_a_time = core.storage_lock.lock().unwrap();
-    let clips = list_media(core).into_iter().map(|m| StoredClip {
+    let clips: Vec<StoredClip> = list_media(core).into_iter().map(|m| StoredClip {
         path: PathBuf::from(m.file),
         size: m.size,
         modified: m.mtime,
         favourite: m.favourite,
     }).collect();
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
+    let mut chosen = if days > 0 { older_than(&clips, days, now_ms) } else { Vec::new() };
+    if limit_gb > 0.0 {
+        let left = clips.into_iter().filter(|c| !chosen.contains(&c.path)).collect();
+        chosen.extend(over_limit(left, (limit_gb * 1e9) as u64));
+    }
     let mut removed = 0;
-    for path in over_limit(clips, (limit_gb * 1e9) as u64) {
+    for path in chosen {
         match remove_media(core, &path) {
             Ok(()) => removed += 1,
-            Err(e) => core.log_ui(&format!("storage limit could not remove {}: {e}", path.display())),
+            Err(e) => core.log_ui(&format!("storage rules could not remove {}: {e}", path.display())),
         }
     }
     if removed > 0 {
@@ -484,7 +525,7 @@ fn watch_games(core: Shared) {
         storage_polls += 1;
         if storage_polls >= STORAGE_CHECK_POLLS {
             storage_polls = 0;
-            enforce_storage_limit(&core);
+            enforce_storage_rules(&core);
         }
         let base = core.settings.lock().unwrap().clone();
         let game = running_game(&core);
@@ -547,7 +588,8 @@ fn own_media(core: &Core, file: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(file);
     let traversal = path.components().any(|c| matches!(c, Component::ParentDir));
     let parent = path.parent().map(Path::to_path_buf);
-    if traversal || (parent != Some(core.engine.clips_dir()) && parent != Some(core.engine.recordings_dir())) {
+    let own_folder = [core.engine.clips_dir(), core.engine.recordings_dir(), core.engine.screenshots_dir()].into_iter().any(|dir| parent.as_ref() == Some(&dir));
+    if traversal || !own_folder {
         return Err("Not a Afterclip file".into());
     }
     Ok(path)
@@ -661,6 +703,11 @@ fn toggle_clean_mic(core: tauri::State<Shared>) -> Result<bool, String> {
 #[tauri::command(async)]
 fn add_marker(core: tauri::State<Shared>) -> Result<u64, String> {
     core.add_marker()
+}
+
+#[tauri::command(async)]
+fn screenshot(core: tauri::State<Shared>) -> Result<String, String> {
+    core.screenshot().map(|file| file.to_string_lossy().into_owned())
 }
 
 #[derive(Deserialize)]
@@ -788,7 +835,7 @@ fn shrink_clip(core: tauri::State<Shared>, payload: ShrinkArgs) -> Result<String
                 win32::show_toast(&format!("{} MB copy ready", payload.megabytes));
             }
             let _ = core.app.emit("feedback", json!({ "kind": "shrunk", "ok": true, "file": output, "megabytes": payload.megabytes }));
-            enforce_storage_limit(&core);
+            enforce_storage_rules(&core);
             Ok(output.to_string_lossy().into_owned())
         }
         Err(message) => {
@@ -801,6 +848,67 @@ fn shrink_clip(core: tauri::State<Shared>, payload: ShrinkArgs) -> Result<String
 #[tauri::command(async)]
 fn clip_tracks(core: tauri::State<Shared>, payload: String) -> Result<i64, String> {
     core.engine.track_count(&own_media(&core, &payload)?)
+}
+
+/// Makes a 9:16 copy for phones. The original is never changed.
+#[tauri::command(async)]
+fn vertical_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
+    let core: Shared = Arc::clone(&core);
+    let path = own_media(&core, &payload)?;
+    let toast = core.settings.lock().unwrap().toast_enabled;
+    match core.engine.make_vertical(&path) {
+        Ok(output) => {
+            if toast {
+                win32::show_toast("Vertical copy ready");
+            }
+            let _ = core.app.emit("feedback", json!({ "kind": "vertical", "ok": true, "file": output }));
+            enforce_storage_rules(&core);
+            Ok(output.to_string_lossy().into_owned())
+        }
+        Err(message) => {
+            let _ = core.app.emit("feedback", json!({ "kind": "vertical", "ok": false, "message": message }));
+            Err(message)
+        }
+    }
+}
+
+/// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept.
+fn upload_to_discord(core: &Core, webhook: &str, path: &Path) -> Result<(), String> {
+    if !discord::is_webhook(webhook, api::is_test_instance()) {
+        return Err("Add your Discord webhook in Settings, under Sharing.".into());
+    }
+    let size = fs::metadata(path).map_err(|e| format!("Couldn't read this file: {e}"))?.len();
+    if size <= discord::MAX_UPLOAD_BYTES {
+        return discord::send(webhook, path);
+    }
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+        return Err("This screenshot is too big for Discord.".into());
+    }
+    let copy = core.engine.shrink(path, discord::MAX_UPLOAD_BYTES / 1024 / 1024).map_err(|_| "This is too long to fit Discord's 10 MB limit. Trim it first.".to_string())?;
+    let sent = discord::send(webhook, &copy);
+    let _ = fs::remove_file(&copy);
+    sent
+}
+
+/// Reported as an event, because the panel may have closed by the time a long clip finishes.
+#[tauri::command(async)]
+fn send_to_discord(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
+    let path = own_media(&core, &payload)?;
+    let (webhook, toast) = {
+        let settings = core.settings.lock().unwrap();
+        (settings.discord_webhook.clone(), settings.toast_enabled)
+    };
+    let sent = upload_to_discord(&core, &webhook, &path);
+    match &sent {
+        Ok(()) => {
+            if toast {
+                win32::show_toast("Sent to Discord");
+            }
+            let _ = core.app.emit("feedback", json!({ "kind": "discord", "ok": true }));
+        }
+        Err(message) => { let _ = core.app.emit("feedback", json!({ "kind": "discord", "ok": false, "message": message })); }
+    }
+    sent
 }
 
 #[tauri::command(async)]
@@ -834,6 +942,8 @@ fn thumbnail(core: tauri::State<Shared>, payload: String) -> Option<Value> {
     }
     let duration = match fs::read_to_string(&length).ok().and_then(|t| t.trim().parse::<f64>().ok()) {
         Some(seconds) => seconds,
+        // A picture has no length to show.
+        None if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) => 0.0,
         None => {
             let seconds = core.engine.duration(&path).ok()?;
             let _ = fs::write(&length, seconds.to_string());
@@ -924,7 +1034,7 @@ fn save_settings(core: tauri::State<Shared>, payload: Settings) -> Result<Value,
     }
     {
         let again = Arc::clone(&core);
-        thread::spawn(move || enforce_storage_limit(&again));
+        thread::spawn(move || enforce_storage_rules(&again));
     }
     let failures = core.hotkey_failures.lock().unwrap().clone();
     Ok(json!({ "restarted": restart, "hotkeyFailures": failures, "width": clean_size.0, "height": clean_size.1, "fps": clean_size.2 }))
@@ -1017,7 +1127,7 @@ fn export_edit(core: tauri::State<Shared>, payload: ExportArgs) -> Result<String
     }
     let file = core.engine.export_segments(&segments, &payload.gains)?;
     let _ = core.app.emit("feedback", json!({ "kind": "exported", "ok": true, "file": file }));
-    enforce_storage_limit(&core);
+    enforce_storage_rules(&core);
     Ok(file.to_string_lossy().into_owned())
 }
 
@@ -1376,7 +1486,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, shrink_clip, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, shrink_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {
@@ -1475,9 +1585,11 @@ fn main() {
             });
             let capture_events = handle.clone();
             let detection_settings = Arc::clone(&shared_settings);
+            let profile_settings = Arc::clone(&shared_settings);
             let manager = CaptureManager::start(
                 Arc::clone(&engine),
                 move || !detection_settings.lock().unwrap().test_pattern,
+                move || profile_settings.lock().unwrap().game_profiles.iter().map(|p| p.exe.clone()).collect(),
                 move |state| { let _ = capture_events.emit("capture", state); },
             );
             let _ = core.capture.set(manager);
@@ -1496,6 +1608,7 @@ fn main() {
                         record: controller::button(&s.controller_record),
                         mic: controller::button(&s.controller_mic),
                         marker: controller::button(&s.controller_marker),
+                        screenshot: controller::button(&s.controller_screenshot),
                     })
                 },
                 move |action| {
@@ -1508,6 +1621,7 @@ fn main() {
                         controller::Action::Record => { let _ = core.toggle_record(); }
                         controller::Action::Mic => { let _ = core.toggle_mic(); }
                         controller::Action::Marker => { let _ = core.add_marker(); }
+                        controller::Action::Screenshot => { let _ = core.screenshot(); }
                     });
                 },
                 move |seen| { let _ = controller_events.emit("controllers", seen); },

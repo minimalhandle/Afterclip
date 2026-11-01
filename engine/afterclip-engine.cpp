@@ -633,6 +633,68 @@ void shutdownAll()
 	obs_shutdown();
 }
 
+/** One frame on its way out of the video thread. It only copies there, so the disk can't hold up capture. */
+struct ScreenshotFrame {
+	HANDLE ready = nullptr;
+	bool taken = false;
+	uint32_t width = 0, height = 0;
+	std::vector<uint8_t> nv12;
+};
+
+void onScreenshotFrame(void *param, video_data *frame)
+{
+	ScreenshotFrame *shot = static_cast<ScreenshotFrame *>(param);
+	if (shot->taken)
+		return;
+	const uint32_t width = shot->width, height = shot->height;
+	shot->nv12.resize((size_t)width * height * 3 / 2);
+	uint8_t *to = shot->nv12.data();
+	for (uint32_t y = 0; y < height; y++, to += width)
+		memcpy(to, frame->data[0] + (size_t)y * frame->linesize[0], width);
+	for (uint32_t y = 0; y < height / 2; y++, to += width)
+		memcpy(to, frame->data[1] + (size_t)y * frame->linesize[1], width);
+	shot->taken = true;
+	SetEvent(shot->ready);
+}
+
+/** Saves the next frame as raw NV12. Asking for frames only lasts for this one, so play pays nothing for it. */
+bool cmdScreenshot(obs_data_t *c, obs_data_t *reply, std::string &error)
+{
+	const DWORD WAIT_MS = 3000;
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi) || !g_replay) {
+		error = "Capture is not running";
+		return false;
+	}
+	ScreenshotFrame shot;
+	shot.ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	shot.width = ovi.output_width;
+	shot.height = ovi.output_height;
+	obs_add_raw_video_callback(nullptr, onScreenshotFrame, &shot);
+	const bool arrived = WaitForSingleObject(shot.ready, WAIT_MS) == WAIT_OBJECT_0;
+	obs_remove_raw_video_callback(onScreenshotFrame, &shot);
+	CloseHandle(shot.ready);
+	if (!arrived) {
+		error = "Capture did not send a picture";
+		return false;
+	}
+	// Opened here and not through libobs, because a file can't cross between two C runtimes.
+	const char *path = obs_data_get_string(c, "path");
+	std::wstring widePath(MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, path, -1, widePath.data(), (int)widePath.size());
+	FILE *file = _wfopen(widePath.c_str(), L"wb");
+	const bool written = file && fwrite(shot.nv12.data(), 1, shot.nv12.size(), file) == shot.nv12.size();
+	if (file)
+		fclose(file);
+	if (!written) {
+		error = "Could not save the screenshot";
+		return false;
+	}
+	obs_data_set_int(reply, "width", shot.width);
+	obs_data_set_int(reply, "height", shot.height);
+	return true;
+}
+
 /** Runs one command. Returns false when the engine should exit. */
 bool handle(const std::string &line)
 {
@@ -662,6 +724,8 @@ bool handle(const std::string &line)
 		calldata_free(&cd);
 		if (!ok)
 			error = "Replay buffer is not running";
+	} else if (cmd == "screenshot") {
+		ok = cmdScreenshot(c, reply, error);
 	} else if (cmd == "recordStart") {
 		ok = cmdRecordStart(c, error);
 	} else if (cmd == "recordStop") {

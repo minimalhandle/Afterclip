@@ -84,6 +84,12 @@ pub fn over_limit(clips: Vec<StoredClip>, limit_bytes: u64) -> Vec<PathBuf> {
     chosen
 }
 
+/// Clips older than this many days. Favourites are never chosen.
+pub fn older_than(clips: &[StoredClip], days: i64, now_ms: f64) -> Vec<PathBuf> {
+    let cutoff = now_ms - days as f64 * 86_400_000.0;
+    clips.iter().filter(|c| !c.favourite && c.modified < cutoff).map(|c| c.path.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +113,14 @@ mod tests {
     #[test]
     fn removes_nothing_under_the_limit() {
         assert!(over_limit(vec![clip("a", 10, 1.0, false)], 10).is_empty());
+    }
+
+    #[test]
+    fn cleans_up_only_old_clips_that_are_not_favourites() {
+        const DAY: f64 = 86_400_000.0;
+        let now = 100.0 * DAY;
+        let clips = vec![clip("new", 1, 90.0 * DAY, false), clip("old", 1, 50.0 * DAY, false), clip("kept", 1, 10.0 * DAY, true)];
+        assert_eq!(older_than(&clips, 30, now), vec![PathBuf::from("old")]);
     }
 
     #[test]

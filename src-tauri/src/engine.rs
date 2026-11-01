@@ -108,6 +108,9 @@ impl Engine {
     pub fn recordings_dir(&self) -> PathBuf {
         self.output_dir().join("Recordings")
     }
+    pub fn screenshots_dir(&self) -> PathBuf {
+        self.output_dir().join("Screenshots")
+    }
     pub fn thumbs_dir(&self) -> PathBuf {
         self.home.join("thumbs")
     }
@@ -266,7 +269,7 @@ impl Engine {
             s.recording = false;
         });
         let config = self.home.join("engine");
-        for dir in [self.clips_dir(), self.recordings_dir(), self.staging_dir(), config.clone()] {
+        for dir in [self.clips_dir(), self.recordings_dir(), self.screenshots_dir(), self.staging_dir(), config.clone()] {
             fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
         }
         // It stays beside the clips so a finished file moves in at once, instead of being copied between drives.
@@ -429,6 +432,37 @@ impl Engine {
         let output = unique_path(&self.clips_dir().join(format!("{stem}_{megabytes}MB.mp4")));
         let bytes = (megabytes * 1000 * 1000).to_string();
         if let Err(e) = self.media(&["shrink".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
+            let _ = fs::remove_file(&output);
+            return Err(e);
+        }
+        Ok(output)
+    }
+
+    /// Makes a 9:16 copy for phones, beside the original. In the background, so it can't compete with a game.
+    pub fn make_vertical(&self, file: &Path) -> Result<PathBuf, String> {
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&self.clips_dir().join(format!("{stem}_vertical.mp4")));
+        if let Err(e) = self.media(&["vertical".as_ref(), file.as_os_str(), output.as_os_str()], true) {
+            let _ = fs::remove_file(&output);
+            return Err(e);
+        }
+        Ok(output)
+    }
+
+    /// Saves what's being captured right now as a PNG. The engine hands over a raw frame, and converting it runs in the background.
+    pub fn screenshot(&self) -> Result<PathBuf, String> {
+        if !self.status().buffering {
+            return Err("Capture is not running".into());
+        }
+        let stamp = timestamp();
+        let raw = unique_path(&self.staging_dir().join(format!("{stamp}.nv12")));
+        let output = unique_path(&self.screenshots_dir().join(format!("{}_{stamp}.png", self.name_prefix("Screenshot"))));
+        let converted = self.rpc("screenshot", json!({ "path": raw })).and_then(|frame| {
+            let (width, height) = (frame["width"].to_string(), frame["height"].to_string());
+            self.media(&["png".as_ref(), raw.as_os_str(), output.as_os_str(), width.as_ref(), height.as_ref()], true)
+        });
+        let _ = fs::remove_file(&raw);
+        if let Err(e) = converted {
             let _ = fs::remove_file(&output);
             return Err(e);
         }

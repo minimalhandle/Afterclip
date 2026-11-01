@@ -151,7 +151,7 @@ const parseName = (name) => {
   const stem = name.replace(/\.[^.]+$/, '');
   const m = /^(.*?)_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})/.exec(stem);
   if (!m) return { game: stem };
-  return { game: /^(Clip|Recording)$/.test(m[1]) ? 'Desktop' : m[1].replace(/^(Merged|Edit)$/, '$1 clip') };
+  return { game: /^(Clip|Recording|Screenshot)$/.test(m[1]) ? 'Desktop' : m[1].replace(/^(Merged|Edit)$/, '$1 clip') };
 };
 
 function timeAgo(ms) {
@@ -184,7 +184,7 @@ function applyInfo(thumb, result) {
   thumb.querySelector('img').src = result.url;
   const badge = thumb.querySelector('.length');
   badge.textContent = clockLabel(result.duration);
-  badge.hidden = false;
+  badge.hidden = !result.duration;
 }
 
 function closeMenus() {
@@ -194,6 +194,8 @@ function closeMenus() {
 function renderSelection() {
   $('selection').hidden = selected.size === 0;
   $('selection-count').textContent = `${selected.size} selected`;
+  // The editor only takes video.
+  $('merge-selected').hidden = kind === 'screenshot';
   disarmDelete();
 }
 
@@ -249,6 +251,12 @@ function wireDrag(li, m) {
     document.addEventListener('mouseup', stop);
   });
 }
+
+const KIND_TEXT = {
+  clip: { title: 'All clips', empty: 'No clips yet. Save your first moment with the button above or a hotkey.' },
+  recording: { title: 'All recordings', empty: 'No recordings yet. Press Record to capture a full session.' },
+  screenshot: { title: 'All screenshots', empty: 'No screenshots yet. Press the camera button above or your screenshot hotkey.' },
+};
 
 const HOME_CLIPS = 3;
 let libraryOpen = false;
@@ -330,11 +338,11 @@ function renderMedia() {
   renderGameFilter(all);
   const shown = libraryOpen ? filtered(all) : all.slice(0, HOME_CLIPS);
   $('view-all').textContent = `View all (${all.length})`;
-  $('library-title').textContent = kind === 'clip' ? 'All clips' : 'All recordings';
+  $('library-title').textContent = KIND_TEXT[kind].title;
   const empty = $('empty');
   empty.hidden = shown.length > 0;
   const nothingMatches = libraryOpen && all.length > 0;
-  empty.textContent = nothingMatches ? 'Nothing matches that.' : kind === 'clip' ? 'No clips yet. Save your first moment with the button above or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
+  empty.textContent = nothingMatches ? 'Nothing matches that.' : KIND_TEXT[kind].empty;
   observer.disconnect();
   $('media').replaceChildren(...shown.map((m) => {
     const li = document.createElement('li');
@@ -342,8 +350,8 @@ function renderMedia() {
     li.classList.toggle('selected', selected.has(m.file));
     const thumb = document.createElement('button');
     thumb.className = 'thumb';
-    thumb.setAttribute('aria-label', `Play ${m.name}`);
-    thumb.title = 'Click to play, or drag into another app';
+    thumb.setAttribute('aria-label', `${m.kind === 'screenshot' ? 'Open' : 'Play'} ${m.name}`);
+    thumb.title = `Click to ${m.kind === 'screenshot' ? 'open' : 'play'}, or drag into another app`;
     thumb.onclick = () => { if (!justDragged) api.invoke('open', m.file).catch((e) => showBanner(errorText(e), 'bad')); };
     const img = document.createElement('img');
     img.alt = '';
@@ -386,7 +394,7 @@ function renderMedia() {
     };
     const pick = document.createElement('input');
     pick.type = 'checkbox';
-    pick.title = 'Select to edit or delete together';
+    pick.title = m.kind === 'screenshot' ? 'Select to delete together' : 'Select to edit or delete together';
     pick.setAttribute('aria-label', `Select ${m.name}`);
     pick.checked = selected.has(m.file);
     pick.onchange = () => {
@@ -426,15 +434,27 @@ function buildMenu(m) {
     b.onclick = () => { closeMenus(); fn(); };
     return b;
   };
+  const video = m.kind !== 'screenshot';
   menu.append(
-    item('Play', () => api.invoke('open', m.file)),
-    item('Edit', () => api.invoke('open-editor', [m.file])),
+    item(video ? 'Play' : 'Open', () => api.invoke('open', m.file)),
+    ...(video ? [item('Edit', () => api.invoke('open-editor', [m.file]))] : []),
     item('Rename', () => { renaming = m.file; renderMedia(); }),
     item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
-    ...SHARE_SIZES_MB.map((mb) => item(`Make ${mb} MB copy`, () => {
-      showBanner(`Making a ${mb} MB copy. A long clip can take a while, and you can keep playing.`);
-      api.invoke('shrink-clip', { file: m.file, megabytes: mb }).catch(() => undefined);
-    })),
+    item('Send to Discord', () => {
+      if (!settings.discordWebhook) return showBanner('Add your Discord webhook in Settings, under Sharing.', 'bad');
+      showBanner('Sending to Discord. A long clip is made smaller first, and you can keep playing.');
+      return api.invoke('send-to-discord', m.file).catch(() => undefined);
+    }),
+    ...(video ? [
+      ...SHARE_SIZES_MB.map((mb) => item(`Make ${mb} MB copy`, () => {
+        showBanner(`Making a ${mb} MB copy. A long clip can take a while, and you can keep playing.`);
+        api.invoke('shrink-clip', { file: m.file, megabytes: mb }).catch(() => undefined);
+      })),
+      item('Make vertical copy', () => {
+        showBanner('Making a vertical copy for phones. A long clip can take a while, and you can keep playing.');
+        api.invoke('vertical-clip', m.file).catch(() => undefined);
+      }),
+    ] : []),
     item('Show in folder', () => api.invoke('reveal', m.file)),
     item('Delete', async () => {
       await api.invoke('trash', m.file).catch((e) => showBanner(errorText(e), 'bad'));
@@ -887,7 +907,7 @@ const CONTROLLER_COMBOS = [
   ['down', 'D-pad Down'],
   ['left', 'D-pad Left'],
 ];
-const CONTROLLER_ACTIONS = ['controllerClip', 'controllerRecord', 'controllerMic', 'controllerMarker'];
+const CONTROLLER_ACTIONS = ['controllerClip', 'controllerRecord', 'controllerMic', 'controllerMarker', 'controllerScreenshot'];
 let controllersSeen = [];
 
 function renderControllersSeen() {
@@ -985,7 +1005,7 @@ async function renderGamePicker() {
   empty.textContent = 'Open your game and it will appear here.';
   $('game-picker').replaceChildren(...(apps.length ? [
     ...pickerGroup('Games', apps.filter((a) => a.game)),
-    ...pickerGroup('Other open apps. Their settings apply only when they run fullscreen.', apps.filter((a) => !a.game)),
+    ...pickerGroup('Other open apps', apps.filter((a) => !a.game)),
   ] : [empty]));
 }
 setInterval(() => { if (!document.hidden) renderGamePicker(); }, 3000);
@@ -1075,10 +1095,24 @@ function addProfile(exe, name) {
   scheduleSave();
 }
 
+const DISCORD_WEBHOOK = /^https:\/\/((ptb|canary)\.)?discord(app)?\.com\/api\/webhooks\//;
+const DISCORD_HELP = $('discord-note').textContent;
+
+function renderDiscordNote() {
+  const typed = $('discordWebhook').value.trim();
+  const wrong = typed && !DISCORD_WEBHOOK.test(typed);
+  $('discord-note').textContent = wrong ? 'That doesn\'t look like a Discord webhook address. It starts with https://discord.com/api/webhooks/' : DISCORD_HELP;
+  $('discord-note').classList.toggle('warn', !!wrong);
+}
+
 function fillForm() {
   for (const k of ['encoder', 'outputDir', 'quality', 'codec', 'encoderPreset']) $(k).value = settings[k];
   ensureOption($('storageLimitGb'), settings.storageLimitGb, `${settings.storageLimitGb} GB`);
   $('storageLimitGb').value = settings.storageLimitGb;
+  ensureOption($('deleteAfterDays'), settings.deleteAfterDays, `After ${settings.deleteAfterDays} days`);
+  $('deleteAfterDays').value = settings.deleteAfterDays;
+  $('discordWebhook').value = settings.discordWebhook;
+  renderDiscordNote();
   renderProfiles();
   renderStorageUsed();
   renderUpdate();
@@ -1092,6 +1126,7 @@ function fillForm() {
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
   bindHotkey($('markerHotkey'), () => settings.markerHotkey, (v) => { settings.markerHotkey = v; scheduleSave(); });
+  bindHotkey($('screenshotHotkey'), () => settings.screenshotHotkey, (v) => { settings.screenshotHotkey = v; scheduleSave(); });
   ensureOption($('recordSplit'), settings.recordSplitSeconds, `Every ${settings.recordSplitSeconds} seconds`);
   $('recordSplit').value = settings.recordSplitSeconds;
   $('game-level').replaceChildren(levelControl(-1, settings.gameAudioVolume, (v) => { settings.gameAudioVolume = v; }));
@@ -1148,6 +1183,8 @@ function readForm() {
   settings.bitrateKbps = Number($('bitrateKbps').value);
   settings.recordSplitSeconds = Number($('recordSplit').value);
   settings.storageLimitGb = Number($('storageLimitGb').value);
+  settings.deleteAfterDays = Number($('deleteAfterDays').value);
+  settings.discordWebhook = $('discordWebhook').value.trim();
   settings.bufferSeconds = Math.round(Number($('bufferMinutes').value) * 60);
   for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate']) settings[k] = $(k).checked;
   for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder']) settings[k] = $(k).value;
@@ -1166,6 +1203,7 @@ const SECTIONS = [
   ['recording', 'Recording', 'Split long recordings and markers', '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>'],
   ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
   ['performance', 'Performance', 'Live frame rate, dropped frames, CPU', '<path d="M3 13h4l3 7 4-16 3 9h4"/>'],
+  ['sharing', 'Sharing', 'Send clips to a Discord channel', '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M12 3v12M8 7l4-4 4 4"/>'],
   ['storage', 'Storage', 'Where clips are saved, and how much to keep', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
 ];
 let currentPane = null;
@@ -1227,8 +1265,14 @@ api.on('feedback', (f) => {
     showBanner('Recording saved', 'good');
   } else if (f.kind === 'shrunk' && f.ok) {
     showBanner(`Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
+  } else if (f.kind === 'vertical' && f.ok) {
+    showBanner('Your vertical copy is ready to drag into any app.', 'good');
+  } else if (f.kind === 'screenshot' && f.ok) {
+    showBanner('Screenshot saved', 'good');
+  } else if (f.kind === 'discord' && f.ok) {
+    showBanner('Sent to Discord', 'good');
   } else if (f.kind === 'storage') {
-    showBanner(`Moved ${f.removed} old ${f.removed === 1 ? 'clip' : 'clips'} to the Recycle Bin to stay under your storage limit.`, 'good');
+    showBanner(`Moved ${f.removed} old ${f.removed === 1 ? 'file' : 'files'} to the Recycle Bin, as your storage settings ask.`, 'good');
   } else if (f.kind === 'exported') {
     showBanner('Edited clip saved', 'good');
   } else if (f.kind === 'clean-mic' && f.ok) {
@@ -1269,6 +1313,8 @@ $('update-skip').onclick = () => api.invoke('skip-update').then(() => {
 $('check-update').onclick = () => api.invoke('check-update');
 $('autoUpdate').onchange = () => scheduleSave();
 $('storageLimitGb').onchange = () => scheduleSave();
+$('deleteAfterDays').onchange = () => scheduleSave();
+$('discordWebhook').oninput = () => { renderDiscordNote(); scheduleSave(TYPING_DELAY_MS); };
 $('profile-browse').onclick = async () => { const exe = await api.invoke('pick-game'); if (exe) addProfile(exe); };
 $('view-all').onclick = () => setLibrary(true);
 $('library-back').onclick = () => setLibrary(false);
@@ -1284,6 +1330,7 @@ $('mic').onclick = () => api.invoke('toggle-mic').catch(() => undefined);
 $('clean-mic').onclick = () => api.invoke('toggle-clean-mic').catch(() => undefined);
 $('cleanMicSwitch').onchange = () => api.invoke('toggle-clean-mic').catch(() => renderStatus());
 $('marker').onclick = () => api.invoke('add-marker').catch(() => undefined);
+$('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
 for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup']) $(id).onchange = () => scheduleSave();
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
@@ -1311,7 +1358,7 @@ $('save-clip').onclick = () => api.invoke('clip', chosenLength).catch(() => unde
 $('record').onclick = () => api.invoke('toggle-record').catch(() => undefined);
 $('open-editor').onclick = () => api.invoke('open-editor', []);
 $('merge-selected').onclick = () => {
-  const ordered = media.filter((m) => selected.has(m.file)).reverse().map((m) => m.file);
+  const ordered = media.filter((m) => selected.has(m.file) && m.kind !== 'screenshot').reverse().map((m) => m.file);
   api.invoke('open-editor', ordered);
   selected.clear();
   renderMedia();
