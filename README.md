@@ -18,7 +18,7 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 ## Why Afterclip
 
 - **It's always ready.** A rolling buffer keeps your recent gameplay in RAM, so you can save a clip after the moment happens.
-- **It stays out of the way.** It lives in the tray, opens no window at startup, and uses no web view at all while the panel is closed.
+- **It stays out of the way.** It lives in the tray, opens no window at startup, and frees the panel's memory 20 seconds after you close it.
 - **It's small.** The installer is about 17 MB, and you don't need OBS installed. Capture runs on OBS's libobs libraries in a small windowless engine.
 - **Saves are lossless.** Clips are cut from the buffer without re-encoding, so they keep their full quality.
 
@@ -101,7 +101,11 @@ npm start
 
 ### Install the Stream Deck plugin
 
-Double-click `streamdeck\dist\com.afterclip.clips.streamDeckPlugin`, which `npm run dist` creates. To rebuild only the plugin, run `npm run plugin`.
+Package the plugin, then double-click `streamdeck\dist\com.afterclip.clips.streamDeckPlugin` to install it:
+
+```bash
+npm run plugin
+```
 
 ## Using it
 
