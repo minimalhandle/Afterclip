@@ -25,6 +25,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tiny_http",
  "trash",
+ "webview2-com",
  "windows",
 ]
 

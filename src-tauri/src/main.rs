@@ -32,6 +32,8 @@ use tauri::image::Image;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::Color;
+use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED};
+use webview2_com::ProcessFailedEventHandler;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -65,6 +67,7 @@ struct Core {
     /// Set while a dialog is open, because the panel losing focus to it must not close it.
     keep_panel_open: AtomicBool,
     panel_hidden_at: Mutex<Option<Instant>>,
+    panel_recovered_at: Mutex<Option<Instant>>,
     panel_hide_count: AtomicU64,
     tray_anchor: Mutex<Option<(i32, i32)>>,
     pending_editor_files: Mutex<Vec<String>>,
@@ -457,6 +460,8 @@ fn forget_thumbnails(core: &Core, name: &str) {
         }
     }
 }
+
+const PANEL_RECOVER_GAP: Duration = Duration::from_secs(30);
 
 // A game's profile stays on this long after it closes, so its last moments are still in the buffer to clip.
 fn profile_hold() -> Duration {
@@ -1127,6 +1132,43 @@ fn position_panel(core: &Core, window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
+/// Overlays like RivaTuner can crash the browser behind a window. The window stays, showing nothing, and
+/// would never paint again. Removing it means the next open builds a new one. A visible panel comes straight
+/// back, but not repeatedly, so something that crashes every browser can't start a loop.
+fn recover_from_browser_crash(core: &Shared, window: &WebviewWindow) {
+    let label = window.label().to_string();
+    let core = Arc::clone(core);
+    let _ = window.with_webview(move |webview| unsafe {
+        let Ok(browser) = webview.controller().CoreWebView2() else { return };
+        let handler = ProcessFailedEventHandler::create(Box::new(move |_, args| {
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            if let Some(args) = args {
+                args.ProcessFailedKind(&mut kind)?;
+            }
+            if [COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED].contains(&kind) {
+                let core = Arc::clone(&core);
+                let label = label.clone();
+                // Never from inside the browser's own event.
+                thread::spawn(move || {
+                    let Some(window) = core.app.get_webview_window(&label) else { return };
+                    core.log_ui(&format!("{label}'s browser stopped, so its window will be rebuilt"));
+                    let reopen = label == PANEL && window.is_visible().unwrap_or(false);
+                    let _ = window.destroy();
+                    let mut last = core.panel_recovered_at.lock().unwrap();
+                    if reopen && last.is_none_or(|at| at.elapsed() > PANEL_RECOVER_GAP) {
+                        *last = Some(Instant::now());
+                        drop(last);
+                        show_panel(&core);
+                    }
+                });
+            }
+            Ok(())
+        }));
+        let mut token = Default::default();
+        let _ = browser.add_ProcessFailed(&handler, &mut token);
+    });
+}
+
 /// The panel is the app's only front door. It's opened from the tray and closes when it loses focus.
 fn show_panel(core: &Shared) {
     if let Some(window) = core.app.get_webview_window(PANEL) {
@@ -1148,9 +1190,12 @@ fn show_panel(core: &Shared) {
         .transparent(true)
         .background_color(Color(0, 0, 0, 0))
         .build();
-    if let Err(e) = built {
-        core.log_ui(&format!("panel could not open: {e}"));
-        return;
+    match built {
+        Ok(window) => recover_from_browser_crash(core, &window),
+        Err(e) => {
+            core.log_ui(&format!("panel could not open: {e}"));
+            return;
+        }
     }
     watch_startup(core, PANEL);
 }
@@ -1183,9 +1228,12 @@ fn show_editor(core: &Shared, files: Vec<String>) {
         .inner_size(1120.0, 740.0)
         .min_inner_size(860.0, 600.0)
         .build();
-    if let Err(e) = built {
-        core.log_ui(&format!("editor could not open: {e}"));
-        return;
+    match built {
+        Ok(window) => recover_from_browser_crash(core, &window),
+        Err(e) => {
+            core.log_ui(&format!("editor could not open: {e}"));
+            return;
+        }
     }
     watch_startup(core, EDITOR);
 }
@@ -1410,6 +1458,7 @@ fn main() {
                 quitting: AtomicBool::new(false),
                 keep_panel_open: AtomicBool::new(false),
                 panel_hidden_at: Mutex::new(None),
+                panel_recovered_at: Mutex::new(None),
                 panel_hide_count: AtomicU64::new(0),
                 tray_anchor: Mutex::new(None),
                 pending_editor_files: Mutex::new(Vec::new()),
