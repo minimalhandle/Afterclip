@@ -837,8 +837,14 @@ fn engine_root(app: &AppHandle) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("vendor").join("engine")
 }
 
+/// The drawing made for the display's scale, because Windows blurs an icon it has to resize.
 fn tray_icon() -> Image<'static> {
-    tauri::include_image!("icons/tray.png")
+    match win32::system_dpi() {
+        0..=108 => tauri::include_image!("icons/tray-16.png"),
+        109..=132 => tauri::include_image!("icons/tray-20.png"),
+        133..=168 => tauri::include_image!("icons/tray-24.png"),
+        _ => tauri::include_image!("icons/tray-32.png"),
+    }
 }
 
 fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
