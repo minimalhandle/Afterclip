@@ -2,6 +2,7 @@
 
 mod api;
 mod capture;
+mod controller;
 mod elevated_task;
 mod engine;
 mod library;
@@ -72,6 +73,7 @@ struct Core {
     /// The game whose profile capture is using right now.
     active_profile: Mutex<Option<String>>,
     test_game: Mutex<Option<String>>,
+    controller: OnceLock<Arc<controller::Controller>>,
     update: Mutex<updater::UpdateState>,
     update_ready: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
     update_busy: AtomicBool,
@@ -258,6 +260,14 @@ impl ApiHandlers for Api {
     /// Lets the UI tests run while someone uses the PC, because any click elsewhere closes the panel.
     fn test_game(&self, exe: &str) {
         *self.0.test_game.lock().unwrap() = Some(exe.to_string()).filter(|e| !e.is_empty());
+    }
+    /// Sends a controller report through the real path. It's written as hex, with zeros to pad it to size.
+    fn test_controller(&self, kind: &str, report: &str) {
+        let kind = if kind == "switch" { controller::Kind::SwitchPro } else { controller::Kind::DualSense };
+        let bytes: Vec<u8> = report.as_bytes().chunks(2).filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect();
+        if let Some(listener) = self.0.controller.get() {
+            listener.test_report(kind, &bytes);
+        }
     }
     fn test_hold_panel(&self, hold: bool) {
         self.0.keep_panel_open.store(hold, Ordering::SeqCst);
@@ -579,6 +589,7 @@ fn state(core: tauri::State<Shared>) -> Value {
         "status": core.engine.status(),
         "capture": core.capture_state(),
         "hotkeyFailures": *core.hotkey_failures.lock().unwrap(),
+        "controllers": core.controller.get().map(|c| c.seen()).unwrap_or_default(),
         "media": media,
         "storageUsedBytes": storage_used,
         "activeProfile": *core.active_profile.lock().unwrap(),
@@ -1359,6 +1370,7 @@ fn main() {
                 library_file: user_data.join("library.json"),
                 active_profile: Mutex::new(None),
                 test_game: Mutex::new(None),
+                controller: OnceLock::new(),
                 update: Mutex::new(updater::UpdateState { status: "idle".into(), ..Default::default() }),
                 update_ready: Mutex::new(None),
                 update_busy: AtomicBool::new(false),
@@ -1376,6 +1388,34 @@ fn main() {
 
             create_tray(&handle, Arc::clone(&core))?;
             register_hotkeys(&core);
+            let controller_settings = Arc::clone(&shared_settings);
+            let controller_core = Arc::clone(&core);
+            let controller_events = handle.clone();
+            let listener = controller::Controller::start(
+                move || {
+                    let s = controller_settings.lock().unwrap();
+                    s.controller_enabled.then(|| controller::Bindings {
+                        clip: controller::button(&s.controller_clip),
+                        record: controller::button(&s.controller_record),
+                        mic: controller::button(&s.controller_mic),
+                        marker: controller::button(&s.controller_marker),
+                    })
+                },
+                move |action| {
+                    let core = Arc::clone(&controller_core);
+                    thread::spawn(move || match action {
+                        controller::Action::Clip => {
+                            let seconds = core.settings.lock().unwrap().controller_clip_seconds;
+                            let _ = core.clip(seconds);
+                        }
+                        controller::Action::Record => { let _ = core.toggle_record(); }
+                        controller::Action::Mic => { let _ = core.toggle_mic(); }
+                        controller::Action::Marker => { let _ = core.add_marker(); }
+                    });
+                },
+                move |seen| { let _ = controller_events.emit("controllers", seen); },
+            );
+            let _ = core.controller.set(listener);
             start_services(&core);
             updater::start(Arc::clone(&core));
             let watcher = Arc::clone(&core);

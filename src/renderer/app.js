@@ -425,6 +425,8 @@ async function refresh() {
   update = state.update ?? update;
   appVersion = state.version ?? appVersion;
   storageUsed = state.storageUsedBytes ?? 0;
+  controllersSeen = state.controllers ?? controllersSeen;
+  renderControllersSeen();
   renderUpdate();
   renderStorageUsed();
   // Only this comes from the backend after startup: the form owns the rest while it's being edited.
@@ -841,6 +843,59 @@ function renderStorageUsed() {
   $('storage-used').textContent = `Your clips and recordings use ${gb >= 0.1 ? `${gb.toFixed(1)} GB` : `${Math.round(storageUsed / 1e6)} MB`}.`;
 }
 
+/* Controller */
+
+const CONTROLLER_COMBOS = [
+  ['', 'Off'],
+  ['r3', 'R3 (press right stick)'],
+  ['north', 'Triangle / Y / X'],
+  ['east', 'Circle / B / A'],
+  ['west', 'Square / X / Y'],
+  ['south', 'Cross / A / B'],
+  ['up', 'D-pad Up'],
+  ['right', 'D-pad Right'],
+  ['down', 'D-pad Down'],
+  ['left', 'D-pad Left'],
+];
+const CONTROLLER_ACTIONS = ['controllerClip', 'controllerRecord', 'controllerMic', 'controllerMarker'];
+let controllersSeen = [];
+
+function renderControllersSeen() {
+  const on = settings?.controllerEnabled;
+  $('controller-seen').textContent = !on ? 'Off. Your controller isn\'t read at all.'
+    : controllersSeen.length ? `Found: ${controllersSeen.join(', ')}` : 'On. Press a button on your controller to check it\'s found.';
+}
+
+function fillController() {
+  $('controllerEnabled').checked = settings.controllerEnabled;
+  for (const id of CONTROLLER_ACTIONS) {
+    $(id).replaceChildren(...CONTROLLER_COMBOS.map(([value, text]) => new Option(text, value)));
+    $(id).value = settings[id];
+  }
+  const lengths = $('controllerClipSeconds');
+  lengths.replaceChildren(...settings.presets.map((p) => new Option(p.seconds ? `${p.seconds} seconds` : 'Whole buffer', p.seconds)));
+  ensureOption(lengths, settings.controllerClipSeconds, `${settings.controllerClipSeconds} seconds`);
+  lengths.value = settings.controllerClipSeconds;
+  renderControllersSeen();
+}
+
+for (const id of CONTROLLER_ACTIONS) {
+  $(id).onchange = () => {
+    // One combination runs one action, so choosing a taken one moves it here.
+    for (const other of CONTROLLER_ACTIONS) {
+      if (other !== id && $(id).value && $(other).value === $(id).value) {
+        $(other).value = '';
+        settings[other] = '';
+      }
+    }
+    settings[id] = $(id).value;
+    scheduleSave();
+  };
+}
+$('controllerClipSeconds').onchange = () => { settings.controllerClipSeconds = Number($('controllerClipSeconds').value); scheduleSave(); };
+$('controllerEnabled').onchange = () => { settings.controllerEnabled = $('controllerEnabled').checked; renderControllersSeen(); scheduleSave(); };
+api.on('controllers', (seen) => { controllersSeen = seen; renderControllersSeen(); });
+
 /* Per-game settings */
 
 const GAME_ICON_SIZE = 48;
@@ -1077,6 +1132,7 @@ const SECTIONS = [
   ['video', 'Video', 'Quality, resolution, frame rate, encoder', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
   ['audio', 'Audio', 'Game audio, devices, apps, tracks', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
   ['hotkeys', 'Hotkeys', 'Clip lengths and keyboard shortcuts', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
+  ['controller', 'Controller', 'Save clips from your controller', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><circle cx="8" cy="12.5" r="1.5"/><circle cx="16" cy="12.5" r="1.5"/>'],
   ['recording', 'Recording', 'Split long recordings and markers', '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>'],
   ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
   ['performance', 'Performance', 'Live frame rate, dropped frames, CPU', '<path d="M3 13h4l3 7 4-16 3 9h4"/>'],
@@ -1104,6 +1160,7 @@ function showPane(id) {
   $('crumb-now').textContent = SECTIONS.find(([s]) => s === id)?.[1] ?? '';
   if (id === 'audio') loadAudioChoices();
   if (id === 'games') renderGamePicker();
+  if (id === 'controller') fillController();
   updateLiveViews();
 }
 

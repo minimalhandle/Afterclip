@@ -176,6 +176,46 @@ async function main() {
     await sleep(6000);
     await api.clip(2);
 
+    // A controller report through the real path: off does nothing, Create + R3 saves a clip, in either order.
+    const clipCount = () => panel.eval("window.afterclip.invoke('state').then((s) => s.media.filter((m) => m.kind === 'clip').length)");
+    const padUsb = (face, rest) => `01000000000000${'00'}${face}${rest}${'00'.repeat(54)}`;
+    const padSend = (face, rest) => api.call(`/test/controller/dualsense/${padUsb(face, rest)}`, 'POST');
+    const idle = ['08', '00'], create = ['08', '10'], r3 = ['08', '80'], both = ['08', '90'];
+    const padCombo = async () => { await padSend(...idle); await padSend(...create); await padSend(...both); await padSend(...idle); };
+    const beforePad = await clipCount();
+    await padCombo();
+    await sleep(2000);
+    check('a controller does nothing until it is turned on', (await clipCount()) === beforePad);
+    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=\"controller\"]').click()");
+    check('Create + R3 is the suggested clip button', (await panel.eval("document.getElementById('controllerClip').value")) === 'r3');
+    check('only the clip is set up to begin with', (await panel.eval("['controllerRecord','controllerMic','controllerMarker'].every((id) => document.getElementById(id).value === '')")));
+    await panel.eval("(() => { const s = document.getElementById('controllerEnabled'); s.click(); document.getElementById('controllerClipSeconds').value = '15'; document.getElementById('controllerClipSeconds').dispatchEvent(new Event('change')); })()");
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => s.settings.controllerEnabled && s.settings.controllerClipSeconds === 15)"), 5000, 'the controller setting');
+    await padCombo();
+    await waitFor(async () => (await clipCount()) === beforePad + 1, 15000, 'a clip from the controller');
+    check('Create + R3 saves a clip', true);
+    check('the panel says which controller it found', /DualSense/.test(await panel.eval("document.getElementById('controller-seen').textContent")));
+    await sleep(700);
+    await padSend(...idle); await padSend(...r3); await padSend(...both); await padSend(...idle);
+    await waitFor(async () => (await clipCount()) === beforePad + 2, 15000, 'a clip with R3 pressed first');
+    check('the buttons can go in either order', true);
+    await sleep(700);
+    await padSend(...r3); await sleep(1000); await padSend(...both); await padSend(...idle);
+    await sleep(2000);
+    check('R3 held in a game, then Create, saves nothing', (await clipCount()) === beforePad + 2);
+    await panel.eval("(() => { const clip = document.getElementById('controllerClip'); const mic = document.getElementById('controllerMic'); mic.value = 'r3'; mic.dispatchEvent(new Event('change')); return clip.value; })()");
+    check('one combination can only run one action', (await panel.eval("document.getElementById('controllerClip').value")) === '');
+    const micBefore = await panel.eval("window.afterclip.invoke('state').then((s) => s.settings.micMuted)");
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => s.settings.controllerMic === 'r3')"), 5000, 'the mic combination');
+    await padCombo();
+    await waitFor(async () => (await panel.eval("window.afterclip.invoke('state').then((s) => s.settings.micMuted)")) !== micBefore, 5000, 'the mic to change');
+    check('the mic action runs from a controller', true);
+    await panel.eval(`window.afterclip.invoke('toggle-mic')`);
+    await panel.eval(`window.afterclip.invoke('save-settings', ${JSON.stringify(base)})`);
+    await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click(); document.getElementById('view-all').click()");
+    await sleep(1500);
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => s.status.buffering)"), 20000, 'capture after the controller test');
+
     // The game picker lists what's open, with a real window to choose. Nothing is typed.
     const pickerTitle = `Picker Test ${process.pid}`;
     const pickerWindow = spawn('powershell', ['-NoProfile', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${pickerTitle}'; $f.ShowDialog()`], { windowsHide: false, stdio: 'ignore' });
