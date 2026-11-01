@@ -811,6 +811,21 @@ fn pick_folder(core: tauri::State<Shared>) -> Option<String> {
     picked
 }
 
+#[tauri::command(async)]
+fn running_apps() -> Vec<win32::RunningApp> {
+    win32::running_apps()
+}
+
+/// For a game that isn't open right now. Only the program's name is kept, which is all a profile looks for.
+#[tauri::command(async)]
+fn pick_game(core: tauri::State<Shared>) -> Option<String> {
+    core.keep_panel_open.store(true, Ordering::SeqCst);
+    let picked = core.app.dialog().file().add_filter("Games", &["exe"]).blocking_pick_file();
+    core.keep_panel_open.store(false, Ordering::SeqCst);
+    let path = picked?.into_path().ok()?;
+    path.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
 /// The primary monitor's real mode, which the quality presets are worked out from.
 #[tauri::command(async)]
 fn display_info() -> Value {
@@ -1254,7 +1269,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, shrink_clip, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, shrink_clip, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {

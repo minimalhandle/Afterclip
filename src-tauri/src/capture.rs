@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use crate::win32::{active_endpoints_of, foreground_fullscreen_app, init_com_for_thread, is_self_elevated, window_still_open, FullscreenApp};
+use crate::win32::{active_endpoints_of, clean_title, foreground_fullscreen_app, init_com_for_thread, is_self_elevated, window_still_open, FullscreenApp};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -107,9 +107,8 @@ impl CaptureManager {
             if engine.game_audio_enabled() {
                 let _ = engine.set_game_audio(Some(app), false);
             }
-            // Some games pad their titles with invisible characters, Call of Duty among them.
-            let visible: String = app.title.chars().filter(|c| !c.is_control() && !('\u{200B}'..='\u{200F}').contains(c) && *c != '\u{FEFF}').collect();
-            let name = if visible.trim().is_empty() { app.exe.clone() } else { visible.trim().to_string() };
+            let visible = clean_title(&app.title);
+            let name = if visible.is_empty() { app.exe.clone() } else { visible };
             let blocked = app.blocked_by_elevation;
             let exe = app.exe.to_lowercase();
             engine.set_game(Some(name.clone()));

@@ -427,7 +427,6 @@ async function refresh() {
   storageUsed = state.storageUsedBytes ?? 0;
   renderUpdate();
   renderStorageUsed();
-  renderCurrentGame();
   // Only this comes from the backend after startup: the form owns the rest while it's being edited.
   if (settings) {
     settings.micMuted = state.settings.micMuted;
@@ -844,12 +843,67 @@ function renderStorageUsed() {
 
 /* Per-game settings */
 
-function renderCurrentGame() {
-  const button = $('profile-current');
-  const known = settings?.gameProfiles.some((p) => p.exe === capture.exe);
-  button.hidden = !capture.exe || known;
-  if (capture.exe) button.textContent = `Add ${capture.app ?? capture.exe}`;
+const GAME_ICON_SIZE = 48;
+let pickerShown = null;
+
+function pickerIcon(pixels) {
+  if (!pixels) {
+    const blank = document.createElement('div');
+    blank.className = 'picker-blank';
+    return blank;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = GAME_ICON_SIZE;
+  const bytes = Uint8ClampedArray.from(atob(pixels), (c) => c.charCodeAt(0));
+  canvas.getContext('2d').putImageData(new ImageData(bytes, GAME_ICON_SIZE, GAME_ICON_SIZE), 0, 0);
+  return canvas;
 }
+
+function pickerRow(app) {
+  const row = document.createElement('button');
+  row.className = 'picker-row';
+  row.dataset.exe = app.exe;
+  const text = document.createElement('div');
+  text.className = 'picker-text';
+  const name = document.createElement('div');
+  name.textContent = app.name;
+  const exe = document.createElement('div');
+  exe.className = 'profile-exe';
+  exe.textContent = app.exe;
+  text.append(name, exe);
+  const add = document.createElement('span');
+  add.className = 'picker-add';
+  add.textContent = 'Add';
+  row.append(pickerIcon(app.icon), text, add);
+  row.onclick = () => addProfile(app.exe, app.name);
+  return row;
+}
+
+function pickerGroup(title, apps) {
+  if (!apps.length) return [];
+  const label = document.createElement('div');
+  label.className = 'picker-group';
+  label.textContent = title;
+  return [label, ...apps.map(pickerRow)];
+}
+
+/** Lists what's open, and only redraws when that changes, so a row isn't replaced as it's clicked. */
+async function renderGamePicker() {
+  if (currentPane !== 'games' || !settings) return;
+  const running = await api.invoke('running-apps');
+  const apps = running.filter((a) => !settings.gameProfiles.some((p) => p.exe === a.exe));
+  const shown = apps.map((a) => `${a.exe}|${a.name}|${a.game}`).join('\n');
+  if (shown === pickerShown) return;
+  pickerShown = shown;
+  const empty = document.createElement('div');
+  empty.className = 'picker-empty';
+  empty.textContent = 'Open your game and it will appear here.';
+  $('game-picker').replaceChildren(...(apps.length ? [
+    ...pickerGroup('Games', apps.filter((a) => a.game)),
+    ...pickerGroup('Other open apps. Their settings apply only when they run fullscreen.', apps.filter((a) => !a.game)),
+  ] : [empty]));
+}
+setInterval(() => { if (!document.hidden) renderGamePicker(); }, 3000);
 
 function profileSelect(label, value, options, onChange) {
   const row = document.createElement('div');
@@ -893,7 +947,7 @@ function renderProfiles() {
     remove.onclick = () => {
       settings.gameProfiles = settings.gameProfiles.filter((g) => g !== p);
       renderProfiles();
-      renderCurrentGame();
+      renderGamePicker();
       scheduleSave();
     };
     head.append(name, remove);
@@ -931,9 +985,8 @@ function addProfile(exe, name) {
   if (!settings.gameProfiles.some((p) => p.exe === file)) {
     settings.gameProfiles.push({ exe: file, name: name ?? file.replace(/\.exe$/, ''), autoRecord: false });
   }
-  $('profile-exe').value = '';
   renderProfiles();
-  renderCurrentGame();
+  renderGamePicker();
   scheduleSave();
 }
 
@@ -942,7 +995,6 @@ function fillForm() {
   ensureOption($('storageLimitGb'), settings.storageLimitGb, `${settings.storageLimitGb} GB`);
   $('storageLimitGb').value = settings.storageLimitGb;
   renderProfiles();
-  renderCurrentGame();
   renderStorageUsed();
   renderUpdate();
   $('multipass').value = String(settings.multipass);
@@ -1051,6 +1103,7 @@ function showPane(id) {
   $('crumb-now').hidden = !id;
   $('crumb-now').textContent = SECTIONS.find(([s]) => s === id)?.[1] ?? '';
   if (id === 'audio') loadAudioChoices();
+  if (id === 'games') renderGamePicker();
   updateLiveViews();
 }
 
@@ -1072,7 +1125,7 @@ function showView(name) {
 /* Wiring */
 
 api.on('status', (s) => { status = s; renderStatus(); });
-api.on('capture', (c) => { capture = c; renderStatus(); renderCurrentGame(); });
+api.on('capture', (c) => { capture = c; renderStatus(); });
 api.on('update', (u) => { update = u; renderUpdate(); });
 api.on('profile', (p) => { activeProfile = p.game ?? null; activeBuffer = p.bufferSeconds; renderSummary(); renderHalo(); });
 api.on('panel-shown', () => { refresh(); updateLiveViews(); });
@@ -1129,8 +1182,7 @@ $('update-skip').onclick = () => api.invoke('skip-update').then(() => {
 $('check-update').onclick = () => api.invoke('check-update');
 $('autoUpdate').onchange = () => scheduleSave();
 $('storageLimitGb').onchange = () => scheduleSave();
-$('profile-add').onclick = () => addProfile($('profile-exe').value);
-$('profile-current').onclick = () => addProfile(capture.exe, capture.app);
+$('profile-browse').onclick = async () => { const exe = await api.invoke('pick-game'); if (exe) addProfile(exe); };
 $('view-all').onclick = () => setLibrary(true);
 $('library-back').onclick = () => setLibrary(false);
 $('close-panel').onclick = () => { if (saveTimer) saveNow(); api.invoke('close-panel'); };

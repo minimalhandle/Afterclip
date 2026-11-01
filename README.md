@@ -154,6 +154,7 @@ You can change these and add more clip lengths in Settings.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
 - **Not detected:** windowed games aren't detected, so they're only recorded if they're on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
+- **Adding a game:** open the game, then choose it in Settings, Games. Afterclip lists what's open, with likely games first, and only looks at the list, so it never touches the game. Settings and auto-record apply when the game runs fullscreen. Some games hidden by anti-cheat may not be listed, so use Browse to find their program file.
 - **Game profiles:** a profile that changes capture settings restarts capture when the game opens, which clears the buffer. Normal settings return 10 minutes after the game closes, so you can still clip its last moments. Neither happens during a recording.
 - **Sharing long clips:** a very long clip can't fit a small size and still look watchable, so Afterclip asks you to trim it or pick a larger size.
 - **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
