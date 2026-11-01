@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src data:; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost">
+<title>Afterclip Editor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="editor">
+  <aside class="library">
+    <h2>Your clips</h2>
+    <ul id="library" class="library-list"></ul>
+  </aside>
+  <main class="stage">
+    <div class="player">
+      <video id="video" preload="auto"></video>
+      <div id="player-empty" class="player-empty">Click a clip on the left to add it, then drag the handles to trim it.</div>
+    </div>
+    <div id="trim" class="trim" hidden aria-label="Trim">
+      <div id="kept" class="trim-kept"></div>
+      <div id="playhead" class="trim-play"></div>
+      <button id="handle-start" class="trim-handle" aria-label="Trim start" title="Start"></button>
+      <button id="handle-end" class="trim-handle" aria-label="Trim end" title="End"></button>
+    </div>
+    <div class="controls">
+      <button id="play" class="small" disabled>Play</button>
+      <button id="play-all" class="small" disabled>Play all</button>
+      <span id="time" class="time">0:00.0</span>
+      <span class="spacer"></span>
+      <button id="set-start" class="small" disabled title="Set start to the current position">Set start</button>
+      <button id="set-end" class="small" disabled title="Set end to the current position">Set end</button>
+    </div>
+  </main>
+  <section class="timeline">
+    <div class="timeline-head">
+      <strong>Timeline</strong>
+      <span id="total" class="total">0:00</span>
+      <p id="message" class="note">Trims start on the nearest keyframe, so nothing is re-encoded and quality stays the same. Originals are never changed.</p>
+      <button id="export" class="small primary" disabled>Save video</button>
+    </div>
+    <div id="segments" class="segments"></div>
+  </section>
+</div>
+<script src="bridge.js"></script>
+<script src="editor.js"></script>
+</body>
+</html>

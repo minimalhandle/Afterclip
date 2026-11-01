@@ -1,0 +1,26 @@
+{
+  "name": "afterclip",
+  "version": "0.1.0",
+  "description": "Clip game moments with hotkeys or Stream Deck, powered by libobs",
+  "private": true,
+  "scripts": {
+    "build:engine": "node scripts/fetch-obs.js && node scripts/build-engine.js && node scripts/build-plugin.js",
+    "start": "npm run build:engine && tauri dev",
+    "dist": "npm run build:engine && tauri build",
+    "test:media": "node src/test/media-test.js",
+    "test:e2e": "node src/test/e2e.js",
+    "test:capture": "node src/test/capture.js",
+    "test:ui": "node src/test/ui.js",
+    "test:plugin": "node src/test/plugin-test.js",
+    "plugin": "node scripts/build-plugin.js && npx -y @elgato/cli@1.10.4 pack streamdeck/com.afterclip.clips.sdPlugin --output streamdeck/dist --force --no-update-check",
+    "brand": "node scripts/build-brand.js && tauri icon branding/afterclip-icon-1024.png -o src-tauri/icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "ffmpeg-static": "^5.2.0",
+    "ws": "^8.18.0"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true
+  }
+}

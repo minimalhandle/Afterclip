@@ -1,0 +1,316 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Afterclip",
+  "Description": "Save game clips and control recording in Afterclip.",
+  "Author": "Josh",
+  "Version": "0.5.0.0",
+  "UUID": "com.afterclip.clips",
+  "SDKVersion": 2,
+  "CodePath": "main.cjs",
+  "Nodejs": {
+    "Version": "24"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "Icon": "imgs/plugin",
+  "Category": "Afterclip",
+  "CategoryIcon": "imgs/category",
+  "Actions": [
+    {
+      "UUID": "com.afterclip.clips.save-15-sec",
+      "Name": "Save Last 15 Sec",
+      "Tooltip": "Save the last 15 seconds of your buffer.",
+      "Icon": "imgs/action-save-15-sec",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-15-sec",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-30-sec",
+      "Name": "Save Last 30 Sec",
+      "Tooltip": "Save the last 30 seconds of your buffer.",
+      "Icon": "imgs/action-save-30-sec",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-30-sec",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-1-min",
+      "Name": "Save Last 1 Min",
+      "Tooltip": "Save the last 1 minute of your buffer.",
+      "Icon": "imgs/action-save-1-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-1-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-2-min",
+      "Name": "Save Last 2 Min",
+      "Tooltip": "Save the last 2 minutes of your buffer.",
+      "Icon": "imgs/action-save-2-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-2-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-3-min",
+      "Name": "Save Last 3 Min",
+      "Tooltip": "Save the last 3 minutes of your buffer.",
+      "Icon": "imgs/action-save-3-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-3-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-5-min",
+      "Name": "Save Last 5 Min",
+      "Tooltip": "Save the last 5 minutes of your buffer.",
+      "Icon": "imgs/action-save-5-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-5-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-10-min",
+      "Name": "Save Last 10 Min",
+      "Tooltip": "Save the last 10 minutes of your buffer.",
+      "Icon": "imgs/action-save-10-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-10-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-15-min",
+      "Name": "Save Last 15 Min",
+      "Tooltip": "Save the last 15 minutes of your buffer.",
+      "Icon": "imgs/action-save-15-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-15-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-20-min",
+      "Name": "Save Last 20 Min",
+      "Tooltip": "Save the last 20 minutes of your buffer.",
+      "Icon": "imgs/action-save-20-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-20-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-30-min",
+      "Name": "Save Last 30 Min",
+      "Tooltip": "Save the last 30 minutes of your buffer.",
+      "Icon": "imgs/action-save-30-min",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-30-min",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-full",
+      "Name": "Save Full Buffer",
+      "Tooltip": "Save everything in your buffer.",
+      "Icon": "imgs/action-save-full",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-full",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.record",
+      "Name": "Record",
+      "Tooltip": "Start or stop a full recording. The key shows the live state.",
+      "Icon": "imgs/action-record",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/record",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.mic",
+      "Name": "Mute Mic In Clips",
+      "Tooltip": "Mute your mic in recordings and clips. It only affects Afterclip, not your calls.",
+      "Icon": "imgs/action-mic",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/mic",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.clean-mic",
+      "Name": "Clean Mic",
+      "Tooltip": "Turn noise suppression and the noise gate on or off for your mic in clips.",
+      "Icon": "imgs/action-clean-mic",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/clean-mic",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.marker",
+      "Name": "Add Marker",
+      "Tooltip": "Mark this moment in the running recording.",
+      "Icon": "imgs/action-marker",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/marker",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.clip",
+      "Name": "Save Custom Length",
+      "Tooltip": "Save a length you choose in the key's settings.",
+      "Icon": "imgs/action-clip",
+      "PropertyInspectorPath": "ui/clip.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/clip",
+          "ShowTitle": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>Afterclip</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="panel">
+<div class="shell">
+<header class="top">
+  <div id="brand" class="brand"><img class="logo" src="logo.svg" alt="">Afterclip</div>
+  <div id="summary" class="summary"></div>
+  <div id="crumbs" class="crumbs" hidden>
+    <button id="go-back" class="icon" aria-label="Back" title="Back">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+    </button>
+    <button id="crumb-root" class="crumb-root">Settings</button>
+    <span id="crumb-sep" class="crumb-sep" aria-hidden="true">›</span>
+    <span id="crumb-now" class="crumb-now"></span>
+  </div>
+  <div class="top-actions">
+    <button id="open-settings" class="icon" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+    </button>
+    <button id="close-panel" class="icon" aria-label="Close" title="Close">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+</header>
+
+<div id="home" class="view">
+  <section id="capture-card" class="capture-card">
+    <div class="capture-line">
+      <span id="capture-dot" class="dot"></span>
+      <div class="capture-text">
+        <div id="capture-title" class="capture-title">Starting</div>
+        <div id="capture-detail" class="capture-detail"></div>
+      </div>
+      <div class="capture-actions">
+        <button id="mic" class="mic-toggle" aria-pressed="false" aria-label="Mute mic in clips" title="Mute mic in clips">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 3l16 18"/></svg>
+        </button>
+        <button id="clean-mic" class="mic-toggle" aria-pressed="false" aria-label="Clean Mic" title="Clean Mic: removes background noise and keyboard sound">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM18.5 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>
+        </button>
+        <button id="marker" class="mic-toggle" aria-label="Add marker to recording" title="Add marker to recording" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 21V4M6 4h11l-2.5 4L17 12H6"/></svg>
+        </button>
+        <button id="record" class="record-toggle">Record</button>
+      </div>
+    </div>
+    <div id="perf-strip" class="perf-strip"></div>
+    <div id="admin" class="admin" hidden>
+      <span id="admin-text"></span>
+      <button id="restart-admin" class="small">Restart as administrator</button>
+    </div>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-kind="clip" role="tab">Clips</button>
+    <button class="tab" data-kind="recording" role="tab">Recordings</button>
+    <button id="open-editor" class="tab-action">Open editor</button>
+  </div>
+  <div id="banner" class="banner" hidden></div>
+  <ul id="media" class="media"></ul>
+  <p id="empty" class="empty" hidden></p>
+  <div id="selection" class="selection" hidden>
+    <span id="selection-count"></span>
+    <button id="merge-selected" class="small primary">Open in editor</button>
+    <button id="clear-selected" class="small">Clear</button>
+  </div>
+
+  <footer class="save">
+    <div id="lengths" class="lengths" role="radiogroup" aria-label="Clip length"></div>
+    <button id="save-clip" class="save-button">Save clip</button>
+    <div id="hint" class="hint"></div>
+  </footer>
+</div>
+
+<div id="settings" class="view" hidden>
+  <nav id="settings-list" class="settings-list" aria-label="Settings sections"></nav>
+
+  <div class="pane" data-pane="general" hidden>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Launch on startup</div><div class="setting-desc">Start Afterclip when you sign in to Windows.</div></div>
+        <input id="launchOnStartup" class="switch" type="checkbox" aria-label="Launch on startup">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Start minimized</div><div class="setting-desc">Start in the tray. Off opens this panel when Afterclip starts.</div></div>
+        <input id="startMinimized" class="switch" type="checkbox" aria-label="Start minimized">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Close to tray</div><div class="setting-desc">The X keeps Afterclip running in the tray. Off makes it quit.</div></div>
+        <input id="closeToTray" class="switch" type="checkbox" aria-label="Close to tray">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Run as administrator</div><div id="admin-note" class="setting-desc">Some games, such as Call of Duty, need this for game capture. Windows asks for permission each time Afterclip starts.</div></div>
+        <input id="runAsAdmin" class="switch" type="checkbox" aria-label="Run as administrator">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Notifications</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clip saved popup</div><div class="setting-desc">A small note in the top right of your screen. Exclusive fullscreen games may hide it.</div></div>
+        <input id="toastEnabled" class="switch" type="checkbox" aria-label="Clip saved popup">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Beeps</div><div class="setting-desc">Sounds for saved clips, recording, mic mute and errors.</div></div>
+        <input id="beepEnabled" class="switch" type="checkbox" aria-label="Beeps">
+      </div>
+    </div>
+    <button id="quit" class="small danger">Quit Afterclip</button>
+  </div>
+
+  <div class="pane" data-pane="buffer" hidden>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Buffer length</div><div class="setting-desc">How far back you can save a clip from.</div></div>
+        <select id="bufferMinutes" aria-label="Buffer length">
+          <option value="0.5">30 seconds</option><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option>
+          <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option>
+        </select>
+      </div>
+    </div>
+    <p id="estimate" class="note"></p>
+  </div>
+
+  <div class="pane" data-pane="video" hidden>
+    <div class="card">
+      <div class="card-title">
+        <span>Quality</span>
+        <select id="quality" aria-label="Quality profile" class="profile">
+          <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+          <option value="full">Full quality</option><option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Output resolution</div><div class="setting-desc">The pixel size of your saved clips.</div></div>
+        <select id="resolution" aria-label="Output resolution"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Visual quality</div><div class="setting-desc">How much detail is kept. Higher means bigger files and more memory.</div></div>
+        <select id="bitrateKbps" aria-label="Visual quality"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Frame rate</div><div class="setting-desc">Frames per second recorded. Native matches your monitor.</div></div>
+        <select id="frameRate" aria-label="Frame rate"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Encoder preset</div><div class="setting-desc">How much effort goes into each frame. Faster uses less GPU.</div></div>
+        <select id="encoderPreset" aria-label="Encoder preset">
+          <option value="p1">Fastest (P1)</option><option value="p2">Faster (P2)</option><option value="p3">Fast (P3)</option><option value="p4">Balanced (P4)</option>
+          <option value="p5">Quality (P5)</option><option value="p6">High quality (P6)</option><option value="p7">Best quality (P7)</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Multipass encoding</div><div class="setting-desc">Looks at each frame twice for better quality. NVIDIA only, and uses more GPU.</div></div>
+        <select id="multipass" aria-label="Multipass encoding"><option value="false">Off (faster)</option><option value="true">On (higher quality)</option></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Encoder</div><div class="setting-desc">What converts your video.</div></div>
+        <select id="encoder" aria-label="Encoder">
+          <option value="auto">Auto (recommended)</option><option value="nvenc">NVIDIA NVENC</option>
+          <option value="amd">AMD AMF</option><option value="qsv">Intel QuickSync</option><option value="x264">x264 (CPU)</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Codec</div><div class="setting-desc">H.264 plays everywhere. HEVC and AV1 give smaller files, but some apps can't play them.</div></div>
+        <select id="codec" aria-label="Codec"><option value="h264">H.264</option><option value="hevc">HEVC (H.265)</option><option value="av1">AV1</option></select>
+      </div>
+      <p id="encoder-note" class="note"></p>
+    </div>
+    <p id="quality-note" class="note"></p>
+  </div>
+
+  <div class="pane" data-pane="audio" hidden>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clean Mic</div><div class="setting-desc">Removes background noise and keyboard sound on sources ticked Mute key, in your clips only.</div></div>
+        <input id="cleanMicSwitch" class="switch" type="checkbox" aria-label="Clean Mic">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Game audio</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Record the game's audio</div><div class="setting-desc">Follows the game to whichever device or mixer channel it plays through.</div></div>
+        <input id="gameAudio" class="switch" type="checkbox" aria-label="Record the game's audio">
+      </div>
+      <div class="setting wide">
+        <div id="game-level"></div>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Give it its own track</div><div class="setting-desc">Saves the game separately for editing.</div></div>
+        <input id="gameAudioOwnTrack" class="switch" type="checkbox" aria-label="Give game audio its own track">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Sources</div>
+      <div id="audio-list"></div>
+      <div class="row wrap">
+        <button class="small" data-add="output">Add output</button>
+        <button class="small" data-add="input">Add input</button>
+        <button class="small" data-add="app">Add app</button>
+      </div>
+    </div>
+    <p class="note"><b>Main mix</b> is what ordinary players hear. <b>Own track</b> also saves it separately. <b>Mute key</b> is silenced by the mic mute key. An app is already part of desktop audio, so leave it out of the main mix if desktop audio is in it, or you'll hear it twice.</p>
+    <p id="audio-warning" class="note warn" hidden></p>
+  </div>
+
+  <div class="pane" data-pane="hotkeys" hidden>
+    <div class="card">
+      <div class="card-title">Clip lengths</div>
+      <div id="presets"></div>
+      <div class="row wrap"><button id="add-preset" class="small">Add clip length</button></div>
+    </div>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Record</div><div class="setting-desc">Start or stop a full recording.</div></div>
+        <input id="recordHotkey" readonly aria-label="Record hotkey" class="key-field">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Mute mic</div><div class="setting-desc">Mute your mic in clips.</div></div>
+        <input id="micHotkey" readonly aria-label="Mute mic hotkey" class="key-field">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Add marker</div><div class="setting-desc">Mark a moment in a running recording.</div></div>
+        <input id="markerHotkey" readonly aria-label="Add marker hotkey" class="key-field">
+      </div>
+    </div>
+  </div>
+
+  <div class="pane" data-pane="recording" hidden>
+    <div class="card">
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Split long recordings</div><div class="setting-desc">Starts a new file after this long, so a crash or a huge file costs less.</div></div>
+        <select id="recordSplit" aria-label="Split long recordings">
+          <option value="0">Off</option><option value="300">Every 5 minutes</option><option value="600">Every 10 minutes</option><option value="900">Every 15 minutes</option>
+          <option value="1800">Every 30 minutes</option><option value="3600">Every hour</option>
+        </select>
+      </div>
+    </div>
+    <p class="note">Press the marker key while recording to add a chapter you can jump to in most video players. Changes apply to your next recording.</p>
+  </div>
+
+  <div class="pane" data-pane="performance" hidden>
+    <p id="perf-health" class="perf-health">Checking.</p>
+    <div class="card">
+      <div class="setting"><div class="setting-text"><div class="setting-name">Frame rate</div><div class="setting-desc">Frames being captured each second.</div></div><div id="stat-fps" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Skipped by encoder</div><div class="setting-desc">The encoder couldn't keep up. Lower quality or preset.</div></div><div id="stat-encoder" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Lagged while rendering</div><div class="setting-desc">The GPU was too busy, usually with the game.</div></div><div id="stat-render" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Capture CPU</div><div class="setting-desc">The capture engine's share of your CPU.</div></div><div id="stat-cpu" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Capture memory</div><div class="setting-desc">Mostly your buffer.</div></div><div id="stat-memory" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Free disk space</div><div class="setting-desc">On your save location.</div></div><div id="stat-disk" class="stat"></div></div>
+    </div>
+  </div>
+
+  <div class="pane" data-pane="storage" hidden>
+    <div class="card">
+      <div class="setting wide">
+        <div class="setting-text"><div class="setting-name">Save location</div><div class="setting-desc">Clips and recordings are saved here.</div></div>
+        <div class="row"><input id="outputDir" readonly aria-label="Save location"><button id="pick-folder" class="small">Change</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-foot"><p id="save-note" class="note">Changes save automatically.</p></div>
+</div>
+</div>
+<script src="bridge.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
