@@ -187,8 +187,48 @@ function renderSelection() {
   $('selection-count').textContent = `${selected.size} selected`;
 }
 
+// Dragging a clip hands it to Windows, which then carries it into any app, as File Explorer does.
+const DRAG_START_PIXELS = 6;
+let justDragged = false;
+function wireDrag(li, m) {
+  li.addEventListener('dragstart', (e) => e.preventDefault());
+  li.addEventListener('mousedown', (down) => {
+    if (down.button !== 0 || down.target.closest('.more, input, .menu')) return;
+    const stop = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', stop);
+    };
+    const move = (e) => {
+      if (Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < DRAG_START_PIXELS) return;
+      stop();
+      justDragged = true;
+      api.invoke('start-drag', m.file)
+        .catch((error) => showBanner(errorText(error), 'bad'))
+        .finally(() => setTimeout(() => { justDragged = false; }, 0));
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', stop);
+  });
+}
+
+const HOME_CLIPS = 3;
+let libraryOpen = false;
+function setLibrary(open) {
+  libraryOpen = open;
+  $('home').classList.toggle('library-open', open);
+  $('library-head').hidden = !open;
+  $('brand').hidden = open;
+  $('summary').hidden = open;
+  $('view-all').hidden = open;
+  $('open-editor').hidden = !open;
+  renderMedia();
+}
+
 function renderMedia() {
-  const shown = media.filter((m) => m.kind === kind);
+  const all = media.filter((m) => m.kind === kind);
+  const shown = libraryOpen ? all : all.slice(0, HOME_CLIPS);
+  $('view-all').textContent = `View all (${all.length})`;
+  $('library-title').textContent = kind === 'clip' ? 'All clips' : 'All recordings';
   const empty = $('empty');
   empty.hidden = shown.length > 0;
   empty.textContent = kind === 'clip' ? 'No clips yet. Save your first moment with the button above or a hotkey.' : 'No recordings yet. Press Record to capture a full session.';
@@ -200,10 +240,11 @@ function renderMedia() {
     const thumb = document.createElement('button');
     thumb.className = 'thumb';
     thumb.setAttribute('aria-label', `Play ${m.name}`);
-    thumb.title = 'Play';
-    thumb.onclick = () => api.invoke('open', m.file).catch((e) => showBanner(errorText(e), 'bad'));
+    thumb.title = 'Click to play, or drag into another app';
+    thumb.onclick = () => { if (!justDragged) api.invoke('open', m.file).catch((e) => showBanner(errorText(e), 'bad')); };
     const img = document.createElement('img');
     img.alt = '';
+    img.draggable = false;
     const badge = document.createElement('span');
     badge.className = 'length';
     badge.hidden = true;
@@ -249,6 +290,7 @@ function renderMedia() {
     };
     actions.append(more, pick);
     li.append(thumb, text, actions);
+    wireDrag(li, m);
     return li;
   }));
   renderSelection();
@@ -267,6 +309,7 @@ function buildMenu(m) {
   menu.append(
     item('Play', () => api.invoke('open', m.file)),
     item('Edit', () => api.invoke('open-editor', [m.file])),
+    item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
     item('Show in folder', () => api.invoke('reveal', m.file)),
     item('Delete', async () => {
       await api.invoke('trash', m.file).catch((e) => showBanner(errorText(e), 'bad'));
@@ -762,6 +805,7 @@ function showPane(id) {
 
 function showView(name) {
   const inSettings = name === 'settings';
+  if (libraryOpen) setLibrary(false);
   $('home').hidden = inSettings;
   $('settings').hidden = !inSettings;
   $('brand').hidden = inSettings;
@@ -812,6 +856,8 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => addAudio(b.dataset.add); });
 $('open-settings').onclick = () => showView('settings');
+$('view-all').onclick = () => setLibrary(true);
+$('library-back').onclick = () => setLibrary(false);
 $('close-panel').onclick = () => { if (saveTimer) saveNow(); api.invoke('close-panel'); };
 $('crumb-root').onclick = () => showPane(null);
 $('go-back').onclick = () => {

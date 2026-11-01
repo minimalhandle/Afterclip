@@ -19,6 +19,12 @@
     <span id="crumb-sep" class="crumb-sep" aria-hidden="true">›</span>
     <span id="crumb-now" class="crumb-now"></span>
   </div>
+  <div id="library-head" class="crumbs" hidden>
+    <button id="library-back" class="icon" aria-label="Back" title="Back">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+    </button>
+    <span id="library-title" class="crumb-now">All clips</span>
+  </div>
   <div class="top-actions">
     <button id="open-settings" class="icon" aria-label="Settings" title="Settings">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
@@ -83,7 +89,8 @@
   <div class="tabs" role="tablist">
     <button class="tab active" data-kind="clip" role="tab">Clips</button>
     <button class="tab" data-kind="recording" role="tab">Recordings</button>
-    <button id="open-editor" class="tab-action">Open editor</button>
+    <button id="view-all" class="tab-action">View all</button>
+    <button id="open-editor" class="tab-action" hidden>Open editor</button>
   </div>
   <div id="banner" class="banner" hidden></div>
   <ul id="media" class="media"></ul>

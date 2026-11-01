@@ -50,6 +50,8 @@ Under **Video**, a profile (Low, Medium, High, Full quality) sets resolution, vi
 
 Afterclip runs in the tray and opens no window at startup. Click its tray icon for the panel, which shows what's being captured, your clips, and settings. The panel closes when you click away, and frees its memory 20 seconds later. Starting Afterclip again while it's running also opens the panel, including when it's running as administrator.
 
+The panel shows your three newest clips. **View all** opens every clip and recording in a grid, with **Open editor** at the top. Drag any of them into another app, such as Discord, as you would from File Explorer, or choose **Copy file** from its menu and paste it.
+
 The ring on the panel is the replay buffer. Its colour shows how much has filled, and the white part, starting at the arrowhead, is what saving would keep. It turns red while recording.
 
 The tray menu and the panel both open the **editor**. Add clips from the left, drag the handles to trim, drag cards to reorder, and save. Saving is lossless and never changes the originals, so a trim starts on the nearest keyframe (up to 1 second early), and only clips with matching video settings can merge.
