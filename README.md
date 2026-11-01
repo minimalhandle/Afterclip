@@ -175,7 +175,8 @@ Some details:
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
 - **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
-- **Library data:** favourites, and which game a renamed clip came from, are kept in `%APPDATA%\Afterclip\library.json`. Clips stay ordinary files.
+- **Library data:** favourites, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
+- **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips and recordings are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails and logs, is in `%LOCALAPPDATA%\Afterclip`.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.
 
 `npm run build:engine` downloads the official OBS release and its FFmpeg headers, verifies their checksums, compiles the engine and media helper, and assembles `vendor/engine` with only the files they need (about 56 MB). To change version, edit `OBS_VERSION` in `scripts/fetch-obs.js` and `DEPS_VERSION` in `scripts/build-engine.js`.

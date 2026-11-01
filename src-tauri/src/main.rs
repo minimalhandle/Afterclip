@@ -3,6 +3,7 @@
 mod api;
 mod capture;
 mod controller;
+mod data_move;
 mod elevated_task;
 mod engine;
 mod library;
@@ -1040,16 +1041,35 @@ fn watch_startup(core: &Shared, label: &'static str) {
     });
 }
 
+fn local_app_data() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
+/// Where everything except clips and recordings lives.
+fn home_dir() -> PathBuf {
+    std::env::var_os("AFTERCLIP_HOME").filter(|_| api::is_test_instance()).map(PathBuf::from).unwrap_or_else(|| local_app_data().join("Afterclip"))
+}
+
+/// Earlier versions kept settings in Roaming and the windows' data in a folder of its own.
+fn move_old_data(home: &Path, identifier: &str) {
+    if let Some(roaming) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        data_move::move_files(&roaming.join("Afterclip"), home, &["settings.json", "library.json", "api-token.txt"]);
+    }
+    let old_windows = local_app_data().join(identifier);
+    thread::spawn(move || {
+        let _ = fs::remove_dir_all(old_windows.join("EBWebView"));
+        let _ = fs::remove_dir(old_windows);
+    });
+}
+
 fn build_window<'a>(app: &'a AppHandle, label: &str, page: &str) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title("Afterclip")
         // Hidden until the page reports it has rendered, on a dark background rather than white.
         .visible(false)
-        .background_color(BACKGROUND);
+        .background_color(BACKGROUND)
+        .data_directory(home_dir().join("webview"));
     if api::is_test_instance() {
-        if let Some(home) = std::env::var_os("AFTERCLIP_HOME") {
-            builder = builder.data_directory(PathBuf::from(home).join("webview"));
-        }
         if let Ok(port) = std::env::var("AFTERCLIP_DEBUG_PORT") {
             builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
         }
@@ -1295,12 +1315,12 @@ fn main() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
-            let test_home = std::env::var_os("AFTERCLIP_HOME").filter(|_| api::is_test_instance()).map(PathBuf::from);
-            let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-            let roaming = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-            let home = test_home.clone().unwrap_or_else(|| local.join("Afterclip"));
-            // The Stream Deck plugin reads its token from here too.
-            let user_data = test_home.map(|h| h.join("userData")).unwrap_or_else(|| roaming.join("Afterclip"));
+            let home = home_dir();
+            // The Stream Deck plugin reads its token from here too. Test copies start with their settings in a folder of their own.
+            let user_data = if api::is_test_instance() { home.join("userData") } else { home.clone() };
+            if !api::is_test_instance() {
+                move_old_data(&home, &app.config().identifier);
+            }
             let settings_file = user_data.join("settings.json");
 
             let (width, height) = win32::primary_monitor_size();

@@ -5,7 +5,8 @@ const { keySvg } = require('./key-art.cjs');
 
 const arg = (name) => process.argv[process.argv.indexOf(`-${name}`) + 1];
 const API = process.env.AFTERCLIP_API ?? 'http://127.0.0.1:4467';
-const TOKEN_FILE = process.env.AFTERCLIP_TOKEN_FILE ?? path.join(process.env.APPDATA ?? '', 'Afterclip', 'api-token.txt');
+// Afterclip 1.0.0 kept this in Roaming, and it's still there until that copy is updated.
+const TOKEN_FILES = process.env.AFTERCLIP_TOKEN_FILE ? [process.env.AFTERCLIP_TOKEN_FILE] : ['LOCALAPPDATA', 'APPDATA'].map((folder) => path.join(process.env[folder] ?? '', 'Afterclip', 'api-token.txt'));
 const REQUEST_TIMEOUT_MS = 90_000; // Saving a long buffer takes a moment.
 const STATUS_TIMEOUT_MS = 1500;
 const POLL_MS = 2000;
@@ -30,7 +31,8 @@ const ws = new WebSocket(`ws://127.0.0.1:${arg('port')}`);
 const sd = (event, context, payload) => ws.send(JSON.stringify({ event, context, payload }));
 
 async function call(method, route, timeout = REQUEST_TIMEOUT_MS) {
-  const token = fs.readFileSync(TOKEN_FILE, 'utf8').trim(); // Read each time: Afterclip may have just created it.
+  const tokenFile = TOKEN_FILES.find((file) => fs.existsSync(file)) ?? TOKEN_FILES[0];
+  const token = fs.readFileSync(tokenFile, 'utf8').trim(); // Read each time: Afterclip may have just created it.
   const res = await fetch(API + route, { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeout) });
   if (!res.ok) throw new Error(`Afterclip returned ${res.status}`);
   return res.json();

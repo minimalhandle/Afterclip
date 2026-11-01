@@ -152,6 +152,13 @@ async function main() {
     const refused = await panel.eval("window.afterclip.invoke('start-drag', 'C:\\\\Windows\\\\win.ini').then(() => 'allowed', (e) => e.message)");
     check('dragging refuses files outside your clips', /Not a Afterclip file/.test(refused), refused);
 
+    // Thumbnails live with the app's data, and only clips, recordings and a hidden .staging stay in the save folder.
+    await waitFor(() => fs.existsSync(path.join(session.home, 'thumbs')) && fs.readdirSync(path.join(session.home, 'thumbs')).some((f) => f.endsWith('.jpg')), 15000, 'a thumbnail in the app data');
+    check('thumbnails are kept in the app data', true);
+    check('the save folder holds only clips, recordings and .staging', fs.readdirSync(output).sort().join() === '.staging,Clips,Recordings', fs.readdirSync(output).join());
+    check('.staging is hidden', /Hidden/.test(powershell(`(Get-Item -Force '${path.join(output, '.staging')}').Attributes`)));
+    check('window data is kept in the app data', fs.existsSync(path.join(session.home, 'webview', 'EBWebView')));
+
     // Per-game settings, with a pretend game: its profile applies, it auto-records, and both end when it closes.
     const base = await panel.eval("window.afterclip.invoke('state').then((s) => s.settings)");
     const profiled = { ...base, gameProfiles: [{ exe: 'pretend.exe', name: 'Pretend', bufferSeconds: 25, autoRecord: true }] };

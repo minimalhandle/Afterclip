@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::BOOL;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::Graphics::Gdi::{CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};
 use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, EnumWindows, GetWindow, GetWindowLongW, IsWindowVisible, DI_NORMAL, GWL_EXSTYLE, GW_OWNER, HICON};
@@ -94,6 +95,16 @@ fn exe_path_of(pid: u32) -> Option<String> {
 
 fn exe_of(pid: u32) -> String {
     exe_path_of(pid).and_then(|full| Path::new(&full).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+}
+
+pub fn hide_folder(path: &Path) {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    unsafe {
+        let current = GetFileAttributesW(PCWSTR(wide.as_ptr()));
+        if current != INVALID_FILE_ATTRIBUTES {
+            let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(current | FILE_ATTRIBUTE_HIDDEN.0));
+        }
+    }
 }
 
 /// Some games pad their titles with invisible characters, Call of Duty among them.
