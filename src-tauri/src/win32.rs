@@ -1,18 +1,21 @@
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, Once};
 use std::thread;
+use std::time::Instant;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect,
-    GetStockObject, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteDC,
+    DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetStockObject, InvalidateRect, SelectObject, SetBkMode, SetDCBrushColor,
+    SetTextColor, SetWindowRgn, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DC_BRUSH, DEFAULT_CHARSET, DT_END_ELLIPSIS, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, PostMessageW, PostQuitMessage,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
     RegisterClassW, SetLayeredWindowAttributes, SetTimer, ShowWindow, LWA_ALPHA, MSG, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DESTROY,
     WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -243,42 +246,110 @@ pub fn set_launch_on_startup(enabled: bool) -> Result<(), String> {
 
 const TOAST_CLASS: PCWSTR = windows::core::w!("AfterclipToast");
 const TOAST_MS: u32 = 2600;
+const TOAST_CLOSE_TIMER: usize = 1;
+const TOAST_SHINE_TIMER: usize = 2;
+const SHINE_FRAME_MS: u32 = 20;
+/// Start and length of each sweep, in milliseconds. Nothing repaints between or after them, to stay light during a game.
+const SHINE_SWEEPS: [(u128, u128); 2] = [(120, 850), (1400, 850)];
+const SHINE_END_MS: u128 = 2250;
+const TOAST_BACKGROUND: (f64, f64, f64) = (0x17 as f64, 0x14 as f64, 0x33 as f64);
+const TOAST_SHINE: (f64, f64, f64) = (0xA9 as f64, 0x9D as f64, 0xFF as f64);
 static TOAST_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static TOAST_TEXT: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 static TOAST_CLASS_READY: Once = Once::new();
+thread_local! {
+    // Each toast runs on its own thread.
+    static TOAST_SHOWN_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// How far through a sweep the shine is at this moment, from 0 to 1, eased at both ends.
+fn shine_progress(elapsed_ms: u128) -> Option<f64> {
+    SHINE_SWEEPS.iter().find(|(start, length)| elapsed_ms >= *start && elapsed_ms < start + length).map(|(start, length)| {
+        let t = (elapsed_ms - start) as f64 / *length as f64;
+        t * t * (3.0 - 2.0 * t)
+    })
+}
+
+/// A soft diagonal band of light across the background, drawn in small blocks without allocating anything.
+unsafe fn paint_shine(dc: HDC, area: &RECT, progress: f64, scale: i32) {
+    let block = (2 * scale / 96).max(1);
+    let (width, height) = (area.right as f64, area.bottom as f64);
+    let band = 72.0 * scale as f64 / 96.0;
+    let slant = 0.7;
+    let centre = -band + (width + 2.0 * band + height * slant) * progress;
+    let brush = HBRUSH(GetStockObject(DC_BRUSH).0);
+    let mut y = 0;
+    while y < area.bottom {
+        let row_centre = centre - y as f64 * slant;
+        let mut x = (((row_centre - band) as i32 / block) * block).max(0);
+        while x < area.right && (x as f64) < row_centre + band {
+            let distance = ((x as f64 - row_centre) / band).abs().min(1.0);
+            let glow = (distance * std::f64::consts::FRAC_PI_2).cos().powi(2) * 0.6;
+            let mix = |base: f64, light: f64| (base + (light - base) * glow) as u32;
+            let (r, g, b) = (mix(TOAST_BACKGROUND.0, TOAST_SHINE.0), mix(TOAST_BACKGROUND.1, TOAST_SHINE.1), mix(TOAST_BACKGROUND.2, TOAST_SHINE.2));
+            SetDCBrushColor(dc, COLORREF(r | g << 8 | b << 16));
+            FillRect(dc, &RECT { left: x, top: y, right: x + block, bottom: y + block }, brush);
+            x += block;
+        }
+        y += block;
+    }
+}
 
 extern "system" fn toast_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
-                let dc = BeginPaint(hwnd, &mut ps);
+                let screen = BeginPaint(hwnd, &mut ps);
                 let mut area = RECT::default();
                 let _ = GetClientRect(hwnd, &mut area);
                 let scale = GetDpiForWindow(hwnd) as i32;
                 let px = |v: i32| v * scale / 96;
+                // Drawn off screen and copied across in one go, so the sweep can't flicker.
+                let dc = CreateCompatibleDC(Some(screen));
+                let bitmap = CreateCompatibleBitmap(screen, area.right, area.bottom);
+                let old_bitmap = SelectObject(dc, bitmap.into());
                 let background = CreateSolidBrush(COLORREF(0x0033_1417));
                 FillRect(dc, &area, background);
                 let _ = DeleteObject(background.into());
+                let old_shine_brush = SelectObject(dc, GetStockObject(DC_BRUSH));
+                let elapsed = TOAST_SHOWN_AT.with(|t| t.get()).map_or(0, |at| at.elapsed().as_millis());
+                if let Some(progress) = shine_progress(elapsed) {
+                    paint_shine(dc, &area, progress, scale);
+                }
+                SelectObject(dc, old_shine_brush);
                 // The brand dot, then the message. COLORREF is written blue-green-red.
                 let dot = CreateSolidBrush(COLORREF(0x00FF_6C7C));
                 let old_brush = SelectObject(dc, dot.into());
                 let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
                 let middle = area.bottom / 2;
-                let _ = Ellipse(dc, px(16), middle - px(5), px(26), middle + px(5));
+                let _ = Ellipse(dc, px(18), middle - px(6), px(30), middle + px(6));
                 SelectObject(dc, old_pen);
                 SelectObject(dc, old_brush);
                 let _ = DeleteObject(dot.into());
-                let font = CreateFontW(-px(14), 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, windows::core::w!("Segoe UI"));
+                let font = CreateFontW(-px(16), 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, windows::core::w!("Segoe UI"));
                 let old_font = SelectObject(dc, font.into());
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, COLORREF(0x00FC_EEF0));
                 let mut text = TOAST_TEXT.lock().unwrap().clone();
-                let mut box_area = RECT { left: px(36), top: 0, right: area.right - px(12), bottom: area.bottom };
+                let mut box_area = RECT { left: px(42), top: 0, right: area.right - px(14), bottom: area.bottom };
                 DrawTextW(dc, &mut text, &mut box_area, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
                 SelectObject(dc, old_font);
                 let _ = DeleteObject(font.into());
+                let _ = BitBlt(screen, 0, 0, area.right, area.bottom, Some(dc), 0, 0, SRCCOPY);
+                SelectObject(dc, old_bitmap);
+                let _ = DeleteObject(bitmap.into());
+                let _ = DeleteDC(dc);
                 let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == TOAST_SHINE_TIMER => {
+                let elapsed = TOAST_SHOWN_AT.with(|t| t.get()).map_or(u128::MAX, |at| at.elapsed().as_millis());
+                if elapsed >= SHINE_END_MS {
+                    let _ = KillTimer(Some(hwnd), TOAST_SHINE_TIMER);
+                }
+                // One extra frame after each sweep clears the band away.
+                let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
             WM_TIMER => {
@@ -315,7 +386,7 @@ pub fn show_toast(message: &str) {
 
         let scale = GetDpiForSystem() as i32;
         let px = |v: i32| v * scale / 96;
-        let (width, height, margin, corner) = (px(250), px(44), px(16), px(18));
+        let (width, height, margin, corner) = (px(290), px(54), px(16), px(22));
         let (_, top, right, _) = work_area_at(0, 0);
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
@@ -334,8 +405,10 @@ pub fn show_toast(message: &str) {
         TOAST_WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 245, LWA_ALPHA);
         SetWindowRgn(hwnd, Some(CreateRoundRectRgn(0, 0, width + 1, height + 1, corner, corner)), true);
+        TOAST_SHOWN_AT.with(|t| t.set(Some(Instant::now())));
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        SetTimer(Some(hwnd), 1, TOAST_MS, None);
+        SetTimer(Some(hwnd), TOAST_CLOSE_TIMER, TOAST_MS, None);
+        SetTimer(Some(hwnd), TOAST_SHINE_TIMER, SHINE_FRAME_MS, None);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             DispatchMessageW(&msg);
@@ -377,12 +450,33 @@ pub fn primary_monitor_size() -> (i64, i64) {
 // PlaySound reads this after returning, so it has to outlive the call.
 static PLAYING: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
+const TONE_RATE: u32 = 48000;
+
+/// Each tone fades in and out so it can't click. Silence at both ends lets the audio device settle,
+/// because opening a device mid-game is when a sound is most likely to break up.
+fn tone_samples(frequencies: &[f64]) -> Vec<i16> {
+    let ms = |v: f64| (TONE_RATE as f64 * v / 1000.0) as usize;
+    let (lead, tone, attack, gap) = (ms(30.0), ms(100.0), ms(6.0), ms(10.0));
+    let mut samples = vec![0i16; lead];
+    for freq in frequencies {
+        for i in 0..tone {
+            let rise = (i as f64 / attack as f64).min(1.0);
+            let rise = 0.5 - 0.5 * (std::f64::consts::PI * rise).cos();
+            let fade = 1.0 - i as f64 / tone as f64;
+            let wave = (2.0 * std::f64::consts::PI * freq * i as f64 / TONE_RATE as f64).sin();
+            samples.push((wave * 0.15 * rise * fade * 32767.0) as i16);
+        }
+        samples.extend(std::iter::repeat_n(0i16, gap));
+    }
+    samples.extend(std::iter::repeat_n(0i16, lead));
+    samples
+}
+
 /// Plays beeps without a window, since this is the only confirmation a player gets in a fullscreen game.
 pub fn play_tones(frequencies: &[f64]) {
-    const RATE: u32 = 44100;
-    let samples_per_tone = (RATE as f64 * 0.11) as usize;
-    let tone_samples = (RATE as f64 * 0.1) as usize;
-    let bytes = samples_per_tone * frequencies.len() * 2;
+    const RATE: u32 = TONE_RATE;
+    let samples = tone_samples(frequencies);
+    let bytes = samples.len() * 2;
     let mut wav = Vec::with_capacity(44 + bytes);
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36 + bytes as u32).to_le_bytes());
@@ -396,16 +490,8 @@ pub fn play_tones(frequencies: &[f64]) {
     wav.extend_from_slice(&16u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&(bytes as u32).to_le_bytes());
-    for freq in frequencies {
-        for i in 0..samples_per_tone {
-            let sample = if i < tone_samples {
-                let fade = 1.0 - i as f64 / tone_samples as f64;
-                (2.0 * std::f64::consts::PI * freq * i as f64 / RATE as f64).sin() * 0.15 * fade
-            } else {
-                0.0
-            };
-            wav.extend_from_slice(&((sample * 32767.0) as i16).to_le_bytes());
-        }
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
     }
     let mut playing = PLAYING.lock().unwrap();
     // Stop the current sound before replacing the buffer it may still be reading.
@@ -415,5 +501,31 @@ pub fn play_tones(frequencies: &[f64]) {
     *playing = wav;
     unsafe {
         let _ = PlaySoundW(PCWSTR(playing.as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tones_start_and_end_silent_without_clicks() {
+        let samples = tone_samples(&[880.0, 1320.0]);
+        assert_eq!(samples[0], 0);
+        assert_eq!(*samples.last().unwrap(), 0);
+        assert!(samples.iter().any(|s| s.abs() > 3000), "the tone should be audible");
+        // A click is a jump far larger than the steepest slope of the highest tone at full volume.
+        let steepest = 0.15 * 32767.0 * 2.0 * std::f64::consts::PI * 1320.0 / TONE_RATE as f64;
+        let biggest = samples.windows(2).map(|w| (w[1] as f64 - w[0] as f64).abs()).fold(0.0, f64::max);
+        assert!(biggest <= steepest * 1.1, "jump of {biggest}, allowed {steepest}");
+    }
+
+    #[test]
+    fn shine_stops_repainting_between_and_after_sweeps() {
+        assert_eq!(shine_progress(0), None);
+        assert_eq!(shine_progress(120), Some(0.0));
+        assert_eq!(shine_progress(1100), None);
+        assert!(shine_progress(1800).is_some());
+        assert_eq!(shine_progress(SHINE_END_MS), None);
     }
 }
