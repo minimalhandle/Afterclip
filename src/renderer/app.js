@@ -422,7 +422,6 @@ function renderMedia() {
   renderSelection();
 }
 
-const SHARE_SIZES_MB = [10, 25, 50];
 
 function buildMenu(m) {
   const menu = document.createElement('div');
@@ -446,10 +445,10 @@ function buildMenu(m) {
       return api.invoke('send-to-discord', m.file).catch(() => undefined);
     }),
     ...(video ? [
-      ...SHARE_SIZES_MB.map((mb) => item(`Make ${mb} MB copy`, () => {
-        showBanner(`Making a ${mb} MB copy. A long clip can take a while, and you can keep playing.`);
-        api.invoke('shrink-clip', { file: m.file, megabytes: mb }).catch(() => undefined);
-      })),
+      item('Compress', () => {
+        showBanner('Making a smaller copy. A long clip can take a while, and you can keep playing.');
+        api.invoke('compress-clip', m.file).catch(() => undefined);
+      }),
       item('Make vertical copy', () => {
         showBanner('Making a vertical copy for phones. A long clip can take a while, and you can keep playing.');
         api.invoke('vertical-clip', m.file).catch(() => undefined);
@@ -1263,8 +1262,8 @@ api.on('feedback', (f) => {
     else showBanner(`Saved ${Math.round(f.actualSeconds)}s clip`, 'good');
   } else if (f.kind === 'recording-saved') {
     showBanner('Recording saved', 'good');
-  } else if (f.kind === 'shrunk' && f.ok) {
-    showBanner(`Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
+  } else if (f.kind === 'compressed' && f.ok) {
+    showBanner(f.overTarget ? `Your ${f.megabytes} MB copy is ready. This clip is too long to go smaller and still look good, so trim it to fit 10 MB.` : `Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
   } else if (f.kind === 'vertical' && f.ok) {
     showBanner('Your vertical copy is ready to drag into any app.', 'good');
   } else if (f.kind === 'screenshot' && f.ok) {

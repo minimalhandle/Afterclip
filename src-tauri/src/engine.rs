@@ -15,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub const COMPRESS_TARGET_BYTES: u64 = 10_000_000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const SAVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -432,6 +433,18 @@ impl Engine {
         let output = unique_path(&self.clips_dir().join(format!("{stem}_{megabytes}MB.mp4")));
         let bytes = (megabytes * 1000 * 1000).to_string();
         if let Err(e) = self.media(&["shrink".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
+            let _ = fs::remove_file(&output);
+            return Err(e);
+        }
+        Ok(output)
+    }
+
+    /// Makes a smaller copy, aiming for what Discord takes. A long clip stops at a watchable quality instead, so it can end up bigger.
+    pub fn compress(&self, file: &Path) -> Result<PathBuf, String> {
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&self.clips_dir().join(format!("{stem}_small.mp4")));
+        let bytes = COMPRESS_TARGET_BYTES.to_string();
+        if let Err(e) = self.media(&["compress".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
             let _ = fs::remove_file(&output);
             return Err(e);
         }
