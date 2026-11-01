@@ -79,7 +79,11 @@ Choose Low, Medium, High or Full quality, or set each option yourself: resolutio
 
 ## Install
 
-There's no published release yet, so build it from source for now.
+Download the installer from the [latest release](https://github.com/minimalhandle/Afterclip/releases/latest) and run it. It installs to `Program Files`, and Windows asks for permission once. The installer isn't code-signed yet, so Windows may show a SmartScreen warning: choose **More info**, then **Run anyway**.
+
+For Stream Deck keys, download the `.streamDeckPlugin` file from the same release and double-click it.
+
+### Build from source
 
 You need Node, Rust, and Visual Studio with the C++ tools.
 
@@ -91,7 +95,7 @@ npm install
 npm run dist
 ```
 
-The installer is written to `src-tauri/target/release/bundle/nsis/`. It installs to `Program Files`, and Windows asks for permission once.
+The installer is written to `src-tauri/target/release/bundle/nsis/`.
 
 To run from source instead:
 
@@ -99,9 +103,7 @@ To run from source instead:
 npm start
 ```
 
-### Install the Stream Deck plugin
-
-Package the plugin, then double-click `streamdeck\dist\com.afterclip.clips.streamDeckPlugin` to install it:
+To package the Stream Deck plugin yourself, run this, then double-click `streamdeck\dist\com.afterclip.clips.streamDeckPlugin`:
 
 ```bash
 npm run plugin
