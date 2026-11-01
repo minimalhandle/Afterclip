@@ -106,10 +106,15 @@ pub struct Settings {
     /// Starts a new recording file after this long. 0 keeps one file.
     pub record_split_seconds: i64,
     pub marker_hotkey: String,
+    pub screenshot_hotkey: String,
+    /// Where Send to Discord posts. It's a secret, so it stays out of logs and messages.
+    pub discord_webhook: String,
     /// Relaunches through UAC at every start, which some games need for game capture.
     pub run_as_admin: bool,
     /// Moves the oldest clips and recordings to the Recycle Bin above this size. 0 keeps everything.
     pub storage_limit_gb: f64,
+    /// Moves clips, recordings and screenshots to the Recycle Bin after this many days. 0 keeps them.
+    pub delete_after_days: i64,
     pub game_profiles: Vec<GameProfile>,
     /// Checks for updates and installs them when it's safe to.
     pub auto_update: bool,
@@ -122,6 +127,7 @@ pub struct Settings {
     pub controller_record: String,
     pub controller_mic: String,
     pub controller_marker: String,
+    pub controller_screenshot: String,
     /// How much a controller clip keeps. 0 means the whole buffer.
     pub controller_clip_seconds: i64,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
@@ -171,8 +177,11 @@ impl Settings {
             game_audio_volume: 1.0,
             record_split_seconds: 0,
             marker_hotkey: "Alt+Shift+K".into(),
+            screenshot_hotkey: "Alt+Shift+S".into(),
+            discord_webhook: String::new(),
             run_as_admin: false,
             storage_limit_gb: 0.0,
+            delete_after_days: 0,
             game_profiles: Vec::new(),
             auto_update: true,
             skipped_update: String::new(),
@@ -181,6 +190,7 @@ impl Settings {
             controller_record: String::new(),
             controller_mic: String::new(),
             controller_marker: String::new(),
+            controller_screenshot: String::new(),
             controller_clip_seconds: 30,
             test_pattern: false,
         }
@@ -241,6 +251,8 @@ impl Settings {
 
     pub fn sanitized(mut self) -> Self {
         self.storage_limit_gb = self.storage_limit_gb.max(0.0);
+        self.delete_after_days = self.delete_after_days.max(0);
+        self.discord_webhook = self.discord_webhook.trim().to_string();
         self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
         self.fps = self.fps.clamp(10, 240);
         self.bitrate_kbps = self.bitrate_kbps.clamp(1000, 200_000);

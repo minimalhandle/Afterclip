@@ -31,7 +31,7 @@ const svgOf = (message) => decodeURIComponent(message.payload.image);
 async function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
   const names = manifest.Actions.map((a) => a.Name);
-  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip']) check(`has ${wanted} action`, names.includes(wanted));
+  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot']) check(`has ${wanted} action`, names.includes(wanted));
   const missing = manifest.Actions.flatMap((a) => [a.Icon, a.States[0].Image])
     .filter((image) => !['.svg', '.png'].some((ext) => fs.existsSync(path.join(pluginDir, image + ext))));
   check('every icon file exists', missing.length === 0, missing.join(', '));
@@ -168,7 +168,7 @@ async function main() {
     check('marker key works while recording', true);
     state.recording = false;
 
-    for (const [context, action, route, label] of [['open', 'open-panel', '/open/panel', '>OPEN<'], ['folder', 'open-clips', '/open/clips', '>CLIPS<'], ['edit', 'edit-last', '/last-clip/edit', '>EDIT LAST<'], ['copy', 'copy-last', '/last-clip/copy', '>COPY LAST<']]) {
+    for (const [context, action, route, label] of [['open', 'open-panel', '/open/panel', '>OPEN<'], ['folder', 'open-clips', '/open/clips', '>CLIPS<'], ['edit', 'edit-last', '/last-clip/edit', '>EDIT LAST<'], ['copy', 'copy-last', '/last-clip/copy', '>COPY LAST<'], ['shot', 'screenshot', '/screenshot', '>SHOT<']]) {
       event('willAppear', ACTION(action), context);
       await waitFor(() => lastImage(context) && svgOf(lastImage(context)).includes(label), 4000, `${action} face`);
       routes.length = 0;

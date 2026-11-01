@@ -57,6 +57,43 @@ try {
   const tiny = run('shrink', noisy, f('tiny.mp4'), '100000');
   check('shrink refuses a size too small to watch', tiny.status === 4 && /too long/.test(tiny.stderr), tiny.stderr.trim());
 
+  // Vertical copies: 9:16, from the middle of the picture, with the length and sound kept.
+  const vertical = f('vertical.mp4');
+  const v = run('vertical', noisy, vertical);
+  check('vertical copy runs', v.status === 0, v.stderr.trim());
+  const verticalInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', vertical], { encoding: 'utf8' }).stderr;
+  check('vertical copy is 9:16 at the original height', /Video: h264.*\b606x1080\b/.test(verticalInfo), /Video:.*/.exec(verticalInfo)?.[0]);
+  check('vertical copy keeps the main audio', (verticalInfo.match(/Audio: aac/g) ?? []).length === 1);
+  check('vertical copy keeps its length', Math.abs(seconds(vertical) - 20) < 0.6, `${seconds(vertical)}s`);
+  const verticalDecode = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', vertical, '-f', 'null', '-'], { encoding: 'utf8' });
+  check('vertical copy decodes cleanly', verticalDecode.status === 0 && !verticalDecode.stderr.trim(), verticalDecode.stderr.trim().slice(0, 200));
+  const sides = f('sides.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=640x360:r=30:d=1', '-f', 'lavfi', '-i', 'color=lime:s=640x360:r=30:d=1', '-f', 'lavfi', '-i', 'color=blue:s=640x360:r=30:d=1', '-filter_complex', '[0][1][2]hstack=3', '-c:v', 'libx264', sides]);
+  const middle = f('middle.mp4');
+  run('vertical', sides, middle);
+  const pixel = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', middle, '-vf', 'scale=1:1:flags=area', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer' }).stdout;
+  check('vertical copy keeps the middle of the picture', pixel[1] > 200 && pixel[0] < 60 && pixel[2] < 60, [...pixel].join());
+  const tall = f('tall.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=360x640:r=30:d=1', '-c:v', 'libx264', tall]);
+  const already = run('vertical', tall, f('tall-out.mp4'));
+  check('vertical copy refuses a clip that is already vertical', already.status === 4 && /already vertical/.test(already.stderr), already.stderr.trim());
+
+  // Screenshots: the engine hands over raw NV12 in video levels, which must become the same colours.
+  const [w, h] = [64, 32];
+  const nv12 = Buffer.alloc(w * h * 3 / 2);
+  nv12.fill(235, 0, w * h); // Video-level white.
+  nv12.fill(128, w * h);
+  fs.writeFileSync(f('frame.nv12'), nv12);
+  const png = run('png', f('frame.nv12'), f('frame.png'), String(w), String(h));
+  check('png runs', png.status === 0, png.stderr.trim());
+  const pngInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', f('frame.png')], { encoding: 'utf8' }).stderr;
+  check('png is the right size', /png/.test(pngInfo) && /64x32/.test(pngInfo));
+  const white = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', f('frame.png'), '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer' }).stdout;
+  check('png has full-range colours', white[0] >= 253 && white[1] >= 253 && white[2] >= 253, [...white.subarray(0, 3)].join());
+  fs.writeFileSync(f('short.nv12'), Buffer.alloc(10));
+  check('png refuses a frame of the wrong size', run('png', f('short.nv12'), f('short.png'), String(w), String(h)).status !== 0);
+  check('a thumbnail can be made from a png', run('thumb', f('frame.png'), f('frame.jpg')).status === 0 && fs.existsSync(f('frame.jpg')));
+
   // Track mixing: a track can be removed, or turned up or down, with the video copied untouched.
   const volume = (file, track) => Number(/mean_volume: (-?[\d.]+)/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', file, '-map', `0:a:${track}`, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)?.[1]);
   const mixed = f('mixed.mp4');

@@ -27,12 +27,14 @@ const OPEN_PANEL = 'com.afterclip.clips.open-panel';
 const OPEN_CLIPS = 'com.afterclip.clips.open-clips';
 const EDIT_LAST = 'com.afterclip.clips.edit-last';
 const COPY_LAST = 'com.afterclip.clips.copy-last';
+const SCREENSHOT = 'com.afterclip.clips.screenshot';
 // Keys that do one thing and don't depend on the capture state.
 const SIMPLE_KEYS = {
   [OPEN_PANEL]: { route: '/open/panel', symbol: 'panel', small: 'OPEN' },
   [OPEN_CLIPS]: { route: '/open/clips', symbol: 'folder', small: 'CLIPS' },
   [EDIT_LAST]: { route: '/last-clip/edit', symbol: 'edit', small: 'EDIT LAST' },
   [COPY_LAST]: { route: '/last-clip/copy', symbol: 'copy', small: 'COPY LAST', confirm: 'COPIED' },
+  [SCREENSHOT]: { route: '/screenshot', symbol: 'camera', small: 'SHOT', confirm: 'SAVED' },
 };
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 

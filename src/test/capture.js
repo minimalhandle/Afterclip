@@ -18,11 +18,11 @@ function monitors() {
   return [JSON.parse(json)].flat();
 }
 
-function openStandIn({ x, y, w, h }) {
+function openStandIn({ x, y, w, h }, border = 'None') {
   const script = `Add-Type -AssemblyName System.Windows.Forms;
 Add-Type -Name K -Namespace N -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte v, byte s, uint f, System.UIntPtr e); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();';
 [void][N.K]::SetProcessDPIAware();
-$f = New-Object System.Windows.Forms.Form; $f.FormBorderStyle = 'None'; $f.StartPosition = 'Manual'; $f.BackColor = [System.Drawing.Color]::FromArgb(255,0,255); $f.Text = 'Afterclip capture test'; $f.ShowInTaskbar = $false;
+$f = New-Object System.Windows.Forms.Form; $f.FormBorderStyle = '${border}'; $f.StartPosition = 'Manual'; $f.BackColor = [System.Drawing.Color]::FromArgb(255,0,255); $f.Text = 'Afterclip capture test'; $f.ShowInTaskbar = $false;
 $f.Bounds = New-Object System.Drawing.Rectangle(${x},${y},${w},${h}); $f.TopMost = $true;
 $f.Add_Shown({ [N.K]::keybd_event(0x12,0,0,[UIntPtr]::Zero); [N.K]::keybd_event(0x12,0,2,[UIntPtr]::Zero); [void][N.K]::SetForegroundWindow($f.Handle) });
 [System.Windows.Forms.Application]::Run($f)`;
@@ -33,8 +33,9 @@ $f.Add_Shown({ [N.K]::keybd_event(0x12,0,0,[UIntPtr]::Zero); [N.K]::keybd_event(
 async function main() {
   const all = monitors();
   const primary = all.find((m) => m.primary);
-  const session = await startApp({ bufferSeconds: 20, width: primary.w, height: primary.h, fps: 30, bitrateKbps: 8000, audioSources: [], presets: [], recordHotkey: '' });
-  const { api } = session;
+  const settings = { bufferSeconds: 20, width: primary.w, height: primary.h, fps: 30, bitrateKbps: 8000, audioSources: [], presets: [], recordHotkey: '' };
+  let session = await startApp(settings);
+  let { api } = session;
   let standIn;
   try {
     await sleep(7000);
@@ -64,6 +65,24 @@ async function main() {
     const back = await api.clip(2);
     const bc = await averageColour(back.file);
     check('desktop is captured again after', !isMagenta(bc) && bc.some((v) => v > 12), `average rgb ${bc.join(',')}`);
+
+    // An ordinary window is left alone, and is only captured once it's been added as a game.
+    const inWindow = { x: primary.x + 100, y: primary.y + 100, w: 900, h: 600 };
+    standIn = openStandIn(inWindow, 'FixedSingle');
+    await sleep(5000);
+    check('an ordinary window is not treated as a game', (await mode()) === 'desktop', await mode());
+    spawn('taskkill', ['/PID', String(standIn.pid), '/T', '/F'], { stdio: 'ignore' });
+    await session.stop();
+
+    session = await startApp({ ...settings, gameProfiles: [{ exe: 'powershell.exe', name: 'Stand-in', autoRecord: false }] });
+    api = session.api;
+    await sleep(3000);
+    standIn = openStandIn(inWindow, 'FixedSingle');
+    await waitFor(async () => (await api.status()).capture.exe === 'powershell.exe', 10000, 'the added game in a window');
+    check('a game you added is captured in a window', true, (await api.status()).capture.app);
+    spawn('taskkill', ['/PID', String(standIn.pid), '/T', '/F'], { stdio: 'ignore' });
+    await waitFor(async () => (await api.status()).capture.mode === 'desktop', 8000, 'return to desktop from a window');
+    check('it returns to the desktop when that window closes', true);
   } catch (e) {
     check('no exceptions', false, e.message);
   } finally {

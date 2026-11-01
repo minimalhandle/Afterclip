@@ -32,7 +32,7 @@ The ring on the panel is your buffer. Its colour shows how much has filled, and 
 
 ### Automatic game capture
 
-Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor.
+Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor.
 
 ### Full-session recording
 
@@ -56,6 +56,10 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 ### Share anywhere
 
 Drag a clip straight into Discord or any other app, the same way you would from File Explorer. Or choose **Copy file** from its menu and paste it.
+
+From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. That posts to one channel through a webhook you add under **Settings > Sharing**, and a clip over Discord's 10 MB limit is sent as a smaller copy.
+
+**Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Storage** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
 
 Clips this good are big, so **Make 10 MB copy** (also 25 and 50 MB) re-encodes a smaller H.264 copy that fits, using your GPU where it can, with the main audio mix. Your original stays as it is.
 

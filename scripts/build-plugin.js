@@ -27,7 +27,7 @@ const action = (name, title, tooltip, extra = {}) => ({
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.6.0.0';
+manifest.Version = '0.7.0.0';
 manifest.Actions = [
   ...LENGTHS.map(([n, unit]) => action(`save-${n}-${unit}`, `Save Last ${n} ${unit === 'sec' ? 'Sec' : 'Min'}`, `Save the last ${n} ${unit === 'sec' ? 'seconds' : n === 1 ? 'minute' : 'minutes'} of your buffer.`)),
   action('save-full', 'Save Full Buffer', 'Save everything in your buffer.'),
@@ -40,6 +40,7 @@ manifest.Actions = [
   action('open-clips', 'Open Clips Folder', 'Open the folder your clips are saved in.'),
   action('edit-last', 'Edit Last Clip', 'Open your newest clip in the editor.'),
   action('copy-last', 'Copy Last Clip', 'Copy your newest clip, ready to paste into a chat or another app.'),
+  action('screenshot', 'Take Screenshot', 'Save a picture of what Afterclip is capturing.'),
 ];
 fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -59,6 +60,7 @@ for (const [name, list, face] of [
   ['open-clips', 'L', { symbol: 'folder', small: 'CLIPS' }],
   ['edit-last', 'E', { symbol: 'edit', small: 'EDIT LAST' }],
   ['copy-last', 'P', { symbol: 'copy', small: 'COPY LAST' }],
+  ['screenshot', 'S', { symbol: 'camera', small: 'SHOT' }],
 ]) {
   fs.writeFileSync(path.join(imgs, `action-${name}.svg`), listIcon(list));
   fs.writeFileSync(path.join(imgs, `${name}.svg`), keySvg(face));

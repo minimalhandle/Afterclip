@@ -351,8 +351,18 @@ fn blocked_by_elevation(pid: u32) -> bool {
     }
 }
 
-/// The foreground window if it covers its whole monitor. That catches exclusive and borderless fullscreen.
-pub fn foreground_fullscreen_app() -> Option<FullscreenApp> {
+/// Whether a foreground window is a game to capture. Something you added always is, even in a browser's
+/// list, because you asked for it. Otherwise it has to fill its monitor and not be normal desktop use.
+fn counts_as_game(covers_monitor: bool, stem: &str, added: bool) -> bool {
+    added || (covers_monitor && !NOT_GAMES.contains(&stem))
+}
+
+// Smaller than this is a launcher's splash or a dialog, not the game.
+const MIN_GAME_WINDOW: (i32, i32) = (320, 240);
+
+/// The foreground window if it covers its whole monitor, which catches exclusive and borderless fullscreen,
+/// or if it's a program from `added_games`, which also catches a game playing in a window.
+pub fn foreground_game_app(added_games: &[String]) -> Option<FullscreenApp> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_invalid() || hwnd == GetShellWindow() {
@@ -365,7 +375,8 @@ pub fn foreground_fullscreen_app() -> Option<FullscreenApp> {
             return None;
         }
         let m = info.rcMonitor;
-        if rect.left > m.left || rect.top > m.top || rect.right < m.right || rect.bottom < m.bottom {
+        let covers_monitor = rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom;
+        if !covers_monitor && added_games.is_empty() {
             return None;
         }
 
@@ -381,9 +392,10 @@ pub fn foreground_fullscreen_app() -> Option<FullscreenApp> {
             return None;
         }
         let exe = exe_of(pid);
-        let stem = exe.to_lowercase();
-        let stem = stem.strip_suffix(".exe").unwrap_or(&stem);
-        if NOT_GAMES.contains(&stem) {
+        let lower = exe.to_lowercase();
+        let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+        let big_enough = rect.right - rect.left >= MIN_GAME_WINDOW.0 && rect.bottom - rect.top >= MIN_GAME_WINDOW.1 && !IsIconic(hwnd).as_bool();
+        if !counts_as_game(covers_monitor, stem, big_enough && added_games.contains(&lower)) {
             return None;
         }
         let n = GetWindowTextW(hwnd, &mut buf);
@@ -739,6 +751,15 @@ pub fn play_tones(frequencies: &[f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_counts_as_a_game_if_fullscreen_or_added() {
+        assert!(counts_as_game(true, "somegame", false));
+        assert!(!counts_as_game(false, "somegame", false), "an ordinary window");
+        assert!(counts_as_game(false, "somegame", true), "a game you added, in a window");
+        assert!(!counts_as_game(true, "chrome", false), "a fullscreen browser");
+        assert!(counts_as_game(true, "chrome", true), "unless you added it");
+    }
 
     #[test]
     fn tones_start_and_end_silent_without_clicks() {

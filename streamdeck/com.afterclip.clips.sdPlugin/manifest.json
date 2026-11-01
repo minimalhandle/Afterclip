@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.6.0.0",
+  "Version": "0.7.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -380,6 +380,24 @@
       "States": [
         {
           "Image": "imgs/copy-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.screenshot",
+      "Name": "Take Screenshot",
+      "Tooltip": "Save a picture of what Afterclip is capturing.",
+      "Icon": "imgs/action-screenshot",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/screenshot",
           "ShowTitle": false
         }
       ]

@@ -742,7 +742,13 @@ static AVCodecContext *openH264Encoder(int width, int height, int fps, int kbps,
 	return nullptr;
 }
 
-static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps)
+/** A vertical copy keeps the middle of the picture at 9:16. */
+static int verticalWidth(int height)
+{
+	return FFMAX(2, height * 9 / 16 / 2 * 2);
+}
+
+static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps, bool vertical = false)
 {
 	AVFormatContext *in = openInput(input);
 	if (!in)
@@ -759,7 +765,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	if (err < 0)
 		return fail("Could not open decoder", err);
 
-	const int width = FFMAX(2, (int)((int64_t)source->codecpar->width * height / source->codecpar->height / 2) * 2);
+	const int width = vertical ? verticalWidth(height) : FFMAX(2, (int)((int64_t)source->codecpar->width * height / source->codecpar->height / 2) * 2);
 	AVFormatContext *out = nullptr;
 	if ((err = openMp4(out, output)) < 0)
 		return fail("Could not create output", err);
@@ -798,6 +804,13 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 			const int64_t index = (micro * fps + AV_TIME_BASE / 2) / AV_TIME_BASE;
 			// Lowering the frame rate means leaving frames out.
 			if (micro >= 0 && index > lastIndex) {
+				if (vertical) {
+					const int kept = FFMIN(frame->width, verticalWidth(frame->height));
+					frame->crop_left = (frame->width - kept) / 2 / 2 * 2;
+					frame->crop_right = frame->width - kept - frame->crop_left;
+					if ((result = av_frame_apply_cropping(frame, AV_FRAME_CROP_UNALIGNED)) < 0)
+						return result;
+				}
 				sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, width, height,
 							   enc->pix_fmt, SWS_BICUBIC, nullptr, nullptr, nullptr);
 				if (!sws)
@@ -906,6 +919,92 @@ static int cmdShrink(const std::string &input, const std::string &output, int64_
 	return 4;
 }
 
+/** Makes a 9:16 copy of a wide clip for phones, keeping as many of the original pixels as it can. */
+static int cmdVertical(const std::string &input, const std::string &output)
+{
+	const int MAX_HEIGHT = 1920;
+	const double BITS_PER_PIXEL = 0.12;
+	const int MIN_KBPS = 2500;
+	const int MAX_KBPS = 20000;
+	const int AUDIO_KBPS = 160;
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+	if (video < 0)
+		return fail("No video stream");
+	const int sourceWidth = in->streams[video]->codecpar->width;
+	const int sourceHeight = in->streams[video]->codecpar->height;
+	const AVRational rate = av_guess_frame_rate(in, in->streams[video], nullptr);
+	const int fps = rate.den > 0 && rate.num > 0 ? FFMAX(1, FFMIN((int)(av_q2d(rate) + 0.5), 60)) : 60;
+	avformat_close_input(&in);
+	if ((int64_t)sourceWidth * 16 <= (int64_t)sourceHeight * 9) {
+		fprintf(stderr, "This clip is already vertical.\n");
+		return 4;
+	}
+	const int height = FFMIN(sourceHeight, MAX_HEIGHT) & ~1;
+	const int kbps = (int)((double)verticalWidth(height) * height * fps * BITS_PER_PIXEL / 1000.0);
+	return encodeShrunk(input, output, FFMAX(MIN_KBPS, FFMIN(kbps, MAX_KBPS)), AUDIO_KBPS, height, fps, true);
+}
+
+/** Turns the frame the engine saved, as raw NV12 in video levels, into a PNG. */
+static int cmdPng(const std::string &input, const std::string &output, int width, int height)
+{
+	const int64_t expected = (int64_t)width * height * 3 / 2;
+	std::vector<uint8_t> raw((size_t)FFMAX(expected, 0));
+	FILE *in = _wfopen(toWide(input).c_str(), L"rb");
+	if (!in)
+		return fail("Could not open the captured frame");
+	const size_t got = fread(raw.data(), 1, raw.size(), in);
+	fclose(in);
+	if (width <= 0 || height <= 0 || (int64_t)got != expected) {
+		fprintf(stderr, "The captured frame is the wrong size (%lld bytes for %dx%d)\n", (long long)got, width, height);
+		return 1;
+	}
+
+	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+	if (!codec)
+		return fail("No PNG encoder");
+	AVCodecContext *enc = avcodec_alloc_context3(codec);
+	enc->width = width;
+	enc->height = height;
+	enc->pix_fmt = AV_PIX_FMT_RGB24;
+	enc->time_base = {1, 25};
+	int err = avcodec_open2(enc, codec, nullptr);
+	if (err < 0)
+		return fail("Could not open PNG encoder", err);
+
+	AVFrame *picture = av_frame_alloc();
+	picture->format = enc->pix_fmt;
+	picture->width = width;
+	picture->height = height;
+	picture->pts = 0;
+	if ((err = av_frame_get_buffer(picture, 0)) < 0)
+		return fail("Could not allocate frame", err);
+	SwsContext *sws = sws_getContext(width, height, AV_PIX_FMT_NV12, width, height, AV_PIX_FMT_RGB24, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, nullptr, nullptr, nullptr);
+	if (!sws)
+		return fail("Could not create scaler");
+	// The engine captures in BT.709 with video levels, and a picture needs full levels.
+	sws_setColorspaceDetails(sws, sws_getCoefficients(SWS_CS_ITU709), 0, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+	const uint8_t *planes[4] = {raw.data(), raw.data() + (size_t)width * height, nullptr, nullptr};
+	const int strides[4] = {width, width, 0, 0};
+	sws_scale(sws, planes, strides, 0, height, picture->data, picture->linesize);
+	sws_freeContext(sws);
+
+	AVPacket *pkt = av_packet_alloc();
+	if ((err = avcodec_send_frame(enc, picture)) < 0 || (err = avcodec_receive_packet(enc, pkt)) < 0)
+		return fail("Could not encode the PNG", err);
+	FILE *out = _wfopen(toWide(output).c_str(), L"wb");
+	if (!out)
+		return fail("Could not create the PNG");
+	const bool written = fwrite(pkt->data, 1, pkt->size, out) == (size_t)pkt->size;
+	fclose(out);
+	av_packet_free(&pkt);
+	av_frame_free(&picture);
+	avcodec_free_context(&enc);
+	return written ? 0 : fail("Could not write the PNG");
+}
+
 int main()
 {
 	int argc = 0;
@@ -924,6 +1023,10 @@ int main()
 			return cmdTracks(in);
 		if (cmd == L"shrink" && argc >= 5)
 			return cmdShrink(in, toUtf8(argv[3]), _wtoi64(argv[4]));
+		if (cmd == L"vertical" && argc >= 4)
+			return cmdVertical(in, toUtf8(argv[3]));
+		if (cmd == L"png" && argc >= 6)
+			return cmdPng(in, toUtf8(argv[3]), _wtoi(argv[4]), _wtoi(argv[5]));
 		if (cmd == L"retrack" && argc >= 5) {
 			std::vector<double> gains;
 			for (int i = 4; i < argc; i++)

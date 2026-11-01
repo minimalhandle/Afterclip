@@ -47,6 +47,7 @@ pub enum Action {
     Record,
     Mic,
     Marker,
+    Screenshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,6 +72,7 @@ pub struct Bindings {
     pub record: u32,
     pub mic: u32,
     pub marker: u32,
+    pub screenshot: u32,
 }
 
 /// The saved name of a button, as used in settings.
@@ -228,7 +230,7 @@ impl Controller {
             return;
         }
         let Some(bindings) = (self.bindings)() else { return };
-        let actions = [(bindings.clip, Action::Clip), (bindings.record, Action::Record), (bindings.mic, Action::Mic), (bindings.marker, Action::Marker)];
+        let actions = [(bindings.clip, Action::Clip), (bindings.record, Action::Record), (bindings.mic, Action::Mic), (bindings.marker, Action::Marker), (bindings.screenshot, Action::Screenshot)];
         state.fired_at.retain(|(when, _)| at.saturating_sub(*when) < REPEAT_GUARD_MS);
         for (bit, action) in actions {
             if bit != 0 && completed & bit != 0 && !state.fired_at.iter().any(|(_, a)| *a == action) {
