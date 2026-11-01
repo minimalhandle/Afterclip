@@ -217,6 +217,30 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 .live .dot { box-shadow: 0 0 10px rgb(69 211 154 / .8); }
 .switch:checked { background: var(--primary); box-shadow: var(--primary-edge); }
 
+/* Update offer, library tools, favourites, renaming and per-game settings. */
+.update-card { margin: 0 12px 8px; padding: 10px 14px; border-radius: 14px; background: var(--glass); box-shadow: var(--edge), 0 0 0 1px rgb(124 108 255 / .35); display: grid; gap: 8px; }
+.update-text { font-size: 12px; }
+.update-text b { display: block; font-size: 13px; }
+.library-tools { padding: 0 12px 8px; display: grid; gap: 6px; }
+.library-tools select { flex: 1; min-width: 0; }
+#library-search { background: var(--glass); box-shadow: var(--edge-soft); }
+.star-filter { flex: none; width: 34px; height: 32px; border-radius: var(--r-s); display: grid; place-items: center; color: var(--muted); background: var(--glass); }
+.star-filter[aria-pressed="true"] { color: var(--warn); }
+.star { width: 26px; height: 26px; border-radius: var(--r-s); display: grid; place-items: center; color: var(--muted); flex: none; }
+.star:hover { color: var(--text); background: var(--surface-3); }
+.star.on { color: var(--warn); }
+#home.library-open .star { color: #fff; }
+#home.library-open .star.on { color: var(--warn); }
+.rename-field { width: 100%; padding: 3px 6px; font-weight: 600; }
+.games-note { margin: 0 4px 10px; }
+.profile-head { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; }
+.profile-name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.profile-exe { color: var(--muted); font-size: 12px; font-weight: 400; }
+#profile-exe { flex: 1 1 100%; }
+.mixer { display: grid; gap: 6px; margin-bottom: 10px; }
+.mixer-track { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.mixer-track output { text-align: right; font-variant-numeric: tabular-nums; }
+
 /* Library: every clip, in the room the ring and save controls leave. */
 #home.library-open .capture-card, #home.library-open .halo, #home.library-open .save { display: none; }
 #home.library-open .media { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 8px; }
@@ -225,6 +249,9 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 #home.library-open .item-text { align-self: stretch; padding: 0 2px 2px; }
 #home.library-open .item-actions { position: absolute; top: 10px; right: 10px; flex-direction: row; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 8px; background: rgb(0 0 0 / .62); }
 #home.library-open .more { color: #fff; }
+.item-actions { display: grid; grid-template-columns: auto auto; justify-items: center; align-items: center; gap: 2px; }
+.item-actions input { grid-column: 2; }
+#home.library-open .item-actions { display: flex; }
 .item { cursor: grab; }
 .item button, .item input { cursor: pointer; }
 

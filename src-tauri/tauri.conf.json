@@ -14,6 +14,13 @@
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIyMjJDQTMzNTZCNzExOTYKUldTV0ViZFdNOG9pc2lpZitYWDVoNjZ2aUN3b29ubUg5bzFvV1c2Rk14eEdKc2YxUmJmWGZoRGQK",
+      "endpoints": ["https://github.com/minimalhandle/Afterclip/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "publisher": "Afterclip",

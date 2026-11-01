@@ -43,6 +43,40 @@ async function addClip(file) {
   segments.push(segment);
   select(segment.id);
   renderSegments();
+  if (segments.length === 1) loadTracks(file);
+}
+
+// One volume per audio track, applied when saving. Tracks left at 100% are copied untouched.
+let gains = [];
+async function loadTracks(file) {
+  const count = await api.invoke('clip-tracks', file).catch(() => 0);
+  gains = Array(count).fill(1);
+  renderMixer();
+}
+
+function renderMixer() {
+  const mixer = $('mixer');
+  mixer.hidden = !segments.length || gains.length < 1;
+  mixer.replaceChildren(...gains.map((gain, index) => {
+    const row = document.createElement('label');
+    row.className = 'mixer-track';
+    const name = document.createElement('span');
+    name.textContent = index === 0 ? 'Main mix' : `Track ${index + 1}`;
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'volume';
+    slider.min = 0;
+    slider.max = 200;
+    slider.step = 5;
+    slider.value = Math.round(gain * 100);
+    slider.setAttribute('aria-label', `${name.textContent} volume`);
+    const value = document.createElement('output');
+    const describe = () => { value.textContent = gains[index] === 0 ? 'Off' : `${Math.round(gains[index] * 100)}%`; };
+    slider.oninput = () => { gains[index] = Number(slider.value) / 100; describe(); };
+    describe();
+    row.append(name, slider, value);
+    return row;
+  }));
 }
 
 function select(id, seekTo) {
@@ -71,6 +105,7 @@ function renderTotal() {
   $('play-all').disabled = segments.length < 2;
   $('player-empty').hidden = !none;
   $('trim').hidden = none;
+  $('mixer').hidden = none || gains.length < 1;
 }
 
 function move(from, to) {
@@ -249,8 +284,8 @@ $('export').onclick = async () => {
   setMessage('Saving your video.');
   try {
     // An end at the very end of a clip keeps everything, including its final partial frame.
-    const payload = segments.map((s) => ({ file: s.file, start: s.start, end: s.duration - s.end < 0.05 ? -1 : s.end }));
-    const file = await api.invoke('export-edit', payload);
+    const list = segments.map((s) => ({ file: s.file, start: s.start, end: s.duration - s.end < 0.05 ? -1 : s.end }));
+    const file = await api.invoke('export-edit', { segments: list, gains });
     setMessage(`Saved ${file.split(/[\\/]/).pop()} to your clips.`);
     loadLibrary();
   } catch (e) {
@@ -280,7 +315,7 @@ async function loadLibrary() {
     thumb.append(img, badge);
     const title = document.createElement('div');
     title.className = 'item-title';
-    title.textContent = displayName(m.name);
+    title.textContent = `${m.favourite ? '★ ' : ''}${displayName(m.name)}`;
     const sub = document.createElement('div');
     sub.className = 'item-sub';
     sub.textContent = new Date(m.mtime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });

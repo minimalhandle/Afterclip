@@ -37,6 +37,43 @@ try {
     check(`trim ${want}s moov at the front`, fs.readFileSync(out).subarray(0, 4096).includes('moov'));
   }
 
+  // Share-ready copies: must fit, play, and keep their length.
+  const noisy = f('noisy.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=60:d=20', '-f', 'lavfi', '-i', 'anoisesrc=d=20:a=0.3', '-f', 'lavfi', '-i', 'sine=f=880:d=20', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-b:v', '20M', '-g', '60', '-bf', '2', '-c:a', 'aac', noisy]);
+  const audioCount = (file) => Number(run('tracks', file).stdout);
+  check('tracks counts audio tracks', audioCount(noisy) === 2, `${audioCount(noisy)}`);
+  for (const mb of [10, 25]) {
+    const small = f(`small${mb}.mp4`);
+    const r = run('shrink', noisy, small, String(mb * 1000 * 1000));
+    check(`shrink to ${mb} MB runs`, r.status === 0, r.stderr.trim());
+    const size = fs.statSync(small).size;
+    check(`shrink to ${mb} MB fits`, size <= mb * 1000 * 1000 && size > mb * 1000 * 1000 * 0.2, `${(size / 1e6).toFixed(1)} MB`);
+    check(`shrink to ${mb} MB keeps its length`, Math.abs(seconds(small) - 20) < 0.6, `${seconds(small)}s`);
+    const decode = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', small, '-f', 'null', '-'], { encoding: 'utf8' });
+    check(`shrink to ${mb} MB decodes cleanly`, decode.status === 0 && !decode.stderr.trim(), decode.stderr.trim().slice(0, 200));
+    const info = spawnSync(ffmpeg, ['-hide_banner', '-i', small], { encoding: 'utf8' }).stderr;
+    check(`shrink to ${mb} MB is H.264 with one audio track`, /Video: h264/.test(info) && (info.match(/Audio: aac/g) ?? []).length === 1);
+  }
+  const tiny = run('shrink', noisy, f('tiny.mp4'), '100000');
+  check('shrink refuses a size too small to watch', tiny.status === 4 && /too long/.test(tiny.stderr), tiny.stderr.trim());
+
+  // Track mixing: a track can be removed, or turned up or down, with the video copied untouched.
+  const volume = (file, track) => Number(/mean_volume: (-?[\d.]+)/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', file, '-map', `0:a:${track}`, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)?.[1]);
+  const mixed = f('mixed.mp4');
+  const mix = run('retrack', noisy, mixed, '1', '0.5');
+  check('retrack runs', mix.status === 0, mix.stderr.trim());
+  check('retrack keeps both tracks', audioCount(mixed) === 2);
+  check('retrack leaves a track at 100% alone', Math.abs(volume(mixed, 0) - volume(noisy, 0)) < 0.2, `${volume(noisy, 0)} to ${volume(mixed, 0)} dB`);
+  const drop = volume(noisy, 1) - volume(mixed, 1);
+  check('retrack at 50% lowers a track by about 6 dB', drop > 5 && drop < 7, `${drop.toFixed(1)} dB`);
+  check('retrack keeps the length', Math.abs(seconds(mixed) - seconds(noisy)) < 0.2, `${seconds(mixed)}s`);
+  const videoHash = (file) => spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', file, '-map', '0:v', '-c', 'copy', '-f', 'md5', '-'], { encoding: 'utf8' }).stdout.trim();
+  check('retrack copies the video losslessly', videoHash(mixed) === videoHash(noisy));
+  const removed = f('removed.mp4');
+  check('retrack can remove a track', run('retrack', noisy, removed, '1', '0').status === 0 && audioCount(removed) === 1);
+  const mixedDecode = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', mixed, '-f', 'null', '-'], { encoding: 'utf8' });
+  check('retrack decodes cleanly', mixedDecode.status === 0 && !mixedDecode.stderr.trim(), mixedDecode.stderr.trim().slice(0, 200));
+
   const thumb = f('t.jpg');
   const t = run('thumb', input, thumb);
   check('thumbnail runs', t.status === 0, t.stderr.trim());

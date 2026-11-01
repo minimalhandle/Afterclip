@@ -5,10 +5,17 @@
 //   afterclip-media thumb <in> <out.jpg>      writes a 320px wide JPEG
 //   afterclip-media join <out> <in> <start> <end> [<in> <start> <end>...]
 //                                            joins ranges of clips losslessly. An end below 0 means the end of the file.
+//   afterclip-media tracks <in>               prints how many audio tracks it has
+//   afterclip-media shrink <in> <out> <bytes> re-encodes a smaller copy to fit that size, as H.264 with the main mix
+//   afterclip-media retrack <in> <out> <gain> [<gain>...]
+//                                            sets each audio track's volume, 1 keeping it untouched and 0 removing it.
+//                                            The video is copied losslessly.
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/audio_fifo.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
 #define WIN32_LEAN_AND_MEAN
@@ -451,6 +458,454 @@ static int cmdThumb(const std::string &input, const std::string &output)
 	}
 }
 
+static int cmdTracks(const std::string &path)
+{
+	AVFormatContext *in = openInput(path);
+	if (!in)
+		return fail("Could not open input");
+	int count = 0;
+	for (unsigned i = 0; i < in->nb_streams; i++)
+		count += in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
+	printf("%d\n", count);
+	fflush(stdout);
+	avformat_close_input(&in);
+	return 0;
+}
+
+/** Sends an encoder's finished packets to the file. */
+static int drainEncoder(AVCodecContext *enc, AVFormatContext *out, AVStream *stream, AVPacket *pkt)
+{
+	for (;;) {
+		const int err = avcodec_receive_packet(enc, pkt);
+		if (err == AVERROR(EAGAIN) || err == AVERROR_EOF)
+			return 0;
+		if (err < 0)
+			return err;
+		av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
+		pkt->stream_index = stream->index;
+		const int written = av_interleaved_write_frame(out, pkt);
+		if (written < 0)
+			return written;
+	}
+}
+
+/** Decodes one AAC track and encodes it again, at a chosen volume. AAC needs exact frame sizes, hence the FIFO. */
+struct AudioTrack {
+	AVStream *from = nullptr;
+	AVStream *to = nullptr;
+	AVCodecContext *dec = nullptr;
+	AVCodecContext *enc = nullptr;
+	AVAudioFifo *fifo = nullptr;
+	AVFrame *decoded = nullptr;
+	double gain = 1.0;
+	int64_t originMicro = 0; // Where the output's time zero is in the input.
+	int64_t nextPts = AV_NOPTS_VALUE;
+};
+
+static int openAudioTrack(AudioTrack &track, AVStream *from, AVFormatContext *out, int bitrate, double gain, int64_t originMicro)
+{
+	const AVCodec *decoder = avcodec_find_decoder(from->codecpar->codec_id);
+	const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
+	if (!decoder || !encoder)
+		return AVERROR_ENCODER_NOT_FOUND;
+	track.from = from;
+	track.gain = gain;
+	track.originMicro = originMicro;
+	track.dec = avcodec_alloc_context3(decoder);
+	int err = avcodec_parameters_to_context(track.dec, from->codecpar);
+	if (err < 0 || (err = avcodec_open2(track.dec, decoder, nullptr)) < 0)
+		return err;
+	track.enc = avcodec_alloc_context3(encoder);
+	track.enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+	track.enc->sample_rate = from->codecpar->sample_rate;
+	track.enc->bit_rate = bitrate;
+	track.enc->time_base = {1, from->codecpar->sample_rate};
+	if ((err = av_channel_layout_copy(&track.enc->ch_layout, &from->codecpar->ch_layout)) < 0)
+		return err;
+	if (out->oformat->flags & AVFMT_GLOBALHEADER)
+		track.enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	if ((err = avcodec_open2(track.enc, encoder, nullptr)) < 0)
+		return err;
+	track.to = avformat_new_stream(out, nullptr);
+	if (!track.to)
+		return AVERROR(ENOMEM);
+	if ((err = avcodec_parameters_from_context(track.to->codecpar, track.enc)) < 0)
+		return err;
+	track.to->time_base = track.enc->time_base;
+	track.fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP, track.enc->ch_layout.nb_channels, track.enc->frame_size * 4);
+	track.decoded = av_frame_alloc();
+	return track.fifo && track.decoded ? 0 : AVERROR(ENOMEM);
+}
+
+static int encodeFromFifo(AudioTrack &track, AVFormatContext *out, AVPacket *pkt, int samples)
+{
+	AVFrame *frame = av_frame_alloc();
+	frame->nb_samples = samples;
+	frame->format = track.enc->sample_fmt;
+	frame->sample_rate = track.enc->sample_rate;
+	int err = av_channel_layout_copy(&frame->ch_layout, &track.enc->ch_layout);
+	if (err >= 0)
+		err = av_frame_get_buffer(frame, 0);
+	if (err < 0) {
+		av_frame_free(&frame);
+		return err;
+	}
+	av_audio_fifo_read(track.fifo, (void **)frame->data, samples);
+	frame->pts = track.nextPts;
+	track.nextPts += samples;
+	err = avcodec_send_frame(track.enc, frame);
+	av_frame_free(&frame);
+	return err < 0 ? err : drainEncoder(track.enc, out, track.to, pkt);
+}
+
+/** Takes a packet from the input, or nullptr at the end of the file. */
+static int feedAudio(AudioTrack &track, const AVPacket *input, AVFormatContext *out, AVPacket *pkt)
+{
+	int err = avcodec_send_packet(track.dec, input);
+	if (err < 0 && err != AVERROR_EOF && err != AVERROR_INVALIDDATA)
+		return err;
+	while ((err = avcodec_receive_frame(track.dec, track.decoded)) >= 0) {
+		AVFrame *in = track.decoded;
+		if (in->format != AV_SAMPLE_FMT_FLTP) {
+			av_frame_unref(in);
+			return AVERROR(EINVAL);
+		}
+		const int64_t micro = in->pts == AV_NOPTS_VALUE ? 0 : av_rescale_q(in->pts, track.from->time_base, {1, AV_TIME_BASE});
+		if (micro < track.originMicro && in->pts != AV_NOPTS_VALUE) {
+			av_frame_unref(in);
+			continue;
+		}
+		if (track.nextPts == AV_NOPTS_VALUE)
+			track.nextPts = av_rescale_q(micro - track.originMicro, {1, AV_TIME_BASE}, track.enc->time_base);
+		for (int channel = 0; channel < in->ch_layout.nb_channels && track.gain != 1.0; channel++) {
+			float *samples = (float *)in->extended_data[channel];
+			for (int i = 0; i < in->nb_samples; i++)
+				samples[i] = (float)FFMIN(1.0, FFMAX(-1.0, samples[i] * track.gain));
+		}
+		av_audio_fifo_write(track.fifo, (void **)in->extended_data, in->nb_samples);
+		av_frame_unref(in);
+		while (av_audio_fifo_size(track.fifo) >= track.enc->frame_size) {
+			const int encoded = encodeFromFifo(track, out, pkt, track.enc->frame_size);
+			if (encoded < 0)
+				return encoded;
+		}
+	}
+	return err == AVERROR(EAGAIN) || err == AVERROR_EOF ? 0 : err;
+}
+
+static int finishAudio(AudioTrack &track, AVFormatContext *out, AVPacket *pkt)
+{
+	int err = feedAudio(track, nullptr, out, pkt);
+	if (err < 0)
+		return err;
+	const int left = av_audio_fifo_size(track.fifo);
+	if (left > 0 && (err = encodeFromFifo(track, out, pkt, left)) < 0)
+		return err;
+	if ((err = avcodec_send_frame(track.enc, nullptr)) < 0)
+		return err;
+	return drainEncoder(track.enc, out, track.to, pkt);
+}
+
+static void freeAudio(AudioTrack &track)
+{
+	avcodec_free_context(&track.dec);
+	avcodec_free_context(&track.enc);
+	if (track.fifo)
+		av_audio_fifo_free(track.fifo);
+	av_frame_free(&track.decoded);
+}
+
+static int openMp4(AVFormatContext *&out, const std::string &output)
+{
+	return avformat_alloc_output_context2(&out, nullptr, "mp4", output.c_str());
+}
+
+static int beginMp4(AVFormatContext *out, const std::string &output)
+{
+	int err = avio_open(&out->pb, output.c_str(), AVIO_FLAG_WRITE);
+	if (err < 0)
+		return err;
+	AVDictionary *options = nullptr;
+	av_dict_set(&options, "movflags", "+faststart", 0);
+	err = avformat_write_header(out, &options);
+	av_dict_free(&options);
+	return err;
+}
+
+static int cmdRetrack(const std::string &input, const std::string &output, const std::vector<double> &gains)
+{
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	AVFormatContext *out = nullptr;
+	int err = openMp4(out, output);
+	if (err < 0)
+		return fail("Could not create output", err);
+
+	std::vector<int> copyTo(in->nb_streams, -1);
+	std::vector<int> encodeTo(in->nb_streams, -1);
+	std::vector<AudioTrack> tracks;
+	tracks.reserve(in->nb_streams);
+	size_t audioIndex = 0;
+	for (unsigned i = 0; i < in->nb_streams; i++) {
+		AVStream *from = in->streams[i];
+		const AVMediaType type = from->codecpar->codec_type;
+		if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO)
+			continue;
+		const double gain = type == AVMEDIA_TYPE_AUDIO && audioIndex < gains.size() ? gains[audioIndex] : 1.0;
+		if (type == AVMEDIA_TYPE_AUDIO)
+			audioIndex++;
+		if (gain <= 0.0)
+			continue;
+		if (gain == 1.0) {
+			AVStream *to = avformat_new_stream(out, nullptr);
+			if (!to || (err = avcodec_parameters_copy(to->codecpar, from->codecpar)) < 0)
+				return fail("Could not copy stream", err);
+			to->codecpar->codec_tag = 0;
+			to->time_base = from->time_base;
+			copyTo[i] = to->index;
+			continue;
+		}
+		const int bitrate = from->codecpar->bit_rate > 0 ? (int)from->codecpar->bit_rate : 160000;
+		tracks.emplace_back();
+		if ((err = openAudioTrack(tracks.back(), from, out, bitrate, FFMIN(gain, 2.0), 0)) < 0)
+			return fail("Could not set up an audio track", err);
+		encodeTo[i] = (int)tracks.size() - 1;
+	}
+	if ((err = beginMp4(out, output)) < 0)
+		return fail("Could not write header", err);
+
+	AVPacket *read = av_packet_alloc();
+	AVPacket *written = av_packet_alloc();
+	while (av_read_frame(in, read) >= 0) {
+		const int index = read->stream_index;
+		if (encodeTo[index] >= 0) {
+			if ((err = feedAudio(tracks[encodeTo[index]], read, out, written)) < 0)
+				return fail("Could not change a track's volume", err);
+		} else if (copyTo[index] >= 0 && read->dts != AV_NOPTS_VALUE) {
+			AVStream *to = out->streams[copyTo[index]];
+			av_packet_rescale_ts(read, in->streams[index]->time_base, to->time_base);
+			read->stream_index = to->index;
+			read->pos = -1;
+			if ((err = av_interleaved_write_frame(out, read)) < 0)
+				return fail("Could not write packet", err);
+		}
+		av_packet_unref(read);
+	}
+	for (AudioTrack &track : tracks) {
+		if ((err = finishAudio(track, out, written)) < 0)
+			return fail("Could not finish a track", err);
+		freeAudio(track);
+	}
+	if ((err = av_write_trailer(out)) < 0)
+		return fail("Could not finish file", err);
+	av_packet_free(&read);
+	av_packet_free(&written);
+	avio_closep(&out->pb);
+	avformat_free_context(out);
+	avformat_close_input(&in);
+	return 0;
+}
+
+/** Tries the GPU first, because it's fast and leaves the game alone, then the CPU. */
+static AVCodecContext *openH264Encoder(int width, int height, int fps, int kbps, bool globalHeader, const char *&chosen)
+{
+	for (const char *name : {"h264_nvenc", "h264_amf", "h264_qsv", "libx264"}) {
+		const AVCodec *codec = avcodec_find_encoder_by_name(name);
+		if (!codec)
+			continue;
+		AVCodecContext *enc = avcodec_alloc_context3(codec);
+		enc->width = width;
+		enc->height = height;
+		enc->pix_fmt = AV_PIX_FMT_YUV420P;
+		enc->time_base = {1, fps};
+		enc->framerate = {fps, 1};
+		enc->gop_size = fps * 2;
+		enc->max_b_frames = 0;
+		enc->bit_rate = (int64_t)kbps * 1000;
+		enc->rc_max_rate = enc->bit_rate * 13 / 10;
+		enc->rc_buffer_size = (int)(enc->bit_rate * 2);
+		if (globalHeader)
+			enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+		if (strcmp(name, "h264_nvenc") == 0) {
+			av_opt_set(enc->priv_data, "preset", "p5", 0);
+			av_opt_set(enc->priv_data, "rc", "vbr", 0);
+		} else if (strcmp(name, "libx264") == 0) {
+			av_opt_set(enc->priv_data, "preset", "veryfast", 0);
+		}
+		if (avcodec_open2(enc, codec, nullptr) >= 0) {
+			chosen = name;
+			return enc;
+		}
+		avcodec_free_context(&enc);
+	}
+	return nullptr;
+}
+
+static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps)
+{
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	const AVCodec *decoder = nullptr;
+	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
+	if (video < 0 || !decoder)
+		return fail("No decodable video stream");
+	const int audio = av_find_best_stream(in, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0); // The first track is the main mix.
+	AVStream *source = in->streams[video];
+	AVCodecContext *dec = avcodec_alloc_context3(decoder);
+	avcodec_parameters_to_context(dec, source->codecpar);
+	int err = avcodec_open2(dec, decoder, nullptr);
+	if (err < 0)
+		return fail("Could not open decoder", err);
+
+	const int width = FFMAX(2, (int)((int64_t)source->codecpar->width * height / source->codecpar->height / 2) * 2);
+	AVFormatContext *out = nullptr;
+	if ((err = openMp4(out, output)) < 0)
+		return fail("Could not create output", err);
+	const char *encoderName = "";
+	AVCodecContext *enc = openH264Encoder(width, height, fps, videoKbps, out->oformat->flags & AVFMT_GLOBALHEADER, encoderName);
+	if (!enc)
+		return fail("No H.264 encoder could start");
+	AVStream *videoOut = avformat_new_stream(out, nullptr);
+	if (!videoOut || (err = avcodec_parameters_from_context(videoOut->codecpar, enc)) < 0)
+		return fail("Could not create the video stream", err);
+	videoOut->time_base = enc->time_base;
+
+	const int64_t startMicro = source->start_time == AV_NOPTS_VALUE ? 0 : av_rescale_q(source->start_time, source->time_base, {1, AV_TIME_BASE});
+	AudioTrack track;
+	if (audio >= 0 && (err = openAudioTrack(track, in->streams[audio], out, audioKbps * 1000, 1.0, startMicro)) < 0)
+		return fail("Could not set up audio", err);
+	if ((err = beginMp4(out, output)) < 0)
+		return fail("Could not write header", err);
+
+	AVFrame *scaled = av_frame_alloc();
+	scaled->format = enc->pix_fmt;
+	scaled->width = width;
+	scaled->height = height;
+	if ((err = av_frame_get_buffer(scaled, 0)) < 0)
+		return fail("Could not allocate frame", err);
+	AVFrame *frame = av_frame_alloc();
+	AVPacket *read = av_packet_alloc();
+	AVPacket *written = av_packet_alloc();
+	SwsContext *sws = nullptr;
+	int64_t lastIndex = -1;
+
+	const auto drainDecoder = [&]() -> int {
+		int result;
+		while ((result = avcodec_receive_frame(dec, frame)) >= 0) {
+			const int64_t micro = av_rescale_q(frame->pts, source->time_base, {1, AV_TIME_BASE}) - startMicro;
+			const int64_t index = (micro * fps + AV_TIME_BASE / 2) / AV_TIME_BASE;
+			// Lowering the frame rate means leaving frames out.
+			if (micro >= 0 && index > lastIndex) {
+				sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, width, height,
+							   enc->pix_fmt, SWS_BICUBIC, nullptr, nullptr, nullptr);
+				if (!sws)
+					return AVERROR(EINVAL);
+				if ((result = av_frame_make_writable(scaled)) < 0)
+					return result;
+				sws_scale(sws, frame->data, frame->linesize, 0, frame->height, scaled->data, scaled->linesize);
+				scaled->pts = index;
+				lastIndex = index;
+				if ((result = avcodec_send_frame(enc, scaled)) < 0 ||
+				    (result = drainEncoder(enc, out, videoOut, written)) < 0)
+					return result;
+			}
+			av_frame_unref(frame);
+		}
+		return result == AVERROR(EAGAIN) || result == AVERROR_EOF ? 0 : result;
+	};
+
+	while (av_read_frame(in, read) >= 0) {
+		if (read->stream_index == video) {
+			if (avcodec_send_packet(dec, read) >= 0 && (err = drainDecoder()) < 0)
+				return fail("Could not encode the video", err);
+		} else if (read->stream_index == audio) {
+			if ((err = feedAudio(track, read, out, written)) < 0)
+				return fail("Could not encode the audio", err);
+		}
+		av_packet_unref(read);
+	}
+	avcodec_send_packet(dec, nullptr);
+	if ((err = drainDecoder()) < 0 || (err = avcodec_send_frame(enc, nullptr)) < 0 || (err = drainEncoder(enc, out, videoOut, written)) < 0)
+		return fail("Could not finish the video", err);
+	if (audio >= 0 && (err = finishAudio(track, out, written)) < 0)
+		return fail("Could not finish the audio", err);
+	if ((err = av_write_trailer(out)) < 0)
+		return fail("Could not finish file", err);
+
+	sws_freeContext(sws);
+	av_frame_free(&scaled);
+	av_frame_free(&frame);
+	av_packet_free(&read);
+	av_packet_free(&written);
+	if (audio >= 0)
+		freeAudio(track);
+	avcodec_free_context(&enc);
+	avcodec_free_context(&dec);
+	avio_closep(&out->pb);
+	avformat_free_context(out);
+	avformat_close_input(&in);
+	return 0;
+}
+
+static int64_t fileSize(const std::string &path)
+{
+	WIN32_FILE_ATTRIBUTE_DATA data;
+	if (!GetFileAttributesExW(toWide(path).c_str(), GetFileExInfoStandard, &data))
+		return -1;
+	return ((int64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+}
+
+/** Fits a size by working out a bitrate, then trying again lower if the encoder overshot. */
+static int cmdShrink(const std::string &input, const std::string &output, int64_t targetBytes)
+{
+	const int MIN_VIDEO_KBPS = 150;
+	const int MAX_ATTEMPTS = 3;
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+	if (video < 0 || in->duration <= 0)
+		return fail("No video stream");
+	const double seconds = (double)in->duration / AV_TIME_BASE;
+	const int sourceHeight = in->streams[video]->codecpar->height;
+	const AVRational rate = av_guess_frame_rate(in, in->streams[video], nullptr);
+	const int sourceFps = rate.den > 0 && rate.num > 0 ? (int)(av_q2d(rate) + 0.5) : 60;
+	const bool hasAudio = av_find_best_stream(in, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0) >= 0;
+	avformat_close_input(&in);
+
+	// A little is held back for the file's own structure.
+	const double totalKbps = targetBytes * 8.0 / 1000.0 * 0.96 / seconds;
+	const int audioKbps = hasAudio ? (totalKbps < 600 ? 64 : 128) : 0;
+	int videoKbps = (int)(totalKbps - audioKbps);
+	if (videoKbps < MIN_VIDEO_KBPS) {
+		fprintf(stderr, "This clip is too long to fit that size and still look watchable. Trim it first, or pick a larger size.\n");
+		return 4;
+	}
+	// Fewer pixels look far better than too few bits per pixel.
+	const int wanted = videoKbps >= 3500 ? 1080 : videoKbps >= 1500 ? 720 : videoKbps >= 600 ? 480 : 360;
+	const int height = FFMIN(sourceHeight, wanted) & ~1;
+	const int fps = FFMAX(1, FFMIN(FFMIN(sourceFps, 60), videoKbps < 1500 ? 30 : 60));
+
+	for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+		const int result = encodeShrunk(input, output, videoKbps, audioKbps, height, fps);
+		if (result != 0)
+			return result;
+		const int64_t size = fileSize(output);
+		if (size >= 0 && size <= targetBytes) {
+			printf("%lld\n", (long long)size);
+			fflush(stdout);
+			return 0;
+		}
+		videoKbps = (int)(videoKbps * ((double)targetBytes / (double)size) * 0.92);
+		if (videoKbps < MIN_VIDEO_KBPS)
+			break;
+	}
+	fprintf(stderr, "Couldn't fit this clip into that size. Trim it first, or pick a larger size.\n");
+	return 4;
+}
+
 int main()
 {
 	int argc = 0;
@@ -465,6 +920,16 @@ int main()
 			return cmdTrim(in, toUtf8(argv[3]), _wtof(argv[4]));
 		if (cmd == L"thumb" && argc >= 4)
 			return cmdThumb(in, toUtf8(argv[3]));
+		if (cmd == L"tracks")
+			return cmdTracks(in);
+		if (cmd == L"shrink" && argc >= 5)
+			return cmdShrink(in, toUtf8(argv[3]), _wtoi64(argv[4]));
+		if (cmd == L"retrack" && argc >= 5) {
+			std::vector<double> gains;
+			for (int i = 4; i < argc; i++)
+				gains.push_back(_wtof(argv[i]));
+			return cmdRetrack(in, toUtf8(argv[3]), gains);
+		}
 		if (cmd == L"join" && argc >= 6 && (argc - 3) % 3 == 0) {
 			std::vector<Segment> segments;
 			for (int i = 3; i + 2 < argc; i += 3)

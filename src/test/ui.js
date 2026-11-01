@@ -4,6 +4,8 @@
 //   node src/test/ui.js [screenshot folder]
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const WebSocket = require('ws');
 const { ffmpeg, sleep, check, finish, waitFor, powershell, startApp } = require('./harness');
@@ -11,6 +13,8 @@ const { ffmpeg, sleep, check, finish, waitFor, powershell, startApp } = require(
 const PORT = 9333;
 const PANEL_URL = /tauri\.localhost\/(index\.html)?$/;
 process.env.AFTERCLIP_DEBUG_PORT = String(PORT);
+const UPDATE_PORT = 9444;
+process.env.AFTERCLIP_UPDATE_URL = `http://127.0.0.1:${UPDATE_PORT}/latest.json`;
 const shots = process.argv[2];
 
 function windowInfo(pid) {
@@ -95,8 +99,10 @@ async function main() {
     await api.call('/test/open/panel', 'POST');
     const opened = await waitFor(() => { const w = windowInfo(app.pid); return w.length && w; }, 12000, 'panel window');
     check('the panel opens', opened.length === 1);
-    // White text and icons cover a few sample points. A blank page covers nearly all of them.
-    check('panel is not blank on the real screen', opened[0].whitePct < 10, `${opened[0].whitePct}% white`);
+    // White text and icons cover a few sample points. A blank page covers nearly all of them. The window is
+    // see-through until its first frame arrives, so a white window behind it can show for a moment on a large screen.
+    const painted = await waitFor(() => { const w = windowInfo(app.pid)[0]; return w && w.whitePct < 10 && w; }, 3000, 'the panel to paint').catch(() => null);
+    check('panel is not blank on the real screen', !!painted, `first look ${opened[0].whitePct}% white, then ${painted?.whitePct ?? 'still blank'}%`);
     const area = JSON.parse(powershell(`Add-Type -Name A -Namespace N -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'; [void][N.A]::SetProcessDPIAware(); Add-Type -AssemblyName System.Windows.Forms; $w = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea; @{ r = $w.Right; b = $w.Bottom } | ConvertTo-Json -Compress`));
     const edge = opened[0];
     check('panel is docked flush into the taskbar corner', edge.x + edge.w === area.r && edge.y + edge.h === area.b, `panel ends ${edge.x + edge.w},${edge.y + edge.h}, work area ends ${area.r},${area.b}, size ${edge.w}x${edge.h}`);
@@ -146,6 +152,30 @@ async function main() {
     const refused = await panel.eval("window.afterclip.invoke('start-drag', 'C:\\\\Windows\\\\win.ini').then(() => 'allowed', (e) => e.message)");
     check('dragging refuses files outside your clips', /Not a Afterclip file/.test(refused), refused);
 
+    // Per-game settings, with a pretend game: its profile applies, it auto-records, and both end when it closes.
+    const base = await panel.eval("window.afterclip.invoke('state').then((s) => s.settings)");
+    const profiled = { ...base, gameProfiles: [{ exe: 'pretend.exe', name: 'Pretend', bufferSeconds: 25, autoRecord: true }] };
+    await panel.eval(`window.afterclip.invoke('save-settings', ${JSON.stringify(profiled)})`);
+    await api.call('/test/game/pretend.exe', 'POST');
+    const activeState = () => panel.eval("window.afterclip.invoke('state').then((s) => ({ profile: s.activeProfile ?? null, buffer: s.activeBufferSeconds, recording: s.status.recording, buffering: s.status.buffering }))");
+    await waitFor(async () => { const s = await activeState(); return s.profile === 'pretend.exe' && s.buffer === 25 && s.buffering; }, 30000, 'the game profile');
+    check('a game profile changes the buffer while the game runs', true);
+    await waitFor(async () => (await activeState()).recording, 15000, 'auto-record');
+    check('auto-record starts when the game opens', true);
+    check('the ring follows the profile buffer', /profile · 25s buffer/.test(await panel.eval("document.getElementById('summary').textContent")));
+    await api.call('/test/game/', 'POST');
+    await waitFor(async () => !(await activeState()).recording, 20000, 'auto-record to stop');
+    check('auto-record stops when the game closes', true);
+    await waitFor(async () => { const s = await activeState(); return s.profile === null && s.buffer === base.bufferSeconds && s.buffering; }, 40000, 'normal settings to return');
+    check('normal settings return after the game closes', true);
+    await panel.eval(`window.afterclip.invoke('save-settings', ${JSON.stringify(base)})`);
+    const savedProfile = JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8'));
+    check('the game profile never overwrites normal settings', savedProfile.bufferSeconds === base.bufferSeconds);
+    await sleep(1500);
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => s.status.buffering)"), 20000, 'capture after profile test');
+    await sleep(6000);
+    await api.clip(2);
+
     // A real drag with the real mouse, onto a small test window that accepts dropped files.
     const dropResult = path.join(session.home, 'dropped.txt');
     const dropTarget = spawn('powershell', ['-NoProfile', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = 'Afterclip drop test'; $f.AllowDrop = $true; $f.TopMost = $true; $f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; $f.Left = 60; $f.Top = 60; $f.Width = 400; $f.Height = 400; $f.Add_DragEnter({ param($s,$e) $e.Effect = 'Copy' }); $f.Add_DragDrop({ param($s,$e) ($e.Data.GetData('FileDrop') -join ';') | Set-Content -LiteralPath '${dropResult}'; $s.Close() }); $t = New-Object Windows.Forms.Timer; $t.Interval = 20000; $t.Add_Tick({ $f.Close() }); $t.Start(); [void]$f.ShowDialog()`], { windowsHide: false, stdio: 'ignore' });
@@ -161,6 +191,49 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     dropTarget.kill();
     check('dragging a clip drops the real file into another app', dropped.toLowerCase().endsWith('.mp4') && fs.existsSync(dropped), dropped || 'nothing dropped');
     check('dragging leaves the panel responding', (await panel.eval('1 + 1')) === 2);
+
+    // Favourites, renaming, search, sort and the game filter, through the real panel.
+    const items = () => panel.eval("[...document.querySelectorAll('#media .item-title')].map((t) => t.textContent)");
+    await panel.eval("document.querySelector('#media .star').click()");
+    await waitFor(() => panel.eval("document.querySelectorAll('#media .star.on').length === 1"), 5000, 'favourite star');
+    check('a clip can be starred', true);
+    await panel.eval("document.getElementById('library-favourites').click()");
+    check('the favourites filter shows only starred clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 1);
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Rename').click(); })()`);
+    await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'rename field');
+    await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Best: moment?'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+    await waitFor(async () => (await items()).includes('Best moment'), 5000, 'renamed clip');
+    check('renaming changes the file and cleans the name', fs.existsSync(path.join(output, 'Clips', 'Best moment.mp4')));
+    check('a renamed clip stays a favourite', (await panel.eval("document.querySelectorAll('#media .star.on').length")) === 1);
+    check('a renamed clip remembers its game', /Desktop/.test(await panel.eval("document.querySelector('#media .item-sub').textContent")));
+    await panel.eval("document.getElementById('library-favourites').click()");
+    const search = (text) => panel.eval(`(() => { const s = document.getElementById('library-search'); s.value = ${JSON.stringify(text)}; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#media .item').length; })()`);
+    check('search finds a clip by name', (await search('best mom')) === 1);
+    check('search says when nothing matches', (await search('zzzz')) === 0 && !(await panel.eval("document.getElementById('empty').hidden")));
+    await search('');
+    const gameChoices = await panel.eval("[...document.getElementById('library-game').options].map((o) => o.value)");
+    check('the game filter lists games with clips', gameChoices.includes('') && gameChoices.includes('Desktop'), gameChoices.join());
+    await panel.eval(`(() => { const s = document.getElementById('library-sort'); s.value = 'largest'; s.dispatchEvent(new Event('change')); })()`);
+    const bySize = await panel.eval("[...document.querySelectorAll('#media .item-sub')].map((t) => parseInt(t.textContent.split('·').pop()))");
+    check('sorting by largest orders by size', bySize.every((v, i) => i === 0 || v <= bySize[i - 1]), bySize.join());
+    await panel.eval(`(() => { const s = document.getElementById('library-sort'); s.value = 'newest'; s.dispatchEvent(new Event('change')); })()`);
+
+    // A share-ready copy, reported when it's done.
+    const shareFile = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.find((m) => m.size > 1000000).file)");
+    const shared = await panel.eval(`window.afterclip.invoke('shrink-clip', { file: ${JSON.stringify(shareFile)}, megabytes: 1 })`);
+    check('a shareable copy fits its size, beside the original', fs.statSync(shared).size <= 1000000 && fs.existsSync(shareFile), `${(fs.statSync(shared).size / 1e6).toFixed(2)} MB`);
+
+    // The storage limit removes the oldest, never favourites.
+    const namesBefore = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.map((m) => m.name))");
+    const favourite = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.find((m) => m.favourite).name)");
+    await panel.eval(`window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, storageLimitGb: 0.000001 }))`);
+    await waitFor(async () => (await panel.eval("window.afterclip.invoke('state').then((s) => s.media.length)")) === 1, 15000, 'old clips removed').catch(() => undefined);
+    const after = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.map((m) => m.name))");
+    check('the storage limit removes old clips but keeps favourites', after.length === 1 && after[0] === favourite && namesBefore.length > 1, `${namesBefore.length} to ${after.length}`);
+    await panel.eval(`window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, storageLimitGb: 0 }))`);
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => s.status.buffering)"), 20000, 'capture after limit test');
+    await sleep(1000);
+    await api.clip(10);
 
     await panel.eval("document.getElementById('library-back').click()");
     check('Back returns to the ring', await panel.eval("getComputedStyle(document.getElementById('halo')).display !== 'none'"));
@@ -312,13 +385,68 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const decode = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', path.join(clips, merged), '-f', 'null', '-'], { encoding: 'utf8' });
     check('merged video decodes cleanly', decode.status === 0 && !decode.stderr.trim(), decode.stderr.trim().slice(0, 160));
 
-    const bad = await editor.eval(`window.afterclip.invoke('export-edit', [{ file: 'C:\\\\Windows\\\\notepad.exe', start: 0, end: -1 }]).then(() => 'allowed', (e) => e.message)`);
+    // Track volumes: the desktop source's own track turned off in a saved copy.
+    await waitFor(() => editor.eval("document.querySelectorAll('.mixer-track').length === 3"), 8000, 'mixer tracks');
+    check('the editor offers a volume for each track', true);
+    before.add(merged);
+    await editor.eval(`(() => { const s = document.querySelectorAll('.mixer-track input')[2]; s.value = 0; s.dispatchEvent(new Event('input')); })()`);
+    check('the mixer shows a track as off', (await editor.eval("document.querySelectorAll('.mixer-track output')[2].textContent")) === 'Off');
+    await editor.eval("document.getElementById('export').click()");
+    const remixed = await waitFor(() => newFile(), 20000, 'mixed file');
+    await waitFor(() => editor.eval("document.getElementById('export').textContent !== 'Saving'"), 20000, 'mix to finish');
+    check('turning a track off removes it from the saved video', audioTracks(path.join(clips, remixed)) === 2, `${audioTracks(path.join(clips, remixed))} tracks`);
+
+    const bad = await editor.eval(`window.afterclip.invoke('export-edit', { segments: [{ file: 'C:\\\\Windows\\\\notepad.exe', start: 0, end: -1 }] }).then(() => 'allowed', (e) => e.message)`);
     check('editor refuses files outside your clips', /Not a Afterclip file/.test(bad), bad);
     const asset = await editor.eval(`fetch(window.afterclip.videoUrl('C:\\\\Windows\\\\win.ini')).then((r) => r.status, () => 'blocked')`);
     check('video access is limited to your clips', asset !== 200, `${asset}`);
 
-    panel.close(); panel = null;
-    console.log('  waiting for the hidden panel to free its memory');
+    // The updater, against a pretend release on this PC. The test copy stops short of running the installer.
+    // Normal builds only accept updates over HTTPS, so this needs the build described in the README.
+    if (process.env.AFTERCLIP_TEST_UPDATER) {
+      const updateDir = path.join(session.home, 'update');
+      fs.mkdirSync(updateDir);
+      const fakeInstaller = path.join(updateDir, 'fake.exe');
+      fs.writeFileSync(fakeInstaller, 'not a real installer');
+      let signature = 'bm90IGEgcmVhbCBzaWduYXR1cmU=';
+      const updateServer = http.createServer((req, res) => {
+        if (req.url === '/latest.json') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ version: '9.9.9', notes: 'test', pub_date: new Date().toISOString(), platforms: { 'windows-x86_64': { signature, url: `http://127.0.0.1:${UPDATE_PORT}/fake.exe` } } }));
+        } else {
+          res.end(fs.readFileSync(fakeInstaller));
+        }
+      });
+      await new Promise((resolve) => updateServer.listen(UPDATE_PORT, '127.0.0.1', resolve));
+      const updateState = () => panel.eval("window.afterclip.invoke('state').then((s) => s.update)");
+      await panel.eval("window.afterclip.invoke('check-update')");
+      await waitFor(async () => ['failed', 'ready'].includes((await updateState()).status), 20000, 'the bad update');
+      const refused = await updateState();
+      check('an update with a bad signature is refused', refused.status === 'failed', JSON.stringify(refused));
+      const keyFile = path.join(os.homedir(), '.afterclip', 'updater.key');
+      if (fs.existsSync(keyFile)) {
+        execFileSync('cmd', ['/c', 'npx', 'tauri', 'signer', 'sign', '-f', keyFile, '-p', '', fakeInstaller], { cwd: path.join(__dirname, '..', '..'), stdio: 'ignore', windowsHide: true });
+        signature = fs.readFileSync(`${fakeInstaller}.sig`, 'utf8').trim();
+        await panel.eval("window.afterclip.invoke('check-update')");
+        await waitFor(async () => (await updateState()).status === 'ready', 20000, 'the signed update');
+        check('a correctly signed update downloads and is offered', await panel.eval("!document.getElementById('update-card').hidden && /9\\.9\\.9/.test(document.getElementById('update-text').textContent)"));
+        await panel.eval("document.getElementById('update-skip').click()");
+        await waitFor(async () => (await updateState()).status === 'idle', 5000, 'skip');
+        check('skipping remembers the version', JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).skippedUpdate === '9.9.9');
+        check('skipping hides the offer', await panel.eval("document.getElementById('update-card').hidden"));
+        await panel.eval("window.afterclip.invoke('check-update')");
+        await waitFor(async () => (await updateState()).status === 'ready', 20000, 'the update again');
+        check('checking by hand still offers a skipped version', true);
+        await panel.eval("document.getElementById('update-now').click()");
+        await waitFor(async () => (await updateState()).status === 'installing', 5000, 'install');
+        check('Update now starts the install', true);
+      } else {
+        console.log('  no signing key here, so the signed update path was skipped');
+      }
+      updateServer.close();
+    }
+
+    panel.close(); panel = null;    console.log('  waiting for the hidden panel to free its memory');
     await sleep(23000);
     const targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json();
     check('hidden panel is destroyed after 20s', !targets.some((t) => PANEL_URL.test(t.url)));

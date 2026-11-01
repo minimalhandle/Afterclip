@@ -411,6 +411,40 @@ impl Engine {
         *self.settings.lock().unwrap() = settings;
     }
 
+    pub fn current_settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    pub fn track_count(&self, file: &Path) -> Result<i64, String> {
+        let out = self.media(&["tracks".as_ref(), file.as_os_str()], false)?;
+        out.trim().parse().map_err(|_| "Could not read the audio tracks".to_string())
+    }
+
+    /// Makes a smaller copy that fits `megabytes`, beside the original. In the background, so it can't compete with a game.
+    pub fn shrink(&self, file: &Path, megabytes: u64) -> Result<PathBuf, String> {
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&self.clips_dir().join(format!("{stem}_{megabytes}MB.mp4")));
+        let bytes = (megabytes * 1000 * 1000).to_string();
+        if let Err(e) = self.media(&["shrink".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
+            let _ = fs::remove_file(&output);
+            return Err(e);
+        }
+        Ok(output)
+    }
+
+    /// Replaces a file with a copy whose audio tracks are at these volumes.
+    fn apply_gains(&self, file: &Path, gains: &[f64]) -> Result<(), String> {
+        let temporary = unique_path(&file.with_extension("mixing.mp4"));
+        let values: Vec<String> = gains.iter().map(|g| g.clamp(0.0, 2.0).to_string()).collect();
+        let mut args: Vec<&std::ffi::OsStr> = vec!["retrack".as_ref(), file.as_os_str(), temporary.as_os_str()];
+        args.extend(values.iter().map(|v| std::ffi::OsStr::new(v.as_str())));
+        if let Err(e) = self.media(&args, false) {
+            let _ = fs::remove_file(&temporary);
+            return Err(e);
+        }
+        move_file(&temporary, file)
+    }
+
     /// The encoder that actually started, which can differ from the choice if that one isn't available.
     pub fn encoder_in_use(&self) -> Option<String> {
         self.encoder_in_use.lock().unwrap().clone()
@@ -461,7 +495,8 @@ impl Engine {
     }
 
     /// Joins ranges of clips into a new file in Clips, losslessly. Originals are never changed.
-    pub fn export_segments(&self, segments: &[(PathBuf, f64, f64)]) -> Result<PathBuf, String> {
+    /// Any gains other than 100% then re-encode just those audio tracks.
+    pub fn export_segments(&self, segments: &[(PathBuf, f64, f64)], gains: &[f64]) -> Result<PathBuf, String> {
         let kind = if segments.len() > 1 { "Merged" } else { "Edit" };
         let file = unique_path(&self.clips_dir().join(format!("{kind}_{}.mp4", timestamp())));
         let mut args: Vec<std::ffi::OsString> = vec!["join".into(), file.clone().into()];
@@ -474,6 +509,12 @@ impl Engine {
         if let Err(e) = self.media(&refs, false) {
             let _ = fs::remove_file(&file);
             return Err(e);
+        }
+        if gains.iter().any(|g| *g != 1.0) {
+            if let Err(e) = self.apply_gains(&file, gains) {
+                let _ = fs::remove_file(&file);
+                return Err(e);
+            }
         }
         Ok(file)
     }
