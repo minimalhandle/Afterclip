@@ -129,10 +129,13 @@ async function main() {
     check('the bar shows the buffer filling and the selected length', bar.filled > 0 && bar.kept > 0 && bar.kept <= bar.filled && /^0:\d\d$/.test(bar.time), JSON.stringify(bar));
     // Frames being lost, faked by what the panel hears from the app: it warns, then clears when they stop.
     await panel.eval("(() => { const real = window.afterclip.invoke; window.realInvoke = real; let bad = 0; window.afterclip.invoke = async (name, arg) => { const answer = await real(name, arg); if (name === 'stats' && window.fakeLoss) { bad += 100; return { ...answer, renderLagged: bad, renderTotal: bad * 2 }; } return answer; }; window.fakeLoss = true; })()");
+    // Run directly, because the panel only checks by itself while it has focus.
+    await panel.eval('pollStats().then(() => pollStats())');
     await waitFor(() => panel.eval("document.getElementById('buffer-note').textContent === 'Losing frames'"), 8000, 'the lost frames warning');
     check('the card warns when frames are being lost', await panel.eval("document.getElementById('buffer-note').classList.contains('warn') && /GPU is too busy/.test(document.getElementById('buffer-note').title)"));
     await panel.shot('2c-panel-losing-frames');
     await panel.eval("window.fakeLoss = false; window.afterclip.invoke = window.realInvoke");
+    await panel.eval('pollStats().then(() => pollStats())');
     await waitFor(() => panel.eval("document.getElementById('buffer-note').textContent !== 'Losing frames'"), 8000, 'the warning to clear');
     check('the warning clears when frames stop being lost', true);
     await waitFor(() => panel.eval("!!document.querySelector('#media img')?.src"), 10000, 'thumbnail');
@@ -143,8 +146,11 @@ async function main() {
     for (let i = 0; i < 5; i++) await api.clip(2);
     await waitFor(() => panel.eval("/View all \\(6\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the sixth clip');
     check('home shows only the five newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 5);
-    // A banner pushes the list down for a few seconds, so this measures the resting layout.
-    check('all five fit without scrolling', await panel.eval("(() => { document.getElementById('banner').hidden = true; const m = document.getElementById('media'); return m.scrollHeight <= m.clientHeight; })()"));
+    // The rows should fill the panel, and a message should float over them instead of moving them.
+    check('all five fit without scrolling', await panel.eval("(() => { const m = document.getElementById('media'); return m.scrollHeight <= m.clientHeight; })()"));
+    const fit = await panel.eval("(() => { const m = document.getElementById('media').getBoundingClientRect(); const items = document.querySelectorAll('#media .item'); const banner = document.getElementById('banner'); const before = items[0].getBoundingClientRect().top; const shown = banner.hidden; banner.hidden = false; banner.textContent ||= 'Test'; const after = items[0].getBoundingClientRect().top; banner.hidden = shown; return { spare: m.bottom - items[items.length - 1].getBoundingClientRect().bottom, moved: after - before }; })()");
+    check('five rows fill the panel', fit.spare >= 0 && fit.spare <= 16, JSON.stringify(fit));
+    check('a message does not move the clips', fit.moved === 0, JSON.stringify(fit));
     await panel.shot('2a-panel-five-clips');
     await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 5"), 8000, 'all five thumbnails').catch(() => undefined);
     check('all five home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 5);
