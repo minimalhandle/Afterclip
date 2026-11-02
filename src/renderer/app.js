@@ -74,40 +74,39 @@ function renderStatus() {
   $('admin-text').textContent = capture.needsAdmin
     ? `${capture.app} is running as administrator, so Afterclip is recording its monitor instead.`
     : `Afterclip couldn't capture ${capture.app} directly, so it's recording its monitor. Running as administrator may fix this.`;
-  renderHalo();
+  renderBuffer();
 }
 
-// The ring: its full length is the buffer, the colour is what's filled so far, and the white part, starting
-// at the arrowhead, is what Save would keep. It only ticks while the buffer is still filling.
-let haloTimer = null;
-function renderHalo() {
+// The bar: its full width is the buffer, the colour is what's filled so far, and the white part, at the
+// newest end, is what Save would keep. It only ticks while the buffer is still filling.
+let bufferTimer = null;
+function renderBuffer() {
   if (!settings) return;
   const buffer = Math.max(1, activeBuffer ?? settings.bufferSeconds);
   const filled = status.buffering && status.bufferingSince ? Math.min(buffer, Math.max(0, (Date.now() - status.bufferingSince) / 1000)) : 0;
   const wanted = chosenLength > 0 ? chosenLength : buffer;
   const kept = Math.min(wanted, filled);
   const percent = (seconds) => (100 * seconds) / buffer;
-  $('halo').classList.toggle('recording', status.recording);
-  $('halo-filled').setAttribute('stroke-dasharray', `${percent(filled)} 100`);
-  $('halo-selected').setAttribute('stroke-dasharray', `${percent(kept)} 100`);
-  $('halo-filled').classList.toggle('empty', filled <= 0);
-  $('halo-selected').classList.toggle('empty', kept <= 0);
-  $('halo-time').textContent = clockLabel(filled);
-  $('halo-note').textContent = !status.buffering ? 'Not buffering'
+  $('buffer-bar').classList.toggle('recording', status.recording);
+  $('buffer-filled').style.width = `${percent(filled)}%`;
+  $('buffer-kept').style.left = `${percent(filled - kept)}%`;
+  $('buffer-kept').style.width = `${percent(kept)}%`;
+  $('buffer-time').textContent = clockLabel(filled);
+  $('buffer-note').textContent = !status.buffering ? 'Not buffering'
     : wanted >= buffer ? 'Whole buffer selected'
       : kept < wanted ? `Filling to ${lengthLabel(wanted)}`
         : `Last ${lengthLabel(wanted)} selected`;
   const filling = status.buffering && filled < buffer;
-  if (filling && !haloTimer) haloTimer = setInterval(renderHalo, 1000);
-  if (!filling && haloTimer) { clearInterval(haloTimer); haloTimer = null; }
+  if (filling && !bufferTimer) bufferTimer = setInterval(renderBuffer, 1000);
+  if (!filling && bufferTimer) { clearInterval(bufferTimer); bufferTimer = null; }
 }
 
-function pulseHalo() {
-  const halo = $('halo');
-  halo.classList.remove('saved');
+function shineBuffer() {
+  const bar = $('buffer-bar');
+  bar.classList.remove('saved');
   // Reading layout restarts the animation when clips are saved close together.
-  void halo.offsetWidth;
-  halo.classList.add('saved');
+  void bar.offsetWidth;
+  bar.classList.add('saved');
 }
 
 function renderSummary() {
@@ -144,7 +143,7 @@ function renderLengths() {
   } else {
     hint.textContent = 'Set a hotkey in Settings to save in-game';
   }
-  renderHalo();
+  renderBuffer();
 }
 
 const parseName = (name) => {
@@ -258,7 +257,7 @@ const KIND_TEXT = {
   screenshot: { title: 'All screenshots', empty: 'No screenshots yet. Press the camera button above or your screenshot hotkey.' },
 };
 
-const HOME_CLIPS = 3;
+const HOME_CLIPS = 4;
 let libraryOpen = false;
 function setLibrary(open) {
   libraryOpen = open;
@@ -440,7 +439,7 @@ function buildMenu(m) {
     item('Rename', () => { renaming = m.file; renderMedia(); }),
     item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
     item('Send to Discord', () => {
-      if (!settings.discordWebhook) return showBanner('Add your Discord webhook in Settings, under Sharing.', 'bad');
+      if (!settings.discordWebhook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
       showBanner('Sending to Discord. A long clip is made smaller first, and you can keep playing.');
       return api.invoke('send-to-discord', m.file).catch(() => undefined);
     }),
@@ -682,7 +681,7 @@ function updateLiveViews() {
     api.invoke('set-meters', false).catch(() => undefined);
     document.querySelectorAll('[data-meter]').forEach((f) => { f.style.transform = 'scaleX(0)'; });
   }
-  const paneOpen = !$('settings').hidden && currentPane === 'performance';
+  const paneOpen = !$('settings').hidden && currentPane === 'video';
   const homeOpen = $('settings').hidden;
   const wanted = visible && (paneOpen || homeOpen) ? (paneOpen ? PANE_STATS_MS : HOME_STATS_MS) : 0;
   if (statsTimer?.ms !== wanted) {
@@ -1193,17 +1192,12 @@ function readForm() {
 
 const icon = (path) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 const SECTIONS = [
-  ['general', 'General', 'Startup, tray, administrator, notifications', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/>'],
-  ['buffer', 'Buffer', 'How far back you can save', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
-  ['video', 'Video', 'Quality, resolution, frame rate, encoder', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
+  ['general', 'General', 'Startup, notifications, updates', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/>'],
+  ['video', 'Video', 'Quality, buffer, recordings, performance', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
   ['audio', 'Audio', 'Game audio, devices, apps, tracks', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
-  ['hotkeys', 'Hotkeys', 'Clip lengths and keyboard shortcuts', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
-  ['controller', 'Controller', 'Save clips from your controller', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><circle cx="8" cy="12.5" r="1.5"/><circle cx="16" cy="12.5" r="1.5"/>'],
-  ['recording', 'Recording', 'Split long recordings and markers', '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>'],
+  ['controls', 'Controls', 'Hotkeys, clip lengths, controller', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
   ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
-  ['performance', 'Performance', 'Live frame rate, dropped frames, CPU', '<path d="M3 13h4l3 7 4-16 3 9h4"/>'],
-  ['sharing', 'Sharing', 'Send clips to a Discord channel', '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M12 3v12M8 7l4-4 4 4"/>'],
-  ['storage', 'Storage', 'Where clips are saved, and how much to keep', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+  ['clips', 'Clips and sharing', 'Save location, clean up, Discord', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
 ];
 let currentPane = null;
 
@@ -1227,7 +1221,7 @@ function showPane(id) {
   $('crumb-now').textContent = SECTIONS.find(([s]) => s === id)?.[1] ?? '';
   if (id === 'audio') loadAudioChoices();
   if (id === 'games') renderGamePicker();
-  if (id === 'controller') fillController();
+  if (id === 'controls') fillController();
   updateLiveViews();
 }
 
@@ -1251,13 +1245,13 @@ function showView(name) {
 api.on('status', (s) => { status = s; renderStatus(); });
 api.on('capture', (c) => { capture = c; renderStatus(); });
 api.on('update', (u) => { update = u; renderUpdate(); });
-api.on('profile', (p) => { activeProfile = p.game ?? null; activeBuffer = p.bufferSeconds; renderSummary(); renderHalo(); });
+api.on('profile', (p) => { activeProfile = p.game ?? null; activeBuffer = p.bufferSeconds; renderSummary(); renderBuffer(); });
 api.on('panel-shown', () => { refresh(); updateLiveViews(); });
 window.addEventListener('focus', updateLiveViews);
 document.addEventListener('visibilitychange', updateLiveViews);
 api.on('feedback', (f) => {
   if (f.kind === 'clip' && f.ok) {
-    pulseHalo();
+    shineBuffer();
     if (f.short) showBanner(`Only ${Math.round(f.actualSeconds)}s was buffered, so the clip is shorter than the ${f.requestedSeconds}s you asked for.`);
     else showBanner(`Saved ${Math.round(f.actualSeconds)}s clip`, 'good');
   } else if (f.kind === 'recording-saved') {

@@ -8,7 +8,7 @@
 A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-session recording.</p>
 
 <p align="center">
-  <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer ring and recent clips">
+  <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer bar and recent clips">
   <img src="docs/screenshots/library.png" width="32%" alt="The library, showing every clip in a grid">
   <img src="docs/screenshots/audio.png" width="32%" alt="Audio settings, with sources, volumes and Clean Mic">
 </p>
@@ -28,7 +28,7 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 
 Press a hotkey, click the panel or tap a Stream Deck key. Set your buffer in minutes, then save the last 15 seconds, 30 minutes, the whole buffer, or any custom length up to its size.
 
-The ring on the panel is your buffer. Its colour shows how much has filled, and the white part, starting at the arrowhead, is what saving would keep. It turns red while recording and pulses when a clip saves. A short tone and a popup confirm each save, so you know it worked mid-game.
+The glass bar on the panel is your buffer. Its colour shows how much has filled, and the white part at the newest end is what saving would keep. That part turns red while recording, and the glass shines when a clip saves. A short tone and a popup confirm each save, so you know it worked mid-game.
 
 ### Automatic game capture
 
@@ -39,7 +39,7 @@ Afterclip spots exclusive and borderless fullscreen games by itself and hooks th
 Record whole sessions while the clip buffer keeps running, with no extra encode. Long recordings can split into a new file on a timer, and markers become chapters in the file.
 
 <p align="center">
-  <img src="docs/screenshots/recording.png" width="32%" alt="The panel while recording, with the ring in red">
+  <img src="docs/screenshots/recording.png" width="32%" alt="The panel while recording, with the buffer bar in red">
   <img src="docs/screenshots/video.png" width="32%" alt="Video settings">
   <img src="docs/screenshots/settings.png" width="32%" alt="The settings sections">
 </p>
@@ -57,9 +57,9 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 
 Drag a clip straight into Discord or any other app, the same way you would from File Explorer. Or choose **Copy file** from its menu and paste it.
 
-From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. That posts to one channel through a webhook you add under **Settings > Sharing**, and a clip over Discord's 10 MB limit is sent as a smaller copy.
+From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. That posts to one channel through a webhook you add under **Settings > Clips and sharing**, and a clip over Discord's 10 MB limit is sent as a smaller copy.
 
-**Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Storage** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
+**Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
 
 Clips this good are big, so **Compress** re-encodes a smaller H.264 copy, using your GPU where it can, with the main audio mix. It aims for 100 MB at up to 1080p and 60 FPS. A clip too long to look good at that size (over about 3 minutes) keeps its 1080p60 and goes over, and Afterclip tells you the size it reached. Your original stays as it is.
 
@@ -97,7 +97,7 @@ Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Cu
 
 ### Quality your way
 
-Choose Low, Medium, High or Full quality, or set each option yourself: resolution up to native, 60 fps, 120 fps or your monitor's rate, and H.264, HEVC or AV1. Works with NVIDIA, AMD and Intel GPUs, or the CPU. If an encoder can't start, Afterclip falls back to one that can, and shows which it's using. The Performance section shows frame rate, lost frames, CPU, memory and free disk space.
+Choose Low, Medium, High or Full quality, or set each option yourself: resolution up to native, 60 fps, 120 fps or your monitor's rate, and H.264, HEVC or AV1. Works with NVIDIA, AMD and Intel GPUs, or the CPU. If an encoder can't start, Afterclip falls back to one that can, and shows which it's using. The Performance card under **Settings > Video** shows frame rate, lost frames, CPU, memory and free disk space.
 
 ## Install
 
@@ -158,10 +158,10 @@ You can change these and add more clip lengths in Settings.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
 - **Not detected:** windowed games aren't detected, so they're only recorded if they're on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
-- **Controllers:** turn this on in Settings, Controller. Hold Create, View or −, then press R3 to save a clip. Other actions can be added there. Afterclip only listens, and never sends anything to the controller, so your game also receives these presses. Tested on a DualSense over USB and Bluetooth. Xbox and Switch Pro support hasn't been tried on real controllers yet. Switch Pro needs Bluetooth, unless Steam is running.
+- **Controllers:** turn this on in Settings, Controls. Hold Create, View or −, then press R3 to save a clip. Other actions can be added there. Afterclip only listens, and never sends anything to the controller, so your game also receives these presses. Tested on a DualSense over USB and Bluetooth. Xbox and Switch Pro support hasn't been tried on real controllers yet. Switch Pro needs Bluetooth, unless Steam is running.
 - **Adding a game:** open the game, then choose it in Settings, Games. Afterclip lists what's open, with likely games first, and only looks at the list, so it never touches the game. Settings and auto-record apply when the game runs fullscreen. Some games hidden by anti-cheat may not be listed, so use Browse to find their program file.
 - **Game profiles:** a profile that changes capture settings restarts capture when the game opens, which clears the buffer. Normal settings return 10 minutes after the game closes, so you can still clip its last moments. Neither happens during a recording.
-- **Sharing long clips:** a very long clip can't fit a small size and still look watchable, so Afterclip asks you to trim it or pick a larger size.
+- **Long clips:** Compress keeps a long clip at 1080p60 and lets it go over 100 MB. Send to Discord can't, so it asks you to trim a clip too long to fit.
 - **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
 - **Updates:** installing by itself needs Run as administrator, because otherwise Windows would show a UAC prompt out of nowhere. Without it, updates wait for you to click **Update now**. Turn **Automatic updates** off in General to stop Afterclip checking GitHub.
 - **HEVC and AV1:** these give smaller files, but not every app can play them, and the editor's preview may not.

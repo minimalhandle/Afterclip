@@ -73,20 +73,14 @@
     </div>
   </section>
 
-  <section class="halo" id="halo" aria-label="Replay buffer">
-    <svg class="halo-ring" viewBox="0 0 200 200" aria-hidden="true">
-      <defs>
-        <linearGradient id="halo-fill" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c9c1ff"/><stop offset="1" stop-color="#5b49e6"/></linearGradient>
-      </defs>
-      <path class="halo-track" pathLength="100" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
-      <path id="halo-filled" class="halo-filled empty" pathLength="100" stroke="url(#halo-fill)" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
-      <path id="halo-selected" class="halo-selected empty" pathLength="100" d="M117.46 17.84A84 84 0 1 1 28.76 55.49"/>
-      <path class="halo-head" d="M119.55 8.06L115.39 27.62L79.68 18.49Z"/>
-    </svg>
-    <div class="halo-text">
-      <div class="halo-label">Buffered</div>
-      <div id="halo-time" class="halo-time">0:00</div>
-      <div id="halo-note" class="halo-note"></div>
+  <section class="buffer-bar" id="buffer-bar" aria-label="Replay buffer">
+    <div class="buffer-line">
+      <div id="buffer-time" class="buffer-time">0:00</div>
+      <div id="buffer-note" class="buffer-note"></div>
+    </div>
+    <div class="buffer-track">
+      <div id="buffer-filled" class="buffer-filled"></div>
+      <div id="buffer-kept" class="buffer-kept"></div>
     </div>
   </section>
 
@@ -173,19 +167,6 @@
     <button id="quit" class="small danger">Quit Afterclip</button>
   </div>
 
-  <div class="pane" data-pane="buffer" hidden>
-    <div class="card">
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Buffer length</div><div class="setting-desc">How far back you can save a clip from.</div></div>
-        <select id="bufferMinutes" aria-label="Buffer length">
-          <option value="0.5">30 seconds</option><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option>
-          <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option>
-        </select>
-      </div>
-    </div>
-    <p id="estimate" class="note"></p>
-  </div>
-
   <div class="pane" data-pane="video" hidden>
     <div class="card">
       <div class="card-title">
@@ -232,6 +213,38 @@
       <p id="encoder-note" class="note"></p>
     </div>
     <p id="quality-note" class="note"></p>
+    <div class="card">
+      <div class="card-title">Replay buffer</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Buffer length</div><div class="setting-desc">How far back you can save a clip from.</div></div>
+        <select id="bufferMinutes" aria-label="Buffer length">
+          <option value="0.5">30 seconds</option><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option>
+          <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option>
+        </select>
+      </div>
+    </div>
+    <p id="estimate" class="note"></p>
+    <div class="card">
+      <div class="card-title">Recordings</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Split long recordings</div><div class="setting-desc">Starts a new file after this long, so a crash or a huge file costs less.</div></div>
+        <select id="recordSplit" aria-label="Split long recordings">
+          <option value="0">Off</option><option value="300">Every 5 minutes</option><option value="600">Every 10 minutes</option><option value="900">Every 15 minutes</option>
+          <option value="1800">Every 30 minutes</option><option value="3600">Every hour</option>
+        </select>
+      </div>
+    </div>
+    <p class="note">Press the marker key while recording to add a chapter you can jump to in most video players. Changes apply to your next recording.</p>
+    <p id="perf-health" class="perf-health">Checking.</p>
+    <div class="card">
+      <div class="card-title">Performance</div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Frame rate</div><div class="setting-desc">Frames being captured each second.</div></div><div id="stat-fps" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Skipped by encoder</div><div class="setting-desc">The encoder couldn't keep up. Lower quality or preset.</div></div><div id="stat-encoder" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Lagged while rendering</div><div class="setting-desc">The GPU was too busy, usually with the game.</div></div><div id="stat-render" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Capture CPU</div><div class="setting-desc">The capture engine's share of your CPU.</div></div><div id="stat-cpu" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Capture memory</div><div class="setting-desc">Mostly your buffer.</div></div><div id="stat-memory" class="stat"></div></div>
+      <div class="setting"><div class="setting-text"><div class="setting-name">Free disk space</div><div class="setting-desc">On your save location.</div></div><div id="stat-disk" class="stat"></div></div>
+    </div>
   </div>
 
   <div class="pane" data-pane="audio" hidden>
@@ -268,13 +281,14 @@
     <p id="audio-warning" class="note warn" hidden></p>
   </div>
 
-  <div class="pane" data-pane="hotkeys" hidden>
+  <div class="pane" data-pane="controls" hidden>
     <div class="card">
       <div class="card-title">Clip lengths</div>
       <div id="presets"></div>
       <div class="row wrap"><button id="add-preset" class="small">Add clip length</button></div>
     </div>
     <div class="card">
+      <div class="card-title">Keyboard shortcuts</div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Record</div><div class="setting-desc">Start or stop a full recording.</div></div>
         <input id="recordHotkey" readonly aria-label="Record hotkey" class="key-field">
@@ -292,10 +306,8 @@
         <input id="screenshotHotkey" readonly aria-label="Screenshot hotkey" class="key-field">
       </div>
     </div>
-  </div>
-
-  <div class="pane" data-pane="controller" hidden>
     <div class="card">
+      <div class="card-title">Controller</div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Use a controller</div><div id="controller-seen" class="setting-desc">Turn this on, then press a button to check your controller is found.</div></div>
         <input id="controllerEnabled" class="switch" type="checkbox" aria-label="Use a controller">
@@ -331,19 +343,6 @@
     <p class="note">Works with DualSense, Xbox and Switch Pro controllers, while any game is running. Your game receives these presses too, so R3 might also melee or crouch. Switch Pro needs Bluetooth, unless Steam is running.</p>
   </div>
 
-  <div class="pane" data-pane="recording" hidden>
-    <div class="card">
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Split long recordings</div><div class="setting-desc">Starts a new file after this long, so a crash or a huge file costs less.</div></div>
-        <select id="recordSplit" aria-label="Split long recordings">
-          <option value="0">Off</option><option value="300">Every 5 minutes</option><option value="600">Every 10 minutes</option><option value="900">Every 15 minutes</option>
-          <option value="1800">Every 30 minutes</option><option value="3600">Every hour</option>
-        </select>
-      </div>
-    </div>
-    <p class="note">Press the marker key while recording to add a chapter you can jump to in most video players. Changes apply to your next recording.</p>
-  </div>
-
   <div class="pane" data-pane="games" hidden>
     <p class="note games-note">Add a game to have it captured even in a window, and to give it its own settings, used while it runs. A change that needs it restarts capture when the game opens, which clears the buffer. Settings go back 10 minutes after the game closes, so you can still clip its last moments.</p>
     <div id="profiles"></div>
@@ -357,31 +356,9 @@
     </div>
   </div>
 
-  <div class="pane" data-pane="performance" hidden>
-    <p id="perf-health" class="perf-health">Checking.</p>
+  <div class="pane" data-pane="clips" hidden>
     <div class="card">
-      <div class="setting"><div class="setting-text"><div class="setting-name">Frame rate</div><div class="setting-desc">Frames being captured each second.</div></div><div id="stat-fps" class="stat"></div></div>
-      <div class="setting"><div class="setting-text"><div class="setting-name">Skipped by encoder</div><div class="setting-desc">The encoder couldn't keep up. Lower quality or preset.</div></div><div id="stat-encoder" class="stat"></div></div>
-      <div class="setting"><div class="setting-text"><div class="setting-name">Lagged while rendering</div><div class="setting-desc">The GPU was too busy, usually with the game.</div></div><div id="stat-render" class="stat"></div></div>
-      <div class="setting"><div class="setting-text"><div class="setting-name">Capture CPU</div><div class="setting-desc">The capture engine's share of your CPU.</div></div><div id="stat-cpu" class="stat"></div></div>
-      <div class="setting"><div class="setting-text"><div class="setting-name">Capture memory</div><div class="setting-desc">Mostly your buffer.</div></div><div id="stat-memory" class="stat"></div></div>
-      <div class="setting"><div class="setting-text"><div class="setting-name">Free disk space</div><div class="setting-desc">On your save location.</div></div><div id="stat-disk" class="stat"></div></div>
-    </div>
-  </div>
-
-  <div class="pane" data-pane="sharing" hidden>
-    <div class="card">
-      <div class="card-title">Discord</div>
-      <div class="setting wide">
-        <div class="setting-text"><div class="setting-name">Webhook address</div><div id="discord-note" class="setting-desc">Lets Send to Discord post to one channel. In Discord, open the channel's settings, then Integrations, then Webhooks, and copy the address here.</div></div>
-        <input id="discordWebhook" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…" aria-label="Discord webhook address">
-      </div>
-    </div>
-    <p class="note">Anyone with this address can post to that channel, so it's hidden here. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
-  </div>
-
-  <div class="pane" data-pane="storage" hidden>
-    <div class="card">
+      <div class="card-title">Storage</div>
       <div class="setting wide">
         <div class="setting-text"><div class="setting-name">Save location</div><div class="setting-desc">Clips, recordings and screenshots are saved here.</div></div>
         <div class="row"><input id="outputDir" readonly aria-label="Save location"><button id="pick-folder" class="small">Change</button></div>
@@ -402,6 +379,14 @@
       </div>
       <p id="storage-used" class="note"></p>
     </div>
+    <div class="card">
+      <div class="card-title">Discord</div>
+      <div class="setting wide">
+        <div class="setting-text"><div class="setting-name">Webhook address</div><div id="discord-note" class="setting-desc">Lets Send to Discord post to one channel. In Discord, open the channel's settings, then Integrations, then Webhooks, and copy the address here.</div></div>
+        <input id="discordWebhook" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…" aria-label="Discord webhook address">
+      </div>
+    </div>
+    <p class="note">Anyone with this address can post to that channel, so it's hidden here. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
   </div>
 
   <div class="settings-foot"><p id="save-note" class="note">Changes save automatically.</p></div>
