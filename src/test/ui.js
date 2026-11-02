@@ -124,22 +124,25 @@ async function main() {
     check('Save button creates a clip in the list', true);
     const toasts = await toastSeen;
     check('a saved clip shows the popup', toasts === 'True', toasts);
-    check('the ring pulses when a clip saves', await panel.eval("document.getElementById('halo').classList.contains('saved')"));
-    const ring = await panel.eval("({ filled: parseFloat(document.getElementById('halo-filled').getAttribute('stroke-dasharray')), kept: parseFloat(document.getElementById('halo-selected').getAttribute('stroke-dasharray')), time: document.getElementById('halo-time').textContent })");
-    check('the ring shows the buffer filling and the selected length', ring.filled > 0 && ring.kept > 0 && ring.kept <= ring.filled && /^0:\d\d$/.test(ring.time), JSON.stringify(ring));
+    check('the glass shines when a clip saves', await panel.eval("document.getElementById('buffer-bar').classList.contains('saved')"));
+    const bar = await panel.eval("({ filled: parseFloat(document.getElementById('buffer-filled').style.width), kept: parseFloat(document.getElementById('buffer-kept').style.width), time: document.getElementById('buffer-time').textContent })");
+    check('the bar shows the buffer filling and the selected length', bar.filled > 0 && bar.kept > 0 && bar.kept <= bar.filled && /^0:\d\d$/.test(bar.time), JSON.stringify(bar));
     await waitFor(() => panel.eval("!!document.querySelector('#media img')?.src"), 10000, 'thumbnail');
     check('clip shows a thumbnail and length', /\d:\d\d/.test(await panel.eval("document.querySelector('#media .length').textContent")));
     await panel.shot('2-panel-clip');
 
     // A second and third clip, then one more than the home screen shows.
-    for (let i = 0; i < 3; i++) await api.clip(2);
-    await waitFor(() => panel.eval("/View all \\(4\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the fourth clip');
-    check('home shows only the three newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 3);
-    await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 3"), 8000, 'all three thumbnails').catch(() => undefined);
-    check('all three home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 3);
+    for (let i = 0; i < 4; i++) await api.clip(2);
+    await waitFor(() => panel.eval("/View all \\(5\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the fifth clip');
+    check('home shows only the four newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 4);
+    // A banner pushes the list down for a few seconds, so this measures the resting layout.
+    check('all four fit without scrolling', await panel.eval("(() => { document.getElementById('banner').hidden = true; const m = document.getElementById('media'); return m.scrollHeight <= m.clientHeight; })()"));
+    await panel.shot('2a-panel-four-clips');
+    await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 4"), 8000, 'all four thumbnails').catch(() => undefined);
+    check('all four home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 4);
     await panel.eval("document.getElementById('view-all').click()");
-    const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('halo')).display, editor: !document.getElementById('open-editor').hidden })");
-    check('View all opens every clip in a grid, with the editor link', library.items === 4 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
+    const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('buffer-bar')).display, editor: !document.getElementById('open-editor').hidden })");
+    check('View all opens every clip in a grid, with the editor link', library.items === 5 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
     await panel.shot('2b-library');
 
     // Copy file, keeping whatever text was on the clipboard before.
@@ -169,7 +172,7 @@ async function main() {
     check('a game profile changes the buffer while the game runs', true);
     await waitFor(async () => (await activeState()).recording, 15000, 'auto-record');
     check('auto-record starts when the game opens', true);
-    check('the ring follows the profile buffer', /profile · 25s buffer/.test(await panel.eval("document.getElementById('summary').textContent")));
+    check('the panel follows the profile buffer', /profile · 25s buffer/.test(await panel.eval("document.getElementById('summary').textContent")));
     await api.call('/test/game/', 'POST');
     await waitFor(async () => !(await activeState()).recording, 20000, 'auto-record to stop');
     check('auto-record stops when the game closes', true);
@@ -193,7 +196,7 @@ async function main() {
     await padCombo();
     await sleep(2000);
     check('a controller does nothing until it is turned on', (await clipCount()) === beforePad);
-    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=\"controller\"]').click()");
+    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=\"controls\"]').click()");
     check('Create + R3 is the suggested clip button', (await panel.eval("document.getElementById('controllerClip').value")) === 'r3');
     check('only the clip is set up to begin with', (await panel.eval("['controllerRecord','controllerMic','controllerMarker'].every((id) => document.getElementById(id).value === '')")));
     await panel.eval("(() => { const s = document.getElementById('controllerEnabled'); s.click(); document.getElementById('controllerClipSeconds').value = '15'; document.getElementById('controllerClipSeconds').dispatchEvent(new Event('change')); })()");
@@ -336,7 +339,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await api.clip(10);
 
     await panel.eval("document.getElementById('library-back').click()");
-    check('Back returns to the ring', await panel.eval("getComputedStyle(document.getElementById('halo')).display !== 'none'"));
+    check('Back returns to the buffer bar', await panel.eval("getComputedStyle(document.getElementById('buffer-bar')).display !== 'none'"));
 
     await panel.eval("document.getElementById('open-settings').click()");
     await waitFor(() => panel.eval("document.querySelectorAll('#audio-list select option').length > 0"), 8000, 'audio devices');
@@ -415,6 +418,14 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('changing a field makes the profile Custom', (await panel.eval(value('quality'))) === 'custom');
     const full = await pick('full');
     check('Full quality preset uses the monitor at its limits', full.res === 'native' && full.fr === 'native' && full.kbps === 150000 && full.preset === 'p5' && full.mp === 'true', JSON.stringify(full));
+    check('settings are grouped into six sections', (await panel.eval("[...document.querySelectorAll('.nav-item')].map((b) => b.dataset.pane).join()")) === 'general,video,audio,controls,games,clips');
+    await panel.eval("document.getElementById('crumb-root').click()");
+    await panel.shot('3a-settings-groups');
+    for (const pane of ['video', 'controls', 'clips']) {
+      await panel.eval(`document.querySelector('.nav-item[data-pane=${pane}]').click()`);
+      await panel.shot(`3a-settings-${pane}`);
+      await panel.eval("document.getElementById('crumb-root').click()");
+    }
     check('every setting section opens', await panel.eval(`(() => { for (const b of document.querySelectorAll('.nav-item')) { b.click(); if (document.querySelector('.pane:not([hidden])')?.dataset.pane !== b.dataset.pane) return false; } document.getElementById('go-back').click(); return true; })()`));
     await panel.shot('3b-panel-quality-full');
     await panel.eval("(() => { const b = document.getElementById('bufferMinutes'); b.value = '0.5'; b.dispatchEvent(new Event('change')); })()");
@@ -557,7 +568,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const discordFile = fs.readdirSync(clips).map((n) => path.join(clips, n)).find((f) => f.endsWith('.mp4'));
     const sendToDiscord = (file) => panel.eval(`window.afterclip.invoke('send-to-discord', ${JSON.stringify(file)}).then(() => 'sent', (e) => e.message)`);
     check('Send to Discord asks for a webhook first', /Add your Discord webhook/.test(await sendToDiscord(discordFile)));
-    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=sharing]').click()");
+    await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=clips]').click()");
     await panel.eval("(() => { const f = document.getElementById('discordWebhook'); f.value = 'https://example.com/not-discord'; f.dispatchEvent(new Event('input')); })()");
     check('the panel says when a webhook looks wrong', await panel.eval("document.getElementById('discord-note').classList.contains('warn')"));
     await waitFor(() => JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).discordWebhook === 'https://example.com/not-discord', 5000, 'the wrong webhook to save');

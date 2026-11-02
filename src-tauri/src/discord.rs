@@ -31,7 +31,7 @@ fn content_type(file: &Path) -> &'static str {
 
 fn refusal(status: StatusCode) -> String {
     match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => "Discord doesn't recognise this webhook. Paste a new one in Settings, under Sharing.".into(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => "Discord doesn't recognise this webhook. Paste a new one in Settings, under Clips and sharing.".into(),
         StatusCode::PAYLOAD_TOO_LARGE => "This is too big for Discord. Trim it first.".into(),
         StatusCode::TOO_MANY_REQUESTS => "Discord is limiting uploads right now. Try again in a minute.".into(),
         other => format!("Discord didn't accept this (code {}).", other.as_u16()),

@@ -171,24 +171,20 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 .hotkey.listening { border-color: var(--accent-text); color: var(--accent-text); }
 .hotkey.failed { border-color: var(--rec); color: var(--rec); }
 
-/* Halo: the logo's rewind ring, drawn as the buffer. */
-.halo { position: relative; flex: none; height: 188px; margin-top: 6px; display: grid; place-items: center; }
-.halo-ring { position: absolute; width: 186px; height: 186px; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: visible; }
-.halo-ring path { fill: none; stroke-width: 8; stroke-linecap: round; }
-.halo-track { stroke: rgb(255 255 255 / .07); }
-.halo-filled { transition: stroke-dasharray .45s ease; filter: drop-shadow(0 0 6px rgb(124 108 255 / .55)); }
-.halo-selected { stroke: #fff; transition: stroke-dasharray .3s ease; filter: drop-shadow(0 0 5px rgb(255 255 255 / .45)); }
-.halo-ring .empty { opacity: 0; }
-.halo-ring .halo-head { fill: #c9c1ff; stroke: none; }
-.halo.recording .halo-selected { stroke: var(--rec); filter: drop-shadow(0 0 6px rgb(240 85 79 / .55)); }
-.halo.recording .halo-head { fill: #ff9d98; }
-.halo.saved .halo-ring { animation: halo-saved .7s ease-out; }
-@keyframes halo-saved { 0% { transform: translate(-50%, -50%) scale(1); filter: brightness(1); } 35% { transform: translate(-50%, -50%) scale(1.045); filter: brightness(1.6); } 100% { transform: translate(-50%, -50%) scale(1); filter: brightness(1); } }
-.halo-text { position: relative; text-align: center; }
-.halo-label, .halo-note { color: var(--muted); font-size: 12px; }
-.halo-note { color: var(--accent-text); max-width: 124px; }
-.halo-time { font: 300 42px/1.12 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
-@media (prefers-reduced-motion: reduce) { .halo-filled, .halo-selected { transition: none; } .halo.saved .halo-ring { animation: none; } }
+/* Buffer bar: a pane of glass whose full width is the buffer. */
+.buffer-bar { position: relative; flex: none; overflow: hidden; margin: 8px 12px 0; padding: 8px 14px 12px; border-radius: 16px; background: linear-gradient(160deg, rgb(255 255 255 / .11), rgb(255 255 255 / .03) 55%, rgb(124 108 255 / .08)); box-shadow: var(--edge), var(--lift); }
+.buffer-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.buffer-time { font: 300 30px/1.15 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.buffer-note { color: var(--accent-text); font-size: 12px; text-align: right; }
+.buffer-track { position: relative; height: 8px; margin-top: 6px; border-radius: 4px; background: rgb(255 255 255 / .09); }
+.buffer-filled, .buffer-kept { position: absolute; top: 0; bottom: 0; left: 0; width: 0; border-radius: 4px; }
+.buffer-filled { background: linear-gradient(90deg, #5b49e6, #a99dff); box-shadow: 0 0 10px rgb(124 108 255 / .6); transition: width .45s ease; }
+.buffer-kept { background: #fff; box-shadow: 0 0 8px rgb(255 255 255 / .5); transition: left .45s ease, width .3s ease; }
+.buffer-bar.recording .buffer-kept { background: var(--rec); box-shadow: 0 0 10px rgb(240 85 79 / .6); }
+.buffer-bar::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / .28) 50%, transparent 65%); transform: translateX(-100%); pointer-events: none; }
+.buffer-bar.saved::after { animation: buffer-saved .7s ease-out; }
+@keyframes buffer-saved { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .buffer-filled, .buffer-kept { transition: none; } .buffer-bar.saved::after { animation: none; } }
 
 /* Depth: surfaces catch light along their top edge, and the main button glows. */
 :root { --glass: rgb(255 255 255 / .055); --glass-hover: rgb(255 255 255 / .085); --edge: inset 0 1px 0 rgb(255 255 255 / .12); --edge-soft: inset 0 1px 0 rgb(255 255 255 / .06); --lift: 0 10px 28px rgb(0 0 0 / .35); --primary: linear-gradient(180deg, #7767fa 0%, #5240e0 100%); --primary-edge: inset 0 1px 0 rgb(255 255 255 / .35); }
@@ -251,8 +247,8 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 .mixer-track { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
 .mixer-track output { text-align: right; font-variant-numeric: tabular-nums; }
 
-/* Library: every clip, in the room the ring and save controls leave. */
-#home.library-open .capture-card, #home.library-open .halo, #home.library-open .save { display: none; }
+/* Library: every clip, in the room the buffer and save controls leave. */
+#home.library-open .capture-card, #home.library-open .buffer-bar, #home.library-open .save { display: none; }
 #home.library-open .media { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 8px; }
 #home.library-open .item { flex-direction: column; gap: 6px; }
 #home.library-open .thumb { width: 100%; }

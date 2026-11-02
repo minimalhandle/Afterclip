@@ -868,7 +868,7 @@ fn vertical_clip(core: tauri::State<Shared>, payload: String) -> Result<String, 
 /// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept.
 fn upload_to_discord(core: &Core, webhook: &str, path: &Path) -> Result<(), String> {
     if !discord::is_webhook(webhook, api::is_test_instance()) {
-        return Err("Add your Discord webhook in Settings, under Sharing.".into());
+        return Err("Add your Discord webhook in Settings, under Clips and sharing.".into());
     }
     let size = fs::metadata(path).map_err(|e| format!("Couldn't read this file: {e}"))?.len();
     if size <= discord::MAX_UPLOAD_BYTES {
