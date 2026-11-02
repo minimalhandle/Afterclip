@@ -37,7 +37,9 @@ function showBanner(text, tone) {
 function renderStatus() {
   const card = $('capture-card');
   const ready = status.state === 'ready' && status.buffering;
+  const shining = card.classList.contains('saved');
   card.className = `capture-card ${status.recording ? 'recording' : ready ? 'live' : status.state === 'error' ? 'bad' : ''}`;
+  card.classList.toggle('saved', shining);
   const labels = {
     desktop: 'Recording primary monitor',
     detecting: `Connecting to ${capture.app ?? 'game'}`,
@@ -80,6 +82,7 @@ function renderStatus() {
 // The bar: its full width is the buffer, the colour is what's filled so far, and the white part, at the
 // newest end, is what Save would keep. It only ticks while the buffer is still filling.
 let bufferTimer = null;
+let frameProblem = '';
 function renderBuffer() {
   if (!settings) return;
   const buffer = Math.max(1, activeBuffer ?? settings.bufferSeconds);
@@ -87,12 +90,14 @@ function renderBuffer() {
   const wanted = chosenLength > 0 ? chosenLength : buffer;
   const kept = Math.min(wanted, filled);
   const percent = (seconds) => (100 * seconds) / buffer;
-  $('buffer-bar').classList.toggle('recording', status.recording);
   $('buffer-filled').style.width = `${percent(filled)}%`;
   $('buffer-kept').style.left = `${percent(filled - kept)}%`;
   $('buffer-kept').style.width = `${percent(kept)}%`;
   $('buffer-time').textContent = clockLabel(filled);
-  $('buffer-note').textContent = !status.buffering ? 'Not buffering'
+  $('buffer-note').classList.toggle('warn', !!frameProblem);
+  $('buffer-note').title = frameProblem;
+  $('buffer-note').textContent = frameProblem ? 'Losing frames'
+    : !status.buffering ? 'Not buffering'
     : wanted >= buffer ? 'Whole buffer selected'
       : kept < wanted ? `Filling to ${lengthLabel(wanted)}`
         : `Last ${lengthLabel(wanted)} selected`;
@@ -102,11 +107,11 @@ function renderBuffer() {
 }
 
 function shineBuffer() {
-  const bar = $('buffer-bar');
-  bar.classList.remove('saved');
+  const card = $('capture-card');
+  card.classList.remove('saved');
   // Reading layout restarts the animation when clips are saved close together.
-  void bar.offsetWidth;
-  bar.classList.add('saved');
+  void card.offsetWidth;
+  card.classList.add('saved');
 }
 
 function renderSummary() {
@@ -257,7 +262,7 @@ const KIND_TEXT = {
   screenshot: { title: 'All screenshots', empty: 'No screenshots yet. Press the camera button above or your screenshot hotkey.' },
 };
 
-const HOME_CLIPS = 4;
+const HOME_CLIPS = 5;
 let libraryOpen = false;
 function setLibrary(open) {
   libraryOpen = open;
@@ -688,6 +693,8 @@ function updateLiveViews() {
     if (statsTimer) clearInterval(statsTimer.id);
     statsTimer = wanted ? { ms: wanted, id: setInterval(pollStats, wanted) } : null;
     lastStats = null;
+    frameProblem = '';
+    renderBuffer();
     if (wanted) pollStats();
   }
 }
@@ -707,7 +714,7 @@ async function pollStats() {
   const s = await api.invoke('stats').catch(() => null);
   if (!s) return;
   // Judged on frames since the last look, so one old hiccup doesn't warn forever.
-  const previous = lastStats ?? { encoderTotal: 0, encoderSkipped: 0, renderTotal: 0, renderLagged: 0 };
+  const previous = lastStats ?? s;
   const share = (bad, total) => (total > 0 ? (bad / total) * 100 : 0);
   const encoder = share(s.encoderSkipped - previous.encoderSkipped, s.encoderTotal - previous.encoderTotal);
   const render = share(s.renderLagged - previous.renderLagged, s.renderTotal - previous.renderTotal);
@@ -716,10 +723,10 @@ async function pollStats() {
     ? 'Encoder overloaded: lower the quality or use a faster preset.'
     : render > OVERLOAD_PERCENT ? 'GPU is too busy, so some frames are being missed.' : '';
   const fps = Math.round(s.fps);
-  const lost = s.encoderSkipped + s.renderLagged;
-  const strip = $('perf-strip');
-  strip.textContent = problem || `${fps} fps · ${lost} frames lost · CPU ${s.cpu.toFixed(1)}% · ${sizeFromMb(s.memoryMb)}`;
-  strip.classList.toggle('warn', !!problem);
+  if (problem !== frameProblem) {
+    frameProblem = problem;
+    renderBuffer();
+  }
   $('perf-health').textContent = problem || 'Everything is keeping up.';
   $('perf-health').classList.toggle('warn', !!problem);
   $('stat-fps').textContent = `${fps} fps`;
