@@ -8,7 +8,7 @@
 A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-session recording.</p>
 
 <p align="center">
-  <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer bar and recent clips">
+  <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer and recent clips">
   <img src="docs/screenshots/library.png" width="32%" alt="The library, showing every clip in a grid">
   <img src="docs/screenshots/audio.png" width="32%" alt="Audio settings, with sources, volumes and Clean Mic">
 </p>
@@ -28,7 +28,7 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 
 Press a hotkey, click the panel or tap a Stream Deck key. Set your buffer in minutes, then save the last 15 seconds, 30 minutes, the whole buffer, or any custom length up to its size.
 
-The glass bar on the panel is your buffer. Its colour shows how much has filled, and the white part at the newest end is what saving would keep. That part turns red while recording, and the glass shines when a clip saves. A short tone and a popup confirm each save, so you know it worked mid-game.
+The glass card at the top of the panel shows your buffer. The timer shows how much has filled, and in the thin line along its bottom edge, the white part is what saving would keep. That part turns red while recording, the glass shines when a clip saves, and the card warns you if frames are being lost. A short tone and a popup confirm each save, so you know it worked mid-game.
 
 ### Automatic game capture
 
@@ -39,7 +39,7 @@ Afterclip spots exclusive and borderless fullscreen games by itself and hooks th
 Record whole sessions while the clip buffer keeps running, with no extra encode. Long recordings can split into a new file on a timer, and markers become chapters in the file.
 
 <p align="center">
-  <img src="docs/screenshots/recording.png" width="32%" alt="The panel while recording, with the buffer bar in red">
+  <img src="docs/screenshots/recording.png" width="32%" alt="The panel while recording, with the buffer line in red">
   <img src="docs/screenshots/video.png" width="32%" alt="Video settings">
   <img src="docs/screenshots/settings.png" width="32%" alt="The settings sections">
 </p>

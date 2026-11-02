@@ -66,21 +66,17 @@
         <button id="record" class="record-toggle">Record</button>
       </div>
     </div>
-    <div id="perf-strip" class="perf-strip"></div>
-    <div id="admin" class="admin" hidden>
-      <span id="admin-text"></span>
-      <button id="restart-admin" class="small">Restart as administrator</button>
-    </div>
-  </section>
-
-  <section class="buffer-bar" id="buffer-bar" aria-label="Replay buffer">
     <div class="buffer-line">
       <div id="buffer-time" class="buffer-time">0:00</div>
       <div id="buffer-note" class="buffer-note"></div>
     </div>
-    <div class="buffer-track">
+    <div class="buffer-track" aria-hidden="true">
       <div id="buffer-filled" class="buffer-filled"></div>
       <div id="buffer-kept" class="buffer-kept"></div>
+    </div>
+    <div id="admin" class="admin" hidden>
+      <span id="admin-text"></span>
+      <button id="restart-admin" class="small">Restart as administrator</button>
     </div>
   </section>
 

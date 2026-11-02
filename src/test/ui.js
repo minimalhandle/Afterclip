@@ -124,25 +124,33 @@ async function main() {
     check('Save button creates a clip in the list', true);
     const toasts = await toastSeen;
     check('a saved clip shows the popup', toasts === 'True', toasts);
-    check('the glass shines when a clip saves', await panel.eval("document.getElementById('buffer-bar').classList.contains('saved')"));
+    check('the glass shines when a clip saves', await panel.eval("document.getElementById('capture-card').classList.contains('saved')"));
     const bar = await panel.eval("({ filled: parseFloat(document.getElementById('buffer-filled').style.width), kept: parseFloat(document.getElementById('buffer-kept').style.width), time: document.getElementById('buffer-time').textContent })");
     check('the bar shows the buffer filling and the selected length', bar.filled > 0 && bar.kept > 0 && bar.kept <= bar.filled && /^0:\d\d$/.test(bar.time), JSON.stringify(bar));
+    // Frames being lost, faked by what the panel hears from the app: it warns, then clears when they stop.
+    await panel.eval("(() => { const real = window.afterclip.invoke; window.realInvoke = real; let bad = 0; window.afterclip.invoke = async (name, arg) => { const answer = await real(name, arg); if (name === 'stats' && window.fakeLoss) { bad += 100; return { ...answer, renderLagged: bad, renderTotal: bad * 2 }; } return answer; }; window.fakeLoss = true; })()");
+    await waitFor(() => panel.eval("document.getElementById('buffer-note').textContent === 'Losing frames'"), 8000, 'the lost frames warning');
+    check('the card warns when frames are being lost', await panel.eval("document.getElementById('buffer-note').classList.contains('warn') && /GPU is too busy/.test(document.getElementById('buffer-note').title)"));
+    await panel.shot('2c-panel-losing-frames');
+    await panel.eval("window.fakeLoss = false; window.afterclip.invoke = window.realInvoke");
+    await waitFor(() => panel.eval("document.getElementById('buffer-note').textContent !== 'Losing frames'"), 8000, 'the warning to clear');
+    check('the warning clears when frames stop being lost', true);
     await waitFor(() => panel.eval("!!document.querySelector('#media img')?.src"), 10000, 'thumbnail');
     check('clip shows a thumbnail and length', /\d:\d\d/.test(await panel.eval("document.querySelector('#media .length').textContent")));
     await panel.shot('2-panel-clip');
 
     // A second and third clip, then one more than the home screen shows.
-    for (let i = 0; i < 4; i++) await api.clip(2);
-    await waitFor(() => panel.eval("/View all \\(5\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the fifth clip');
-    check('home shows only the four newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 4);
+    for (let i = 0; i < 5; i++) await api.clip(2);
+    await waitFor(() => panel.eval("/View all \\(6\\)/.test(document.getElementById('view-all').textContent)"), 8000, 'the sixth clip');
+    check('home shows only the five newest clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 5);
     // A banner pushes the list down for a few seconds, so this measures the resting layout.
-    check('all four fit without scrolling', await panel.eval("(() => { document.getElementById('banner').hidden = true; const m = document.getElementById('media'); return m.scrollHeight <= m.clientHeight; })()"));
-    await panel.shot('2a-panel-four-clips');
-    await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 4"), 8000, 'all four thumbnails').catch(() => undefined);
-    check('all four home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 4);
+    check('all five fit without scrolling', await panel.eval("(() => { document.getElementById('banner').hidden = true; const m = document.getElementById('media'); return m.scrollHeight <= m.clientHeight; })()"));
+    await panel.shot('2a-panel-five-clips');
+    await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 5"), 8000, 'all five thumbnails').catch(() => undefined);
+    check('all five home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 5);
     await panel.eval("document.getElementById('view-all').click()");
-    const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('buffer-bar')).display, editor: !document.getElementById('open-editor').hidden })");
-    check('View all opens every clip in a grid, with the editor link', library.items === 5 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
+    const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('capture-card')).display, editor: !document.getElementById('open-editor').hidden })");
+    check('View all opens every clip in a grid, with the editor link', library.items === 6 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
     await panel.shot('2b-library');
 
     // Copy file, keeping whatever text was on the clipboard before.
@@ -339,7 +347,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await api.clip(10);
 
     await panel.eval("document.getElementById('library-back').click()");
-    check('Back returns to the buffer bar', await panel.eval("getComputedStyle(document.getElementById('buffer-bar')).display !== 'none'"));
+    check('Back returns to the capture card', await panel.eval("getComputedStyle(document.getElementById('capture-card')).display !== 'none'"));
 
     await panel.eval("document.getElementById('open-settings').click()");
     await waitFor(() => panel.eval("document.querySelectorAll('#audio-list select option').length > 0"), 8000, 'audio devices');
