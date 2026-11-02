@@ -8,7 +8,7 @@
 //   afterclip-media tracks <in>               prints how many audio tracks it has
 //   afterclip-media shrink <in> <out> <bytes> re-encodes a smaller copy to fit that size, as H.264 with the main mix
 //   afterclip-media compress <in> <out> <bytes>
-//                                            aims for that size, stopping at a watchable quality, and prints the final size
+//                                            aims for that size at up to 1080p60, stopping at a good quality, and prints the final size
 //   afterclip-media retrack <in> <out> <gain> [<gain>...]
 //                                            sets each audio track's volume, 1 keeping it untouched and 0 removing it.
 //                                            The video is copied losslessly.
@@ -884,12 +884,15 @@ static int fpsForBitrate(int sourceFps, int videoKbps)
 	return FFMAX(1, FFMIN(FFMIN(sourceFps, 60), videoKbps < 1500 ? 30 : 60));
 }
 
-/** Aims for a size, but a long clip stops at a watchable quality instead, so it can end up bigger. Prints the final size. */
+/** Aims for a size at up to 1080p60, but a long clip stops at a good quality instead, so it can end up bigger. Prints the final size. */
 static int cmdCompress(const std::string &input, const std::string &output, int64_t targetBytes)
 {
-	const int WATCHABLE_VIDEO_KBPS = 600;
-	const int MOST_VIDEO_KBPS = 8000;
-	const int ALREADY_SMALL_KBPS = 800;
+	const int MOST_HEIGHT = 1080;
+	const int MOST_FPS = 60;
+	const double GOOD_KBPS_AT_MOST = 4000;
+	const int LOWEST_GOOD_KBPS = 500;
+	const int MOST_VIDEO_KBPS = 12000;
+	const int AUDIO_KBPS = 128;
 	const int MAX_ATTEMPTS = 3;
 	AVFormatContext *in = openInput(input);
 	if (!in)
@@ -898,40 +901,45 @@ static int cmdCompress(const std::string &input, const std::string &output, int6
 	if (video < 0 || in->duration <= 0)
 		return fail("No video stream");
 	const double seconds = (double)in->duration / AV_TIME_BASE;
+	const int sourceWidth = in->streams[video]->codecpar->width;
 	const int sourceHeight = in->streams[video]->codecpar->height;
 	const AVRational rate = av_guess_frame_rate(in, in->streams[video], nullptr);
-	const int sourceFps = rate.den > 0 && rate.num > 0 ? (int)(av_q2d(rate) + 0.5) : 60;
+	const int sourceFps = rate.den > 0 && rate.num > 0 ? (int)(av_q2d(rate) + 0.5) : MOST_FPS;
 	const bool hasAudio = av_find_best_stream(in, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0) >= 0;
 	avformat_close_input(&in);
 
+	const int height = FFMIN(sourceHeight, MOST_HEIGHT) & ~1;
+	const int fps = FFMAX(1, FFMIN(sourceFps, MOST_FPS));
+	// A smaller or slower picture needs fewer bits to look just as good.
+	const double share = (double)sourceWidth * height / sourceHeight * height * fps / (1920.0 * 1080.0 * MOST_FPS);
+	const int goodKbps = FFMAX(LOWEST_GOOD_KBPS, (int)(GOOD_KBPS_AT_MOST * share));
 	const int64_t sourceBytes = fileSize(input);
 	const double sourceKbps = sourceBytes * 8.0 / 1000.0 / seconds;
-	if (sourceBytes <= targetBytes && sourceKbps < ALREADY_SMALL_KBPS) {
-		fprintf(stderr, "This clip is already small.\n");
+	const char *CANT_SHRINK = "This clip can't get much smaller without looking worse.\n";
+	if (sourceKbps < goodKbps * 1.25) {
+		fprintf(stderr, "%s", CANT_SHRINK);
 		return 4;
 	}
+	const int audioKbps = hasAudio ? AUDIO_KBPS : 0;
 	const double totalKbps = targetBytes * 8.0 / 1000.0 * 0.96 / seconds;
-	const int audioKbps = hasAudio ? (totalKbps < 1500 ? 64 : 128) : 0;
 	// A short clip has room to spare, but the copy should still come out well under the original.
-	int videoKbps = FFMAX(WATCHABLE_VIDEO_KBPS, (int)FFMIN(FFMIN(totalKbps - audioKbps, (double)MOST_VIDEO_KBPS), sourceKbps * 0.6));
-	const int height = heightForBitrate(sourceHeight, videoKbps);
-	const int fps = fpsForBitrate(sourceFps, videoKbps);
+	int videoKbps = FFMAX(goodKbps, (int)FFMIN(FFMIN(totalKbps - audioKbps, (double)MOST_VIDEO_KBPS), sourceKbps * 0.6));
 
 	for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 		const int result = encodeShrunk(input, output, videoKbps, audioKbps, height, fps);
 		if (result != 0)
 			return result;
 		const int64_t size = fileSize(output);
-		if (size <= targetBytes || videoKbps <= WATCHABLE_VIDEO_KBPS || attempt == MAX_ATTEMPTS - 1) {
+		if (size <= targetBytes || videoKbps <= goodKbps || attempt == MAX_ATTEMPTS - 1) {
 			if (size < 0 || size >= sourceBytes) {
-				fprintf(stderr, "This clip is already small.\n");
+				fprintf(stderr, "%s", CANT_SHRINK);
 				return 4;
 			}
 			printf("%lld\n", (long long)size);
 			fflush(stdout);
 			return 0;
 		}
-		videoKbps = FFMAX(WATCHABLE_VIDEO_KBPS, (int)(videoKbps * ((double)targetBytes / (double)size) * 0.92));
+		videoKbps = FFMAX(goodKbps, (int)(videoKbps * ((double)targetBytes / (double)size) * 0.92));
 	}
 	return fail("Could not compress this clip");
 }

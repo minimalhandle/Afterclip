@@ -1263,7 +1263,7 @@ api.on('feedback', (f) => {
   } else if (f.kind === 'recording-saved') {
     showBanner('Recording saved', 'good');
   } else if (f.kind === 'compressed' && f.ok) {
-    showBanner(f.overTarget ? `Your ${f.megabytes} MB copy is ready. This clip is too long to go smaller and still look good, so trim it to fit 10 MB.` : `Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
+    showBanner(f.overTarget ? `Your ${f.megabytes} MB copy is ready. This clip is too long to go smaller and still look good, so trim it to fit 100 MB.` : `Your ${f.megabytes} MB copy is ready to drag into any app.`, 'good');
   } else if (f.kind === 'vertical' && f.ok) {
     showBanner('Your vertical copy is ready to drag into any app.', 'good');
   } else if (f.kind === 'screenshot' && f.ok) {

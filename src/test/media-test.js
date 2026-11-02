@@ -57,26 +57,28 @@ try {
   const tiny = run('shrink', noisy, f('tiny.mp4'), '100000');
   check('shrink refuses a size too small to watch', tiny.status === 4 && /too long/.test(tiny.stderr), tiny.stderr.trim());
 
-  // Compress: aims for the size, keeps a watchable picture on a long clip, and never grows a small one.
+  // Compress: aims for the size at 1080p60, keeps its quality when the size is out of reach, and never grows a small one.
   const compressed = f('compressed.mp4');
-  const c = run('compress', noisy, compressed, '10000000');
+  const c = run('compress', noisy, compressed, '100000000');
   check('compress runs', c.status === 0, c.stderr.trim());
-  check('compress reaches the size when it can', fs.statSync(compressed).size <= 10000000, `${(fs.statSync(compressed).size / 1e6).toFixed(1)} MB`);
+  check('compress makes a smaller copy within the size', fs.statSync(compressed).size <= 100000000 && fs.statSync(compressed).size < fs.statSync(noisy).size, `${(fs.statSync(compressed).size / 1e6).toFixed(1)} MB of ${(fs.statSync(noisy).size / 1e6).toFixed(1)} MB`);
   check('compress reports the final size', Number(c.stdout) === fs.statSync(compressed).size, c.stdout.trim());
   check('compress keeps its length', Math.abs(seconds(compressed) - 20) < 0.6, `${seconds(compressed)}s`);
-  const longClip = f('long.mp4');
-  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=854x480:r=30:d=240', '-f', 'lavfi', '-i', 'anoisesrc=d=240:a=0.3', '-vf', 'noise=alls=12:allf=t', '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', '3M', '-c:a', 'aac', longClip]);
-  const longSmall = f('long-small.mp4');
-  const l = run('compress', longClip, longSmall, '10000000');
-  check('compress finishes a clip too long for the size', l.status === 0, l.stderr.trim());
-  const longSize = fs.statSync(longSmall).size;
-  // 240 seconds at the watchable 600 kbps of video and 64 of audio is about 20 MB.
-  check('a long clip stops at a watchable size, not the target', longSize > 10000000 && longSize < 26000000, `${(longSize / 1e6).toFixed(1)} MB`);
-  check('a long clip stays at 480p', /Video: h264.*\b854x480\b/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', longSmall], { encoding: 'utf8' }).stderr));
+  check('compress keeps 1080p60', /Video: h264.*\b1920x1080\b.*\b60(\.\d+)? fps/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', compressed], { encoding: 'utf8' }).stderr));
+  const outOfReach = f('out-of-reach.mp4');
+  const o = run('compress', noisy, outOfReach, '5000000');
+  check('compress finishes when the size is out of reach', o.status === 0, o.stderr.trim());
+  // 20 seconds at the good 4000 kbps of video and 128 of audio is about 10 MB.
+  check('it stops at a good quality, not the size', fs.statSync(outOfReach).size > 5000000 && fs.statSync(outOfReach).size < 13000000, `${(fs.statSync(outOfReach).size / 1e6).toFixed(1)} MB`);
+  check('it still keeps 1080p60', /Video: h264.*\b1920x1080\b.*\b60(\.\d+)? fps/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', outOfReach], { encoding: 'utf8' }).stderr));
+  const big = f('1440p.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=2560x1440:r=60:d=5', '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', '30M', big]);
+  const bigSmall = f('1440p-small.mp4');
+  check('compress brings 1440p down', run('compress', big, bigSmall, '100000000').status === 0 && /Video: h264.*\b1920x1080\b/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', bigSmall], { encoding: 'utf8' }).stderr));
   const flat = f('flat.mp4');
   execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=gray:s=640x360:r=30:d=5', '-c:v', 'libx264', flat]);
-  const flatResult = run('compress', flat, f('flat-small.mp4'), '10000000');
-  check('compress leaves an already small clip alone', flatResult.status === 4 && /already small/.test(flatResult.stderr), flatResult.stderr.trim());
+  const flatResult = run('compress', flat, f('flat-small.mp4'), '100000000');
+  check('compress leaves an already small clip alone', flatResult.status === 4 && /can't get much smaller/.test(flatResult.stderr), flatResult.stderr.trim());
 
   // Vertical copies: 9:16, from the middle of the picture, with the length and sound kept.
   const vertical = f('vertical.mp4');
