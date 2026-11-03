@@ -93,7 +93,8 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip** and **Send Last Clip to Discord**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip**, **Send Last Clip to Discord**, **Vertical Copy of Last Clip**, **Star Last Clip**, **Show Your Webcam** and **Hold to Talk**, which puts your mic in clips while you hold it, with Push to talk on.
+ They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
 
 On a Stream Deck +, the **Mic Volume** dial turns your mic up or down in clips, and pressing it mutes your mic in clips. The **Clip Length Dial** picks a length as you turn it, saves that length when you press it, and shows how full your buffer is.
 
@@ -164,7 +165,7 @@ You can change these and add more clip lengths in Settings.
 - **Trim accuracy:** keyframes are 1 second apart, so a clip or trim can start up to about 1 second early, but never late. Only clips with matching video settings can merge.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
 - **Push to talk:** it affects the sources ticked **Mute key**, and the mute key still wins. Afterclip reads whether the key is held without taking the press, so the game and Discord still get it. It hasn't been tried yet in a game that runs as administrator.
-- **Webcam:** its light stays on while Afterclip is buffering, because the webcam is part of the buffer. Only its picture is used, never its microphone. Changing the webcam restarts capture.
+- **Webcam:** its light stays on while it's shown and Afterclip is buffering, because the webcam is part of the buffer. Switching it off lets go of the webcam, and switching it on or off doesn't restart capture. Choosing a different webcam, corner or size does. Only its picture is used, never its microphone.
 - **Only buffer during games:** the buffer stops 10 minutes after the game closes, so you can still clip its last moments. Record works at any time, and starts the buffer if needed. A windowed game you haven't added under **Settings > Games** doesn't count as a game.
 - **Game folders:** only new files go into them. A folder is removed once it's empty.
 - **Moving to another PC:** **Export settings** in General saves your settings, hotkeys and game profiles to a file, and **Import settings** loads them. Your Discord webhook is never in the file, and a save location on a drive the PC doesn't have is left as it is.

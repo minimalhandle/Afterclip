@@ -836,9 +836,33 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const below = at(faceCam, faceSize[1] / 2, faceSize[2] * 0.75);
     check('a vertical copy puts the webcam on top', magenta(top), [...top].join());
     check('and the game below it', green(below), [...below].join());
-    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, cameraEnabled: false }))");
-    await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the webcam to go').catch(() => undefined);
-    await capturing();
+    // The Show Your Webcam key's route switches it off and on straight away, without restarting capture.
+    const camLog = engineLogNow().length;
+    const switchedOff = await (await api.call('/camera/toggle', 'POST')).json();
+    check('the webcam key switches it off without restarting capture', switchedOff.cameraOn === false && /Webcam off/.test(engineLogNow().slice(camLog)) && !/Replay Buffer': stopping/.test(engineLogNow().slice(camLog)) && (await api.status()).buffering);
+    await waitFor(() => panel.eval("document.getElementById('cameraEnabled').checked === false"), 3000, 'the panel to follow the webcam key');
+    check('the panel follows the webcam key', !savedSettings().cameraEnabled);
+    await sleep(3000);
+    const camCorner = [canvas.width - margin - camWidth / 2, canvas.height - margin - camHeight / 2];
+    const noCam = await api.clip(2);
+    check('with the webcam off, the corner is the game', isCard(at(noCam.file, ...camCorner)), [...at(noCam.file, ...camCorner)].join());
+    check('and no webcam place is remembered for that clip', !JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'library.json'), 'utf8')).cameras?.[path.basename(noCam.file)]);
+    await api.call('/camera/toggle', 'POST');
+    await sleep(3000);
+    const camBack = await api.clip(2);
+    check('switching it on again brings the webcam back', isCam(at(camBack.file, ...camCorner)) && (await api.status()).cameraOn, [...at(camBack.file, ...camCorner)].join());
+    await api.call('/camera/toggle', 'POST');
+    await waitFor(() => panel.eval("document.getElementById('cameraEnabled').checked === false"), 3000, 'the webcam off for the rest');
+
+    // Hold to Talk needs Push to talk on, and the other last-clip keys.
+    const talkOff = await api.call('/talk/on', 'POST');
+    check('Hold to Talk says when Push to talk is off', talkOff.status === 500 && /Push to talk/.test((await talkOff.json()).error));
+    const starred = await (await api.call('/last-clip/star', 'POST')).json();
+    check('Star Last Clip stars the newest clip', starred.favourite === true && starred.file === camBack.file);
+    check('and pressing again takes the star off', (await (await api.call('/last-clip/star', 'POST')).json()).favourite === false);
+    const tallLast = await (await api.call('/last-clip/vertical', 'POST')).json();
+    check('Vertical Copy of Last Clip makes a copy of the newest clip', tallLast.file === camBack.file.replace(/\.mp4$/, '_vertical.mp4'), JSON.stringify(tallLast));
+
 
     // The Stream Deck keys for the last clip, on a clip big enough to compress.
     const now = new Date();

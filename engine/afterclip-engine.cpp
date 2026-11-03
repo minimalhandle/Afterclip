@@ -443,12 +443,32 @@ void listChoices(obs_data_t *reply, const char *key, const char *sourceId, const
 }
 
 /**
+ * Switches the webcam on or off without restarting anything. Off also lets go of the device, so its light
+ * goes out. Returns false if no webcam was set up when capture started.
+ */
+bool showCamera(bool on)
+{
+	if (!g_camera || !g_cameraItem)
+		return false;
+	obs_sceneitem_set_visible(g_cameraItem, on);
+	if (strcmp(obs_source_get_id(g_camera), "dshow_input") == 0) {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_bool(s, "active", on);
+		obs_source_update(g_camera, s);
+		obs_data_release(s);
+	}
+	blog(LOG_INFO, "Webcam %s", on ? "on" : "off");
+	return true;
+}
+
+/**
  * Puts the webcam on top of everything, filling its box exactly. Anything that doesn't fit the box is
  * cropped off, so the box is exactly what a vertical copy can cut out later. The tests use a colour card.
  */
 void addCamera(obs_data_t *camera, bool testPattern)
 {
 	const std::string device = obs_data_get_string(camera, "device");
+	const bool on = obs_data_get_bool(camera, "on");
 	if (testPattern && device == "test") {
 		obs_data_t *s = obs_data_create();
 		obs_data_set_int(s, "color", 0xffd03cf0);
@@ -459,7 +479,7 @@ void addCamera(obs_data_t *camera, bool testPattern)
 	} else {
 		obs_data_t *s = obs_data_create();
 		obs_data_set_string(s, "video_device_id", device.c_str());
-		obs_data_set_bool(s, "active", true);
+		obs_data_set_bool(s, "active", on);
 		obs_data_set_bool(s, "deactivate_when_not_showing", false);
 		obs_data_set_int(s, "res_type", 0); // The camera's own preferred size.
 		g_camera = createSource("dshow_input", "Webcam", s);
@@ -482,6 +502,7 @@ void addCamera(obs_data_t *camera, bool testPattern)
 	obs_sceneitem_set_bounds_alignment(g_cameraItem, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds(g_cameraItem, &bounds);
 	obs_sceneitem_set_bounds_crop(g_cameraItem, true);
+	obs_sceneitem_set_visible(g_cameraItem, on);
 }
 
 bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
@@ -768,6 +789,11 @@ bool handle(const std::string &line)
 		listChoices(reply, "apps", "wasapi_process_output_capture", "window");
 	} else if (cmd == "cameraChoices") {
 		listChoices(reply, "cameras", "dshow_input", "video_device_id");
+	} else if (cmd == "camera") {
+		ok = showCamera(obs_data_get_bool(c, "on"));
+		if (!ok)
+			error = "Choose a webcam in Settings, under Video.";
+
 
 	} else if (cmd == "save") {
 		calldata_t cd;

@@ -31,7 +31,7 @@ const svgOf = (message) => decodeURIComponent(message.payload.image);
 async function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
   const names = manifest.Actions.map((a) => a.Name);
-  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot', 'Compress Last Clip', 'Send Last Clip to Discord', 'Mic Volume', 'Clip Length Dial']) check(`has ${wanted} action`, names.includes(wanted));
+  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot', 'Compress Last Clip', 'Send Last Clip to Discord', 'Mic Volume', 'Clip Length Dial', 'Vertical Copy of Last Clip', 'Star Last Clip', 'Show Your Webcam', 'Hold to Talk']) check(`has ${wanted} action`, names.includes(wanted));
   const dials = manifest.Actions.filter((a) => a.Controllers.includes('Encoder'));
   check('the dials are Stream Deck + encoders with a touch strip', dials.length === 2 && dials.every((a) => a.Encoder?.layout === '$B1' && !a.Controllers.includes('Keypad')));
   const missing = manifest.Actions.flatMap((a) => [a.Icon, a.States[0].Image])
@@ -41,7 +41,7 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afterclip-plugin-'));
   const tokenFile = path.join(dir, 'token.txt');
   fs.writeFileSync(tokenFile, 'secret-token');
-  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, micVolume: 100, bufferingSince: Date.now() - 30000, bufferSeconds: 120, clipDelay: 0, fail: false, noClips: false, noWebhook: false };
+  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, micVolume: 100, bufferingSince: Date.now() - 30000, bufferSeconds: 120, clipDelay: 0, fail: false, noClips: false, noWebhook: false, cameraOn: false, cameraChosen: true, pushToTalk: false, starred: false };
   const routes = [];
   const api = http.createServer(async (req, res) => {
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -59,6 +59,13 @@ async function main() {
       return send(200, { micVolume: state.micVolume });
     }
     if (req.url === '/last-clip/discord' && state.noWebhook) return send(500, { error: 'Add your Discord webhook in Settings, under Clips and sharing.' });
+    if (req.url === '/camera/toggle') {
+      if (!state.cameraChosen) return send(500, { error: 'Choose a webcam in Settings, under Video.' });
+      state.cameraOn = !state.cameraOn;
+      return send(200, { cameraOn: state.cameraOn });
+    }
+    if (req.url.startsWith('/talk/')) return state.pushToTalk ? send(200, { talking: req.url.endsWith('/on') }) : send(500, { error: 'Turn on Push to talk in Settings, under Audio.' });
+    if (req.url === '/last-clip/star') { state.starred = !state.starred; return send(200, { favourite: state.starred }); }
     await sleep(state.clipDelay);
     send(200, { actualSeconds: 1 });
   });
@@ -239,6 +246,60 @@ async function main() {
     await waitFor(() => lastFeedback('lengths')?.value === 'Saved', 3000, 'dial saved');
     check('pressing the clip dial saves that length', routes.join() === 'POST /clip/300', routes.join());
     await waitFor(() => lastFeedback('lengths')?.value === 'Last 5 min', 3000, 'dial back');
+
+    // The webcam key shows and changes whether the webcam is in clips.
+    event('willAppear', ACTION('webcam'), 'cam');
+    await waitFor(() => lastImage('cam') && svgOf(lastImage('cam')).includes('>CAM OFF<'), 4000, 'webcam off face');
+    routes.length = 0;
+    event('keyDown', ACTION('webcam'), 'cam');
+    await waitFor(() => svgOf(lastImage('cam')).includes('>CAM ON<'), 3000, 'webcam on face');
+    check('the webcam key turns the webcam on, and shows it lit', routes.join() === 'POST /camera/toggle' && state.cameraOn && svgOf(lastImage('cam')).includes('#3a2bb8'), routes.join());
+    event('keyDown', ACTION('webcam'), 'cam');
+    await waitFor(() => svgOf(lastImage('cam')).includes('>CAM OFF<'), 3000, 'webcam off again');
+    check('pressing it again turns it off', !state.cameraOn);
+    state.cameraChosen = false;
+    await waitFor(() => svgOf(lastImage('cam')).includes('>NO CAM<'), 4000, 'no webcam face');
+    event('keyDown', ACTION('webcam'), 'cam');
+    await waitFor(() => results('cam', 'showAlert') === 1, 3000, 'no webcam alert');
+    check('the webcam key says when no webcam is chosen', svgOf(lastImage('cam')).includes('>NO CAM<'));
+    state.cameraChosen = true;
+
+    // Hold to Talk: the mic is in clips while the key is down, and only with Push to talk on.
+    event('willAppear', ACTION('talk'), 'talk');
+    await waitFor(() => lastImage('talk') && svgOf(lastImage('talk')).includes('>PTT OFF<'), 4000, 'push to talk off face');
+    check('Hold to Talk is dim while Push to talk is off', svgOf(lastImage('talk')).includes('#9a95bd'));
+    event('keyDown', ACTION('talk'), 'talk');
+    await waitFor(() => results('talk', 'showAlert') === 1, 3000, 'push to talk off alert');
+    check('pressing it then says Push to talk is off', svgOf(lastImage('talk')).includes('>PTT OFF<'));
+    state.pushToTalk = true;
+    await waitFor(() => svgOf(lastImage('talk')).includes('>HOLD<'), 4000, 'hold face');
+    routes.length = 0;
+    event('keyDown', ACTION('talk'), 'talk');
+    await waitFor(() => svgOf(lastImage('talk')).includes('>TALKING<'), 2000, 'talking face');
+    await waitFor(() => routes.includes('POST /talk/on'), 2000, 'talk on');
+    event('keyUp', ACTION('talk'), 'talk');
+    await waitFor(() => routes.includes('POST /talk/off') && svgOf(lastImage('talk')).includes('>HOLD<'), 3000, 'talk off');
+    check('holding the key talks, and letting go stops', routes.join() === 'POST /talk/on,POST /talk/off', routes.join());
+
+    // Starring the last clip says which way it went, and the vertical copy shows it's working.
+    event('willAppear', ACTION('star-last'), 'star');
+    await waitFor(() => lastImage('star') && svgOf(lastImage('star')).includes('>STAR LAST<'), 4000, 'star face');
+    event('keyDown', ACTION('star-last'), 'star');
+    await waitFor(() => svgOf(lastImage('star')).includes('>STARRED<'), 3000, 'starred');
+    await waitFor(() => svgOf(lastImage('star')).includes('>STAR LAST<'), 3000, 'star back');
+    event('keyDown', ACTION('star-last'), 'star');
+    await waitFor(() => svgOf(lastImage('star')).includes('>UNSTAR<'), 3000, 'unstarred');
+    check('Star Last Clip stars, then takes the star off', !state.starred);
+    state.clipDelay = 600;
+    event('willAppear', ACTION('vertical-last'), 'tall');
+    await waitFor(() => lastImage('tall') && svgOf(lastImage('tall')).includes('>VERTICAL<'), 4000, 'vertical face');
+    routes.length = 0;
+    event('keyDown', ACTION('vertical-last'), 'tall');
+    await waitFor(() => svgOf(lastImage('tall')).includes('>WORKING<'), 500, 'vertical busy');
+    await waitFor(() => svgOf(lastImage('tall')).includes('>READY<'), 3000, 'vertical ready');
+    check('Vertical Copy of Last Clip shows it is working, then ready', routes.join() === 'POST /last-clip/vertical', routes.join());
+    state.clipDelay = 0;
+
 
     state.fail = true;
 

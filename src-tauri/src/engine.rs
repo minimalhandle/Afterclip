@@ -361,7 +361,7 @@ impl Engine {
             "gameAudioVolume": s.game_audio_volume,
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
-            "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height })),
+            "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
 
@@ -585,7 +585,13 @@ impl Engine {
         self.rpc("audioChoices", json!({}))
     }
 
+    /// Switches the webcam on or off straight away, without restarting capture.
+    pub fn set_camera(&self, on: bool) -> Result<(), String> {
+        self.rpc("camera", json!({ "on": on })).map(|_| ())
+    }
+
     /// The webcams that can be shown.
+
     pub fn camera_choices(&self) -> Result<Value, String> {
         self.rpc("cameraChoices", json!({})).map(|m| m["cameras"].clone())
     }

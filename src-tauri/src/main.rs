@@ -96,6 +96,8 @@ struct Core {
     talking: AtomicBool,
     test_talk: Mutex<Option<bool>>,
     test_free_bytes: Mutex<Option<u64>>,
+    /// The Stream Deck's Hold to Talk key is down.
+    deck_talking: AtomicBool,
 }
 
 type Shared = Arc<Core>;
@@ -152,6 +154,9 @@ impl Core {
     /// Where the webcam sits in what's being captured, as fractions, or None without one.
     fn camera_place(&self) -> Option<[f64; 4]> {
         let s = self.engine.current_settings();
+        if !s.camera_enabled {
+            return None;
+        }
         let (x, y, width, height) = s.camera_box()?;
         let (w, h) = (s.width.max(1) as f64, s.height.max(1) as f64);
         Some([x as f64 / w, y as f64 / h, width as f64 / w, height as f64 / h])
@@ -385,6 +390,71 @@ impl Core {
         sent
     }
 
+    /// Switches the webcam on or off, live, and remembers it. Returns whether it's now on.
+    fn toggle_camera(&self) -> Result<bool, String> {
+        let current = self.settings.lock().unwrap().clone();
+        if current.camera_device.is_empty() {
+            return Err(self.fail("camera", "Choose a webcam in Settings, under Video.".into()));
+        }
+        let on = !current.camera_enabled;
+        // With capture stopped, waiting for a game, it starts with the new choice.
+        if self.engine.status().buffering {
+            self.engine.set_camera(on).map_err(|message| self.fail("camera", message))?;
+        }
+        let saved = {
+            let mut settings = self.settings.lock().unwrap();
+            settings.camera_enabled = on;
+            settings.clone()
+        };
+        let _ = saved.save(&self.settings_file);
+        self.engine.use_settings(self.effective(&saved));
+        self.tone(if on { &[440.0, 660.0] } else { &[660.0, 440.0] });
+        let _ = self.app.emit("feedback", json!({ "kind": "camera", "ok": true, "cameraOn": on }));
+        Ok(on)
+    }
+
+    /// Stars or unstars a clip. Returns whether it's now a favourite.
+    fn toggle_favourite(&self, path: &Path) -> Result<bool, String> {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let mut library = self.library.lock().unwrap();
+        let on = !library.favourites.contains(&name);
+        if on {
+            library.favourites.insert(name);
+        } else {
+            library.favourites.remove(&name);
+        }
+        library.save(&self.library_file)?;
+        drop(library);
+        let _ = self.app.emit("feedback", json!({ "kind": "favourite", "ok": true, "favourite": on }));
+        Ok(on)
+    }
+
+    /// Makes a 9:16 copy for phones. The original is never changed. A clip with a webcam can have it above the game.
+    fn make_vertical(&self, path: &Path) -> Result<PathBuf, String> {
+        let (toast, face_cam) = {
+            let settings = self.settings.lock().unwrap();
+            (settings.toast_enabled, settings.vertical_face_cam)
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let camera = self.library.lock().unwrap().cameras.get(&name).copied().filter(|_| face_cam);
+        match self.engine.make_vertical(path, camera) {
+            Ok(output) => {
+                if toast {
+                    win32::show_toast("Vertical copy ready");
+                }
+                let _ = self.app.emit("feedback", json!({ "kind": "vertical", "ok": true, "file": output }));
+                if let Some(core) = self.app.try_state::<Shared>() {
+                    enforce_storage_rules(&core);
+                }
+                Ok(output)
+            }
+            Err(message) => {
+                let _ = self.app.emit("feedback", json!({ "kind": "vertical", "ok": false, "message": message }));
+                Err(message)
+            }
+        }
+    }
+
     /// Turns every mute-key source up or down. Returns the first one's new volume, in percent.
     fn change_mic_volume(&self, percent: i64) -> Result<i64, String> {
         let (saved, changed) = {
@@ -481,6 +551,24 @@ impl ApiHandlers for Api {
     fn test_free_space(&self, bytes: Option<u64>) {
         *self.0.test_free_bytes.lock().unwrap() = bytes;
     }
+    fn vertical_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        self.0.make_vertical(Path::new(&clip)).map(|file| json!({ "file": file }))
+    }
+    fn star_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        self.0.toggle_favourite(Path::new(&clip)).map(|on| json!({ "file": clip, "favourite": on }))
+    }
+    fn toggle_camera(&self) -> Result<Value, String> {
+        self.0.toggle_camera().map(|on| json!({ "cameraOn": on }))
+    }
+    fn deck_talk(&self, held: bool) -> Result<Value, String> {
+        if !self.0.settings.lock().unwrap().push_to_talk {
+            return Err("Turn on Push to talk in Settings, under Audio.".into());
+        }
+        self.0.deck_talking.store(held, Ordering::SeqCst);
+        Ok(json!({ "talking": held }))
+    }
     fn test_talk(&self, held: bool) {
         *self.0.test_talk.lock().unwrap() = Some(held);
     }
@@ -526,6 +614,10 @@ impl ApiHandlers for Api {
         status["micVolume"] = json!(settings.audio_sources.iter().find(|s| s.muted_by_key()).map(|s| (s.volume * 100.0).round() as i64));
         drop(settings);
         status["bufferSeconds"] = json!(self.0.engine.current_settings().buffer_seconds);
+        let settings = self.0.settings.lock().unwrap();
+        status["cameraOn"] = json!(settings.camera_enabled);
+        status["cameraChosen"] = json!(!settings.camera_device.is_empty());
+        drop(settings);
         status
     }
 }
@@ -781,7 +873,9 @@ fn watch_push_to_talk(core: Shared) {
         };
         let code = if on { win32::virtual_key(&key) } else { None };
         let tested = *core.test_talk.lock().unwrap();
-        let now = code.is_some_and(|code| tested.unwrap_or_else(|| win32::key_held(code)));
+        // The Stream Deck's Hold to Talk key works alongside the keyboard or mouse one.
+        let deck = on && core.deck_talking.load(Ordering::SeqCst);
+        let now = deck || code.is_some_and(|code| tested.unwrap_or_else(|| win32::key_held(code)));
         if now != held {
             held = now;
             core.talking.store(now, Ordering::SeqCst);
@@ -1145,31 +1239,10 @@ fn clip_tracks(core: tauri::State<Shared>, payload: String) -> Result<i64, Strin
     core.engine.track_count(&own_media(&core, &payload)?)
 }
 
-/// Makes a 9:16 copy for phones. The original is never changed. A clip with a webcam can have it above the game.
 #[tauri::command(async)]
 fn vertical_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
-    let core: Shared = Arc::clone(&core);
     let path = own_media(&core, &payload)?;
-    let (toast, face_cam) = {
-        let settings = core.settings.lock().unwrap();
-        (settings.toast_enabled, settings.vertical_face_cam)
-    };
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let camera = core.library.lock().unwrap().cameras.get(&name).copied().filter(|_| face_cam);
-    match core.engine.make_vertical(&path, camera) {
-        Ok(output) => {
-            if toast {
-                win32::show_toast("Vertical copy ready");
-            }
-            let _ = core.app.emit("feedback", json!({ "kind": "vertical", "ok": true, "file": output }));
-            enforce_storage_rules(&core);
-            Ok(output.to_string_lossy().into_owned())
-        }
-        Err(message) => {
-            let _ = core.app.emit("feedback", json!({ "kind": "vertical", "ok": false, "message": message }));
-            Err(message)
-        }
-    }
+    core.make_vertical(&path).map(|output| output.to_string_lossy().into_owned())
 }
 
 /// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept.
@@ -1410,6 +1483,7 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     }
     clean.save(&core.settings_file).map_err(|e| format!("Could not save settings: {e}"))?;
     let clean_size = (clean.width, clean.height, clean.fps);
+    let (clean_camera, clean_push_to_talk) = (clean.camera_enabled, clean.push_to_talk);
     *core.settings.lock().unwrap() = clean;
     register_hotkeys(&core);
     if restart {
@@ -1431,9 +1505,15 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
         // Settings that apply without a restart, such as how long recordings split.
         let silenced = effective.mic_muted;
         core.engine.use_settings(effective);
-        // Push-to-talk may have just been turned on or off.
+        // Push-to-talk, or the webcam, may have just been turned on or off.
         if core.engine.status().buffering {
             let _ = core.engine.set_mic_muted(silenced);
+            if clean_camera != current.camera_enabled {
+                let _ = core.engine.set_camera(clean_camera);
+            }
+        }
+        if !clean_push_to_talk {
+            core.deck_talking.store(false, Ordering::SeqCst);
         }
     }
     {
@@ -1993,6 +2073,8 @@ fn main() {
                 talking: AtomicBool::new(false),
                 test_talk: Mutex::new(None),
                 test_free_bytes: Mutex::new(None),
+                deck_talking: AtomicBool::new(false),
+
             });
             let capture_events = handle.clone();
             let detection_settings = Arc::clone(&shared_settings);

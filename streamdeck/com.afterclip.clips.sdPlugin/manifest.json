@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.8.0.0",
+  "Version": "0.9.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -434,6 +434,78 @@
       "States": [
         {
           "Image": "imgs/discord-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.vertical-last",
+      "Name": "Vertical Copy of Last Clip",
+      "Tooltip": "Make a 9:16 copy of your newest clip for phones, with your webcam on top if it has one.",
+      "Icon": "imgs/action-vertical-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/vertical-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.star-last",
+      "Name": "Star Last Clip",
+      "Tooltip": "Add your newest clip to your favourites, so clean-up never removes it. Press again to take the star off.",
+      "Icon": "imgs/action-star-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/star-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.webcam",
+      "Name": "Show Your Webcam",
+      "Tooltip": "Turn your webcam in clips on or off, without restarting capture. Choose the webcam in Afterclip first.",
+      "Icon": "imgs/action-webcam",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/webcam",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.talk",
+      "Name": "Hold to Talk",
+      "Tooltip": "Hold to put your mic in clips, with Push to talk turned on in Afterclip.",
+      "Icon": "imgs/action-talk",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/talk",
           "ShowTitle": false
         }
       ]

@@ -234,9 +234,10 @@ impl Settings {
         }
     }
 
-    /// The webcam's place on the picture, in a 16:9 box with a small margin, or None with it off.
+    /// The webcam's place on the picture, in a 16:9 box with a small margin, or None with no webcam chosen.
+    /// It's there even while the webcam is switched off, so switching it back on needs no restart.
     pub fn camera_box(&self) -> Option<CameraBox> {
-        if !self.camera_enabled || self.camera_device.is_empty() {
+        if self.camera_device.is_empty() {
             return None;
         }
         let width = (self.width * self.camera_size / 100) / 2 * 2;
@@ -421,8 +422,12 @@ mod tests {
     fn the_webcam_sits_in_its_corner() {
         let mut s = sample();
         assert_eq!(s.camera_box(), None);
-        s.camera_enabled = true;
         s.camera_device = "cam".into();
+        let off = s.camera_box();
+        s.camera_enabled = true;
+        assert_eq!(off, s.camera_box(), "switching it on or off doesn't move it, so no restart is needed");
+        assert!(!sample().needs_engine_restart(&Settings { camera_enabled: true, ..sample() }));
+
         s.camera_size = 25;
         // 480 wide, 270 tall, with a 26 pixel margin.
         assert_eq!(s.camera_box(), Some((1920 - 480 - 26, 1080 - 270 - 26, 480, 270)));
