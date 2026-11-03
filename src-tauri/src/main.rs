@@ -52,6 +52,11 @@ const PANEL_KEEP_ALIVE: Duration = Duration::from_secs(20);
 // A window that hasn't said it rendered by now gets reloaded, then shown regardless.
 const READY_RELOAD_AFTER: Duration = Duration::from_secs(4);
 const READY_SHOW_AFTER: Duration = Duration::from_secs(8);
+// A recording stops below this much free space, while the file can still be finished properly.
+const STOP_RECORDING_BELOW: u64 = 2_000_000_000;
+const PUSH_TO_TALK_POLL: Duration = Duration::from_millis(15);
+const PUSH_TO_TALK_IDLE: Duration = Duration::from_millis(500);
+const WAITING_FOR_GAME: &str = "Afterclip only buffers while a game is open. Start a game, or turn this off in Settings, under Video.";
 
 struct Core {
     app: AppHandle,
@@ -84,6 +89,13 @@ struct Core {
     update_ready: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
     update_busy: AtomicBool,
     storage_lock: Mutex<()>,
+    strip_lock: Mutex<()>,
+    /// The engine is stopped on purpose until a game opens.
+    paused: AtomicBool,
+    /// The push-to-talk key is held.
+    talking: AtomicBool,
+    test_talk: Mutex<Option<bool>>,
+    test_free_bytes: Mutex<Option<u64>>,
 }
 
 type Shared = Arc<Core>;
@@ -101,10 +113,64 @@ impl Core {
     /// The base settings with the running game's profile on top, which is what capture actually uses.
     fn effective(&self, base: &Settings) -> Settings {
         let active = self.active_profile.lock().unwrap().clone();
-        match active.and_then(|exe| base.game_profiles.iter().find(|p| p.exe == exe).cloned()) {
+        let mut effective = match active.and_then(|exe| base.game_profiles.iter().find(|p| p.exe == exe).cloned()) {
             Some(profile) => base.with_profile(&profile, win32::primary_display_mode()),
             None => base.clone(),
+        };
+        effective.mic_muted = self.mic_silenced(base);
+        effective
+    }
+
+    /// The mute key wins. With push-to-talk on, the mic is only heard while its key is held.
+    fn mic_silenced(&self, settings: &Settings) -> bool {
+        settings.mic_muted || (settings.push_to_talk && !self.talking.load(Ordering::SeqCst))
+    }
+
+    /// Stops capture until a game opens, because the buffer only runs during games.
+    fn pause_engine(&self) {
+        let _one_at_a_time = self.restart_lock.lock().unwrap();
+        if self.paused.swap(true, Ordering::SeqCst) {
+            return;
         }
+        self.engine.stop();
+        self.engine.set_waiting_for_game(true);
+        self.log_ui("no game is open, so the buffer stopped until one does");
+    }
+
+    /// Starts capture again after a pause. Does nothing if it wasn't paused.
+    fn wake_engine(&self) -> Result<(), String> {
+        let _one_at_a_time = self.restart_lock.lock().unwrap();
+        if !self.paused.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let settings = self.effective(&self.settings.lock().unwrap().clone());
+        let started = self.engine.start(Some(settings));
+        self.allow_media_folders();
+        started
+    }
+
+    /// Where the webcam sits in what's being captured, as fractions, or None without one.
+    fn camera_place(&self) -> Option<[f64; 4]> {
+        let s = self.engine.current_settings();
+        let (x, y, width, height) = s.camera_box()?;
+        let (w, h) = (s.width.max(1) as f64, s.height.max(1) as f64);
+        Some([x as f64 / w, y as f64 / h, width as f64 / w, height as f64 / h])
+    }
+
+    /// Remembers where a file's webcam is, so a vertical copy can find it.
+    fn remember_camera(&self, file: &Path, place: Option<[f64; 4]>) {
+        let Some(place) = place else { return };
+        let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let mut library = self.library.lock().unwrap();
+        library.cameras.insert(name, place);
+        let _ = library.save(&self.library_file);
+    }
+
+    /// Plays the error tone and tells the panel, then hands the message back.
+    fn fail(&self, kind: &str, message: String) -> String {
+        self.tone(&[220.0, 220.0]);
+        let _ = self.app.emit("feedback", json!({ "kind": kind, "ok": false, "message": message }));
+        message
     }
 
     fn log_ui(&self, message: &str) {
@@ -120,8 +186,23 @@ impl Core {
     }
 
     fn clip(&self, seconds: i64) -> Result<ClipResult, String> {
+        if self.paused.load(Ordering::SeqCst) {
+            return Err(self.fail("clip", WAITING_FOR_GAME.into()));
+        }
+        // Capture carries on for a moment first, so what happens just after the press is in the clip too.
+        let after = self.settings.lock().unwrap().clip_after_seconds;
+        let seconds = if after > 0 && self.engine.status().buffering {
+            self.tone(&[660.0]);
+            let _ = self.app.emit("feedback", json!({ "kind": "clip-waiting", "ok": true, "seconds": after }));
+            thread::sleep(Duration::from_secs(after as u64));
+            if seconds > 0 { seconds + after } else { 0 }
+        } else {
+            seconds
+        };
+        let camera = self.camera_place();
         match self.engine.clip(seconds) {
             Ok(result) => {
+                self.remember_camera(Path::new(&result.file), camera);
                 self.tone(&[880.0, 1320.0]);
                 if self.settings.lock().unwrap().toast_enabled {
                     let total = result.actual_seconds.round() as i64;
@@ -147,8 +228,15 @@ impl Core {
     }
 
     fn toggle_record(&self) -> Result<bool, String> {
+        // Recording works without a game, so it wakes a paused buffer.
+        if let Err(message) = self.wake_engine() {
+            return Err(self.fail("record", message));
+        }
         match self.engine.toggle_record() {
             Ok(recording) => {
+                if let Some(file) = self.engine.recording_file().filter(|_| recording) {
+                    self.remember_camera(&file, self.camera_place());
+                }
                 self.tone(if recording { &[660.0, 880.0] } else { &[880.0, 660.0] });
                 let _ = self.app.emit("feedback", json!({ "kind": "record", "ok": true, "recording": recording }));
                 Ok(recording)
@@ -163,7 +251,8 @@ impl Core {
 
     fn toggle_mic(&self) -> Result<bool, String> {
         let muted = !self.settings.lock().unwrap().mic_muted;
-        match self.engine.set_mic_muted(muted) {
+        let push_to_talk = self.settings.lock().unwrap().push_to_talk;
+        match self.engine.set_mic_muted(muted || (push_to_talk && !self.talking.load(Ordering::SeqCst))) {
             Ok(()) => {
                 let saved = {
                     let mut settings = self.settings.lock().unwrap();
@@ -227,6 +316,9 @@ impl Core {
     }
 
     fn screenshot(&self) -> Result<PathBuf, String> {
+        if self.paused.load(Ordering::SeqCst) {
+            return Err(self.fail("screenshot", WAITING_FOR_GAME.into()));
+        }
         match self.engine.screenshot() {
             Ok(file) => {
                 self.tone(&[1320.0]);
@@ -248,6 +340,75 @@ impl Core {
         }
     }
 
+    /// Makes a smaller copy to share. The original is never changed. It's reported as an event too, because
+    /// the panel may have closed by the time a long clip finishes.
+    fn compress(&self, path: &Path) -> Result<PathBuf, String> {
+        let toast = self.settings.lock().unwrap().toast_enabled;
+        match self.engine.compress(path) {
+            Ok(output) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let camera = self.library.lock().unwrap().cameras.get(&name).copied();
+                self.remember_camera(&output, camera);
+                let bytes = fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+                let megabytes = (bytes as f64 / 1_000_000.0 * 10.0).ceil() / 10.0;
+                if toast {
+                    win32::show_toast(&format!("{megabytes} MB copy ready"));
+                }
+                let _ = self.app.emit("feedback", json!({ "kind": "compressed", "ok": true, "file": output, "megabytes": megabytes, "overTarget": bytes > engine::COMPRESS_TARGET_BYTES }));
+                if let Some(core) = self.app.try_state::<Shared>() {
+                    enforce_storage_rules(&core);
+                }
+                Ok(output)
+            }
+            Err(message) => {
+                let _ = self.app.emit("feedback", json!({ "kind": "compressed", "ok": false, "message": message }));
+                Err(message)
+            }
+        }
+    }
+
+    fn send_to_discord(&self, path: &Path) -> Result<(), String> {
+        let (webhook, toast) = {
+            let settings = self.settings.lock().unwrap();
+            (settings.discord_webhook.clone(), settings.toast_enabled)
+        };
+        let sent = upload_to_discord(self, &webhook, path);
+        match &sent {
+            Ok(()) => {
+                if toast {
+                    win32::show_toast("Sent to Discord");
+                }
+                let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": true }));
+            }
+            Err(message) => { let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": false, "message": message })); }
+        }
+        sent
+    }
+
+    /// Turns every mute-key source up or down. Returns the first one's new volume, in percent.
+    fn change_mic_volume(&self, percent: i64) -> Result<i64, String> {
+        let (saved, changed) = {
+            let mut settings = self.settings.lock().unwrap();
+            let mut changed = Vec::new();
+            for (i, source) in settings.audio_sources.iter_mut().enumerate().filter(|(_, s)| s.muted_by_key()) {
+                source.volume = ((source.volume * 100.0).round() as i64 + percent).clamp(0, 200) as f64 / 100.0;
+                changed.push((i as i64, source.volume));
+            }
+            (settings.clone(), changed)
+        };
+        let Some(&(_, first)) = changed.first() else {
+            return Err("No source is set to mute. Tick Mute key on your mic in Settings.".into());
+        };
+        let _ = saved.save(&self.settings_file);
+        self.engine.use_settings(self.effective(&saved));
+        for (index, volume) in changed {
+            let _ = self.engine.set_volume(index, volume);
+        }
+        let volume = (first * 100.0).round() as i64;
+        let _ = self.app.emit("feedback", json!({ "kind": "mic-volume", "ok": true, "volume": volume }));
+        Ok(volume)
+    }
+
     fn capture_state(&self) -> Value {
         self.capture.get().map(|c| json!(c.state())).unwrap_or(json!({ "mode": "desktop" }))
     }
@@ -255,9 +416,10 @@ impl Core {
     /// Lets the editor window load videos from the output folders, and nothing else.
     fn allow_media_folders(&self) {
         let scope = self.app.asset_protocol_scope();
-        let _ = scope.allow_directory(self.engine.clips_dir(), false);
-        let _ = scope.allow_directory(self.engine.recordings_dir(), false);
-        let _ = scope.allow_directory(self.engine.screenshots_dir(), false);
+        // With game folders, files can be one folder down.
+        let _ = scope.allow_directory(self.engine.clips_dir(), true);
+        let _ = scope.allow_directory(self.engine.recordings_dir(), true);
+        let _ = scope.allow_directory(self.engine.screenshots_dir(), true);
     }
 }
 
@@ -305,6 +467,23 @@ impl ApiHandlers for Api {
         win32::copy_file(Path::new(&clip))?;
         Ok(json!({ "file": clip }))
     }
+    fn compress_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        self.0.compress(Path::new(&clip)).map(|file| json!({ "file": file }))
+    }
+    fn send_last_clip(&self) -> Result<Value, String> {
+        let clip = last_clip(&self.0)?;
+        self.0.send_to_discord(Path::new(&clip)).map(|_| json!({ "file": clip }))
+    }
+    fn change_mic_volume(&self, percent: i64) -> Result<Value, String> {
+        self.0.change_mic_volume(percent).map(|volume| json!({ "micVolume": volume }))
+    }
+    fn test_free_space(&self, bytes: Option<u64>) {
+        *self.0.test_free_bytes.lock().unwrap() = bytes;
+    }
+    fn test_talk(&self, held: bool) {
+        *self.0.test_talk.lock().unwrap() = Some(held);
+    }
     fn test_open(&self, what: &str) {
         match what {
             "panel" => show_panel(&self.0),
@@ -314,7 +493,10 @@ impl ApiHandlers for Api {
     }
     /// Lets the UI tests run while someone uses the PC, because any click elsewhere closes the panel.
     fn test_game(&self, exe: &str) {
-        *self.0.test_game.lock().unwrap() = Some(exe.to_string()).filter(|e| !e.is_empty());
+        let exe = Some(exe.to_string()).filter(|e| !e.is_empty());
+        // Files are named after it too, as they would be for a real game.
+        self.0.engine.set_game(exe.as_deref().map(|e| e.trim_end_matches(".exe").to_string()));
+        *self.0.test_game.lock().unwrap() = exe;
     }
     /// Sends a controller report through the real path. It's written as hex, with zeros to pad it to size.
     fn test_controller(&self, kind: &str, report: &str) {
@@ -339,7 +521,11 @@ impl ApiHandlers for Api {
         let settings = self.0.settings.lock().unwrap();
         status["micMuted"] = json!(settings.mic_muted);
         status["cleanMic"] = json!(settings.clean_mic);
+        status["pushToTalk"] = json!(settings.push_to_talk);
+        status["talking"] = json!(self.0.talking.load(Ordering::SeqCst));
+        status["micVolume"] = json!(settings.audio_sources.iter().find(|s| s.muted_by_key()).map(|s| (s.volume * 100.0).round() as i64));
         drop(settings);
+        status["bufferSeconds"] = json!(self.0.engine.current_settings().buffer_seconds);
         status
     }
 }
@@ -400,6 +586,8 @@ struct Media {
     /// Only set for a renamed clip, whose file name no longer says.
     #[serde(skip_serializing_if = "Option::is_none")]
     game: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
 }
 
 // More than this is too much to send to the panel in one go.
@@ -412,14 +600,31 @@ fn modified_ms(meta: &fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// The files in a folder, and in the game folders inside it. Hidden folders such as .staging are left out.
+fn files_in(dir: &Path) -> Vec<fs::DirEntry> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else { return found };
+    for entry in entries.flatten() {
+        let hidden = entry.file_name().to_string_lossy().starts_with('.');
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() && !hidden => {
+                let inside = fs::read_dir(entry.path()).into_iter().flatten().flatten();
+                found.extend(inside.filter(|e| e.file_type().is_ok_and(|t| t.is_file())));
+            }
+            Ok(kind) if kind.is_file() => found.push(entry),
+            _ => {}
+        }
+    }
+    found
+}
+
 fn list_media(core: &Core) -> Vec<Media> {
     let active = core.engine.active_recording();
     let library = core.library.lock().unwrap();
     let mut media = Vec::new();
     const VIDEOS: &[&str] = &["mp4", "mkv", "mov"];
     for (dir, kind, extensions) in [(core.engine.clips_dir(), "clip", VIDEOS), (core.engine.recordings_dir(), "recording", VIDEOS), (core.engine.screenshots_dir(), "screenshot", &["png"])] {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
+        for entry in files_in(&dir) {
             let path = entry.path();
             let wanted = path.extension().and_then(|e| e.to_str())
                 .is_some_and(|e| extensions.contains(&e.to_lowercase().as_str()));
@@ -432,6 +637,7 @@ fn list_media(core: &Core) -> Vec<Media> {
                 file: path.to_string_lossy().into_owned(),
                 favourite: library.favourites.contains(&name),
                 game: library.games.get(&name).cloned(),
+                tags: library.tags.get(&name).cloned().unwrap_or_default(),
                 name,
                 size: meta.len(),
                 mtime: modified_ms(&meta),
@@ -484,7 +690,21 @@ fn enforce_storage_rules(core: &Shared) {
 
 /// Sends a clip to the Recycle Bin, and forgets what was known about it.
 fn remove_media(core: &Core, path: &Path) -> Result<(), String> {
-    trash::delete(path).map_err(|e| e.to_string())?;
+    // A thumbnail or preview being made has the file open, which would stop it moving.
+    let deleted = {
+        let _no_thumbnail = core.thumbnail_lock.lock().unwrap();
+        let _no_preview = core.strip_lock.lock().unwrap();
+        trash::delete(path)
+    };
+    // Something else, such as Explorer's preview, may let go a moment later.
+    if deleted.is_err() {
+        thread::sleep(Duration::from_millis(500));
+        trash::delete(path).map_err(|e| format!("Couldn't delete this file. It may be open in another app. ({e})"))?;
+    }
+    // A game folder goes once it's empty. Removing a folder with anything in it fails, which is what's wanted.
+    if let Some(folder) = path.parent().filter(|f| in_media_folders(core, f.parent())) {
+        let _ = fs::remove_dir(folder);
+    }
     let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
     forget_thumbnails(core, &name);
     let mut library = core.library.lock().unwrap();
@@ -514,6 +734,66 @@ const GAME_WATCH_EVERY: Duration = Duration::from_secs(2);
 const GAME_GONE_POLLS: u32 = 3;
 const STORAGE_CHECK_POLLS: u32 = 30;
 
+/// Whether a game is in front right now, for when capture is stopped and can't say.
+fn game_in_front(core: &Core, settings: &Settings) -> bool {
+    let added: Vec<String> = settings.game_profiles.iter().map(|p| p.exe.clone()).collect();
+    core.test_game.lock().unwrap().is_some() || win32::foreground_game_app(&added).is_some()
+}
+
+/// Stops a recording before the drive fills, and warns once when space gets low.
+fn check_free_space(core: &Shared, settings: &Settings, recording: bool, warned: &mut bool) {
+    let folder = PathBuf::from(&settings.output_dir);
+    let Some(existing) = folder.ancestors().find(|p| p.exists()) else { return };
+    let tested = *core.test_free_bytes.lock().unwrap();
+    let Some(free) = tested.or_else(|| win32::free_bytes(existing)) else { return };
+    let gb = |bytes: u64| (bytes as f64 / 1e9 * 10.0).floor() / 10.0;
+    if recording && free < STOP_RECORDING_BELOW && core.toggle_record().is_ok() {
+        let message = format!("Recording stopped and saved, because your drive has only {} GB free.", gb(free));
+        if settings.toast_enabled {
+            win32::show_toast(&message);
+        }
+        let _ = core.app.emit("feedback", json!({ "kind": "low-space", "ok": false, "message": message }));
+    }
+    let warn_below = (settings.low_space_warn_gb * 1e9) as u64;
+    if warn_below > 0 && free < warn_below {
+        if !*warned {
+            *warned = true;
+            let message = format!("Your drive has only {} GB free. Clips and recordings may fail when it fills up.", gb(free));
+            if settings.toast_enabled {
+                win32::show_toast(&format!("Low disk space: {} GB left", gb(free)));
+            }
+            let _ = core.app.emit("feedback", json!({ "kind": "low-space", "ok": false, "message": message }));
+        }
+    } else if free > warn_below + warn_below / 10 {
+        // A little above the line, so hovering around it doesn't warn again and again.
+        *warned = false;
+    }
+}
+
+/// Lets the mic through only while the push-to-talk key is held. It reads the key's state, which never stops
+/// the game from getting the press.
+fn watch_push_to_talk(core: Shared) {
+    let mut held = false;
+    loop {
+        let (on, key) = {
+            let s = core.settings.lock().unwrap();
+            (s.push_to_talk, s.push_to_talk_key.clone())
+        };
+        let code = if on { win32::virtual_key(&key) } else { None };
+        let tested = *core.test_talk.lock().unwrap();
+        let now = code.is_some_and(|code| tested.unwrap_or_else(|| win32::key_held(code)));
+        if now != held {
+            held = now;
+            core.talking.store(now, Ordering::SeqCst);
+            if core.engine.status().buffering {
+                let settings = core.settings.lock().unwrap().clone();
+                let _ = core.engine.set_mic_muted(core.mic_silenced(&settings));
+            }
+        }
+        thread::sleep(if code.is_some() { PUSH_TO_TALK_POLL } else { PUSH_TO_TALK_IDLE });
+    }
+}
+
 /// Applies per-game profiles and automatic recording as games come and go.
 fn watch_games(core: Shared) {
     let mut last_seen = Instant::now();
@@ -521,6 +801,7 @@ fn watch_games(core: Shared) {
     let mut started_recording = false;
     let mut gone_polls = 0;
     let mut storage_polls = 0;
+    let mut warned_space = false;
     loop {
         thread::sleep(GAME_WATCH_EVERY);
         storage_polls += 1;
@@ -530,10 +811,27 @@ fn watch_games(core: Shared) {
         }
         let base = core.settings.lock().unwrap().clone();
         let game = running_game(&core);
-        if game.is_some() {
+        let recording = core.engine.status().recording;
+        // A recording keeps the buffer going too, so the time without a game counts from when it ends.
+        if game.is_some() || recording {
             last_seen = Instant::now();
         }
-        let recording = core.engine.status().recording;
+        check_free_space(&core, &base, recording, &mut warned_space);
+
+        // The buffer stops a while after the game closes, so its last moments can still be clipped.
+        if core.paused.load(Ordering::SeqCst) {
+            if !base.buffer_only_in_games || game_in_front(&core, &base) {
+                if let Err(e) = core.wake_engine() {
+                    core.log_ui(&format!("capture could not start again: {e}"));
+                }
+                last_seen = Instant::now();
+            }
+            continue;
+        }
+        if base.buffer_only_in_games && game.is_none() && !recording && last_seen.elapsed() >= profile_hold() && core.engine.status().state == "ready" {
+            core.pause_engine();
+            continue;
+        }
 
         let active = core.active_profile.lock().unwrap().clone();
         let wanted = match &game {
@@ -584,12 +882,18 @@ fn watch_games(core: Shared) {
     }
 }
 
-/// The UI only gets to act on files inside our own output folders.
+/// Whether this is Clips, Recordings or Screenshots itself.
+fn in_media_folders(core: &Core, folder: Option<&Path>) -> bool {
+    [core.engine.clips_dir(), core.engine.recordings_dir(), core.engine.screenshots_dir()].iter().any(|dir| folder == Some(dir.as_path()))
+}
+
+/// The UI only gets to act on files inside our own output folders, or a game folder inside one.
 fn own_media(core: &Core, file: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(file);
     let traversal = path.components().any(|c| matches!(c, Component::ParentDir));
-    let parent = path.parent().map(Path::to_path_buf);
-    let own_folder = [core.engine.clips_dir(), core.engine.recordings_dir(), core.engine.screenshots_dir()].into_iter().any(|dir| parent.as_ref() == Some(&dir));
+    let parent = path.parent();
+    let game_folder = parent.filter(|p| !p.file_name().unwrap_or_default().to_string_lossy().starts_with('.'));
+    let own_folder = in_media_folders(core, parent) || in_media_folders(core, game_folder.and_then(Path::parent));
     if traversal || !own_folder {
         return Err("Not a Afterclip file".into());
     }
@@ -638,6 +942,12 @@ struct ExportArgs {
 struct FavouriteArgs {
     file: String,
     on: bool,
+}
+
+#[derive(Deserialize)]
+struct TagArgs {
+    file: String,
+    tags: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -792,6 +1102,16 @@ fn set_favourite(core: tauri::State<Shared>, payload: FavouriteArgs) -> Result<(
 }
 
 #[tauri::command(async)]
+fn set_tags(core: tauri::State<Shared>, payload: TagArgs) -> Result<Vec<String>, String> {
+    let path = own_media(&core, &payload.file)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let mut library = core.library.lock().unwrap();
+    library.set_tags(&name, &payload.tags);
+    library.save(&core.library_file)?;
+    Ok(library.tags.get(&name).cloned().unwrap_or_default())
+}
+
+#[tauri::command(async)]
 fn rename_clip(core: tauri::State<Shared>, payload: RenameArgs) -> Result<String, String> {
     let path = own_media(&core, &payload.file)?;
     let stem = clean_file_stem(&payload.name)?;
@@ -814,29 +1134,10 @@ fn rename_clip(core: tauri::State<Shared>, payload: RenameArgs) -> Result<String
     Ok(target.to_string_lossy().into_owned())
 }
 
-/// Makes a smaller copy to share. The original is never changed.
 #[tauri::command(async)]
 fn compress_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
-    let core: Shared = Arc::clone(&core);
     let path = own_media(&core, &payload)?;
-    // Reported as an event, because the panel may have closed by the time a long clip finishes.
-    let toast = core.settings.lock().unwrap().toast_enabled;
-    match core.engine.compress(&path) {
-        Ok(output) => {
-            let bytes = fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
-            let megabytes = (bytes as f64 / 1_000_000.0 * 10.0).ceil() / 10.0;
-            if toast {
-                win32::show_toast(&format!("{megabytes} MB copy ready"));
-            }
-            let _ = core.app.emit("feedback", json!({ "kind": "compressed", "ok": true, "file": output, "megabytes": megabytes, "overTarget": bytes > engine::COMPRESS_TARGET_BYTES }));
-            enforce_storage_rules(&core);
-            Ok(output.to_string_lossy().into_owned())
-        }
-        Err(message) => {
-            let _ = core.app.emit("feedback", json!({ "kind": "compressed", "ok": false, "message": message }));
-            Err(message)
-        }
-    }
+    core.compress(&path).map(|output| output.to_string_lossy().into_owned())
 }
 
 #[tauri::command(async)]
@@ -844,13 +1145,18 @@ fn clip_tracks(core: tauri::State<Shared>, payload: String) -> Result<i64, Strin
     core.engine.track_count(&own_media(&core, &payload)?)
 }
 
-/// Makes a 9:16 copy for phones. The original is never changed.
+/// Makes a 9:16 copy for phones. The original is never changed. A clip with a webcam can have it above the game.
 #[tauri::command(async)]
 fn vertical_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
     let core: Shared = Arc::clone(&core);
     let path = own_media(&core, &payload)?;
-    let toast = core.settings.lock().unwrap().toast_enabled;
-    match core.engine.make_vertical(&path) {
+    let (toast, face_cam) = {
+        let settings = core.settings.lock().unwrap();
+        (settings.toast_enabled, settings.vertical_face_cam)
+    };
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let camera = core.library.lock().unwrap().cameras.get(&name).copied().filter(|_| face_cam);
+    match core.engine.make_vertical(&path, camera) {
         Ok(output) => {
             if toast {
                 win32::show_toast("Vertical copy ready");
@@ -888,21 +1194,7 @@ fn upload_to_discord(core: &Core, webhook: &str, path: &Path) -> Result<(), Stri
 #[tauri::command(async)]
 fn send_to_discord(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
     let path = own_media(&core, &payload)?;
-    let (webhook, toast) = {
-        let settings = core.settings.lock().unwrap();
-        (settings.discord_webhook.clone(), settings.toast_enabled)
-    };
-    let sent = upload_to_discord(&core, &webhook, &path);
-    match &sent {
-        Ok(()) => {
-            if toast {
-                win32::show_toast("Sent to Discord");
-            }
-            let _ = core.app.emit("feedback", json!({ "kind": "discord", "ok": true }));
-        }
-        Err(message) => { let _ = core.app.emit("feedback", json!({ "kind": "discord", "ok": false, "message": message })); }
-    }
-    sent
+    core.send_to_discord(&path)
 }
 
 #[tauri::command(async)]
@@ -951,6 +1243,77 @@ fn thumbnail(core: tauri::State<Shared>, payload: String) -> Option<Value> {
     }))
 }
 
+/// A row of frames across a video, to scrub through on hover. Made once, then kept with the thumbnails.
+#[tauri::command(async)]
+fn preview_strip(core: tauri::State<Shared>, payload: String) -> Option<Value> {
+    let path = own_media(&core, &payload).ok()?;
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+        return None;
+    }
+    let _one_at_a_time = core.strip_lock.lock().unwrap();
+    let mtime = modified_ms(&fs::metadata(&path).ok()?) as u64;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let image = core.engine.thumbs_dir().join(format!("{name}-{mtime}-strip.jpg"));
+    if !image.exists() {
+        fs::create_dir_all(core.engine.thumbs_dir()).ok()?;
+        core.engine.make_preview_strip(&path, &image).ok()?;
+    }
+    let bytes = fs::read(image).ok()?;
+    Some(json!({
+        "url": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)),
+        "frames": engine::PREVIEW_FRAMES,
+    }))
+}
+
+/// Asks where to save a file, keeping the panel open behind the dialog. None if cancelled.
+fn ask_save_path(core: &Core, name: String, kind: &str, extension: &str) -> Option<PathBuf> {
+    core.keep_panel_open.store(true, Ordering::SeqCst);
+    let picked = core.app.dialog().file().set_file_name(name).add_filter(kind, &[extension]).blocking_save_file();
+    core.keep_panel_open.store(false, Ordering::SeqCst);
+    picked.and_then(|p| p.into_path().ok())
+}
+
+/// Saves the settings to a file, to set up another PC or a reinstall. A test copy names the file itself.
+#[tauri::command(async)]
+fn export_settings(core: tauri::State<Shared>, payload: Option<String>) -> Result<Option<String>, String> {
+    let target = match payload.filter(|_| api::is_test_instance()).map(PathBuf::from) {
+        Some(path) => path,
+        None => match ask_save_path(&core, "Afterclip settings.json".into(), "Settings", "json") {
+            Some(path) => path,
+            None => return Ok(None),
+        },
+    };
+    let text = serde_json::to_string_pretty(&core.settings.lock().unwrap().exported()).map_err(|e| e.to_string())?;
+    fs::write(&target, text).map_err(|e| format!("Couldn't save the settings: {e}"))?;
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+/// Loads settings saved by Export settings. Returns false if cancelled.
+#[tauri::command(async)]
+fn import_settings(core: tauri::State<Shared>, payload: Option<String>) -> Result<bool, String> {
+    let core: Shared = Arc::clone(&core);
+    let file = match payload.filter(|_| api::is_test_instance()).map(PathBuf::from) {
+        Some(path) => path,
+        None => {
+            core.keep_panel_open.store(true, Ordering::SeqCst);
+            let picked = core.app.dialog().file().add_filter("Settings", &["json"]).blocking_pick_file();
+            core.keep_panel_open.store(false, Ordering::SeqCst);
+            match picked.and_then(|p| p.into_path().ok()) {
+                Some(path) => path,
+                None => return Ok(false),
+            }
+        }
+    };
+    let current = core.settings.lock().unwrap().clone();
+    apply_settings(&core, current.imported(&file)?)?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+fn camera_choices(core: tauri::State<Shared>) -> Result<Value, String> {
+    core.engine.camera_choices()
+}
+
 #[tauri::command(async)]
 fn pick_folder(core: tauri::State<Shared>) -> Option<String> {
     let start = core.settings.lock().unwrap().output_dir.clone();
@@ -969,10 +1332,7 @@ fn save_diagnostics(core: tauri::State<Shared>, payload: Option<String>) -> Resu
         Some(path) => path,
         None => {
             let name = format!("Afterclip diagnostics {}.zip", chrono::Local::now().format("%Y-%m-%d %H-%M"));
-            core.keep_panel_open.store(true, Ordering::SeqCst);
-            let picked = core.app.dialog().file().set_file_name(name).add_filter("Zip file", &["zip"]).blocking_save_file();
-            core.keep_panel_open.store(false, Ordering::SeqCst);
-            match picked.and_then(|p| p.into_path().ok()) {
+            match ask_save_path(&core, name, "Zip file", "zip") {
                 Some(path) => path,
                 None => return Ok(None),
             }
@@ -1024,7 +1384,12 @@ fn audio_choices(core: tauri::State<Shared>) -> Result<Value, String> {
 
 #[tauri::command(async)]
 fn save_settings(core: tauri::State<Shared>, payload: Settings) -> Result<Value, String> {
-    let core: Shared = Arc::clone(&core);
+    apply_settings(&core, payload)
+}
+
+/// Saves new settings and applies them, restarting capture only if something needs it.
+fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
+    let core: Shared = Arc::clone(core);
     let mut clean = payload.resolved_for(win32::primary_display_mode()).sanitized();
     let current = core.settings.lock().unwrap().clone();
     // The form can hold an older value, because the mic key changes this at any time.
@@ -1053,13 +1418,23 @@ fn save_settings(core: tauri::State<Shared>, payload: Settings) -> Result<Value,
             // Settings now save as they change, so restarts can queue up. Each one uses the newest settings.
             let _one_at_a_time = again.restart_lock.lock().unwrap();
             let newest = again.effective(&again.settings.lock().unwrap().clone());
+            // Waiting for a game, the new settings are used when it opens.
+            if again.paused.load(Ordering::SeqCst) {
+                again.engine.use_settings(newest);
+                return;
+            }
             again.engine.stop();
             let _ = again.engine.start(Some(newest));
             again.allow_media_folders();
         });
     } else {
         // Settings that apply without a restart, such as how long recordings split.
+        let silenced = effective.mic_muted;
         core.engine.use_settings(effective);
+        // Push-to-talk may have just been turned on or off.
+        if core.engine.status().buffering {
+            let _ = core.engine.set_mic_muted(silenced);
+        }
     }
     {
         let again = Arc::clone(&core);
@@ -1116,8 +1491,10 @@ fn restart_admin(core: tauri::State<Shared>) -> Result<(), String> {
         return Ok(());
     }
     start_services(&core);
-    let engine = Arc::clone(&core.engine);
-    thread::spawn(move || { let _ = engine.start(None); });
+    if !core.paused.load(Ordering::SeqCst) {
+        let engine = Arc::clone(&core.engine);
+        thread::spawn(move || { let _ = engine.start(None); });
+    }
     Err("Administrator permission was declined".into())
 }
 
@@ -1515,7 +1892,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, save_diagnostics, running_apps, pick_game, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, preview_strip, pick_folder, save_diagnostics, export_settings, import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {
@@ -1611,6 +1988,11 @@ fn main() {
                 update_ready: Mutex::new(None),
                 update_busy: AtomicBool::new(false),
                 storage_lock: Mutex::new(()),
+                strip_lock: Mutex::new(()),
+                paused: AtomicBool::new(false),
+                talking: AtomicBool::new(false),
+                test_talk: Mutex::new(None),
+                test_free_bytes: Mutex::new(None),
             });
             let capture_events = handle.clone();
             let detection_settings = Arc::clone(&shared_settings);
@@ -1660,9 +2042,20 @@ fn main() {
             updater::start(Arc::clone(&core));
             let watcher = Arc::clone(&core);
             thread::spawn(move || watch_games(watcher));
+            let talker = Arc::clone(&core);
+            thread::spawn(move || watch_push_to_talk(talker));
             core.allow_media_folders();
-            // A failure reaches the UI through status. Normally no window opens: the app lives in the tray.
-            thread::spawn(move || { let _ = engine.start(None); });
+            // With the buffer only running during games, it waits for one.
+            let first = core.settings.lock().unwrap().clone();
+            if first.buffer_only_in_games && !game_in_front(&core, &first) {
+                core.paused.store(true, Ordering::SeqCst);
+                engine.set_waiting_for_game(true);
+            } else {
+                // A failure reaches the UI through status. Normally no window opens: the app lives in the tray.
+                let starting = Arc::clone(&core);
+                thread::spawn(move || { let _ = engine.start(Some(starting.effective(&first))); });
+            }
+
             if open_at_start {
                 let opening = Arc::clone(&core);
                 thread::spawn(move || show_panel(&opening));

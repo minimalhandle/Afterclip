@@ -31,7 +31,9 @@ const svgOf = (message) => decodeURIComponent(message.payload.image);
 async function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
   const names = manifest.Actions.map((a) => a.Name);
-  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot']) check(`has ${wanted} action`, names.includes(wanted));
+  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot', 'Compress Last Clip', 'Send Last Clip to Discord', 'Mic Volume', 'Clip Length Dial']) check(`has ${wanted} action`, names.includes(wanted));
+  const dials = manifest.Actions.filter((a) => a.Controllers.includes('Encoder'));
+  check('the dials are Stream Deck + encoders with a touch strip', dials.length === 2 && dials.every((a) => a.Encoder?.layout === '$B1' && !a.Controllers.includes('Keypad')));
   const missing = manifest.Actions.flatMap((a) => [a.Icon, a.States[0].Image])
     .filter((image) => !['.svg', '.png'].some((ext) => fs.existsSync(path.join(pluginDir, image + ext))));
   check('every icon file exists', missing.length === 0, missing.join(', '));
@@ -39,7 +41,7 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afterclip-plugin-'));
   const tokenFile = path.join(dir, 'token.txt');
   fs.writeFileSync(tokenFile, 'secret-token');
-  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, clipDelay: 0, fail: false, noClips: false };
+  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, micVolume: 100, bufferingSince: Date.now() - 30000, bufferSeconds: 120, clipDelay: 0, fail: false, noClips: false, noWebhook: false };
   const routes = [];
   const api = http.createServer(async (req, res) => {
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -52,6 +54,11 @@ async function main() {
     if (req.url === '/marker') return state.recording ? send(200, { marker: 1 }) : send(500, { error: 'Start a recording' });
     if (req.url === '/mic/toggle') { state.micMuted = !state.micMuted; return send(200, { micMuted: state.micMuted }); }
     if (req.url === '/record/toggle') { state.recording = !state.recording; return send(200, { recording: state.recording }); }
+    if (req.url.startsWith('/mic/volume/')) {
+      state.micVolume = Math.min(200, Math.max(0, state.micVolume + Number(req.url.split('/').pop())));
+      return send(200, { micVolume: state.micVolume });
+    }
+    if (req.url === '/last-clip/discord' && state.noWebhook) return send(500, { error: 'Add your Discord webhook in Settings, under Clips and sharing.' });
     await sleep(state.clipDelay);
     send(200, { actualSeconds: 1 });
   });
@@ -69,7 +76,8 @@ async function main() {
     env: { ...process.env, AFTERCLIP_TOKEN_FILE: tokenFile, AFTERCLIP_API: `http://127.0.0.1:${api.address().port}` },
   });
   const deck = await connected;
-  const event = (name, action, context, settings = {}) => deck.send(JSON.stringify({ event: name, action, context, payload: { settings } }));
+  const event = (name, action, context, settings = {}, extra = {}) => deck.send(JSON.stringify({ event: name, action, context, payload: { settings, ...extra } }));
+  const lastFeedback = (context) => received.filter((m) => m.context === context && m.event === 'setFeedback').at(-1)?.payload;
   const lastImage = (context) => received.filter((m) => m.context === context && m.event === 'setImage').at(-1);
   // Counts each confirmation or failure the key has shown, from the first picture of each.
   const results = (context, name) => received.filter((m) => m.context === context && m.event === 'setImage' && (name === 'showOk' ? /data-mark="(confirmed|pulsed)"/ : /data-mark="failed"/).test(svgOf(m))).length;
@@ -185,7 +193,55 @@ async function main() {
     check('copy key says when there are no clips', svgOf(lastImage('copy')).includes('>NO CLIPS<'));
     state.noClips = false;
 
+    // Jobs on the last clip: the key shows it's working until the job is done, and a second press waits.
+    state.clipDelay = 600;
+    for (const [context, action, route, busy, done] of [['shrink', 'compress-last', '/last-clip/compress', 'WORKING', 'READY'], ['send', 'discord-last', '/last-clip/discord', 'SENDING', 'SENT']]) {
+      event('willAppear', ACTION(action), context);
+      await waitFor(() => lastImage(context) && !svgOf(lastImage(context)).includes('>OFF<'), 4000, `${action} face`);
+      routes.length = 0;
+      event('keyDown', ACTION(action), context);
+      await waitFor(() => svgOf(lastImage(context)).includes(`>${busy}<`), 500, `${action} busy`);
+      event('keyDown', ACTION(action), context);
+      await waitFor(() => results(context, 'showOk') === 1, 3000, `${action} ok`);
+      check(`${action} key shows it's working, and runs once`, routes.join() === `POST ${route}`, routes.join());
+      await waitFor(() => svgOf(lastImage(context)).includes(`>${done}<`), 2000, `${action} done`);
+    }
+    state.clipDelay = 0;
+    state.noWebhook = true;
+    event('keyDown', ACTION('discord-last'), 'send');
+    await waitFor(() => results('send', 'showAlert') === 1, 3000, 'no webhook');
+    check('Discord key says when there is no webhook', svgOf(lastImage('send')).includes('>NO HOOK<'));
+    state.noWebhook = false;
+
+    // Stream Deck + dials draw on the touch strip.
+    event('willAppear', ACTION('mic-dial'), 'knob');
+    await waitFor(() => lastFeedback('knob')?.value === '100%', 4000, 'mic dial face');
+    check('mic dial shows the volume, with a purple bar', lastFeedback('knob').indicator.value === 50 && lastFeedback('knob').indicator.bar_fill_c === '#7c6cff');
+    routes.length = 0;
+    event('dialRotate', ACTION('mic-dial'), 'knob', {}, { ticks: -3 });
+    await waitFor(() => lastFeedback('knob')?.value === '85%', 3000, 'turned down');
+    check('turning the mic dial changes the volume by 5% a tick', routes.join() === 'POST /mic/volume/-15', routes.join());
+    event('dialDown', ACTION('mic-dial'), 'knob');
+    await waitFor(() => lastFeedback('knob')?.value === 'Muted', 3000, 'dial muted');
+    check('pressing the mic dial mutes the mic in clips', state.micMuted);
+    event('touchTap', ACTION('mic-dial'), 'knob');
+    await waitFor(() => lastFeedback('knob')?.value === '85%', 3000, 'dial unmuted');
+    check('tapping the strip unmutes it', !state.micMuted);
+
+    event('willAppear', ACTION('clip-dial'), 'lengths', { seconds: 60 });
+    await waitFor(() => lastFeedback('lengths')?.value === 'Last 1 min', 4000, 'clip dial face');
+    event('dialRotate', ACTION('clip-dial'), 'lengths', {}, { ticks: 2 });
+    await waitFor(() => lastFeedback('lengths')?.value === 'Last 5 min', 3000, 'clip dial turned');
+    check('turning the clip dial picks a length and keeps it', received.some((m) => m.context === 'lengths' && m.event === 'setSettings' && m.payload.seconds === 300));
+    check('the clip dial bar shows how full the buffer is', lastFeedback('lengths').indicator.value >= 24 && lastFeedback('lengths').indicator.value <= 30, String(lastFeedback('lengths').indicator.value));
+    routes.length = 0;
+    event('dialDown', ACTION('clip-dial'), 'lengths');
+    await waitFor(() => lastFeedback('lengths')?.value === 'Saved', 3000, 'dial saved');
+    check('pressing the clip dial saves that length', routes.join() === 'POST /clip/300', routes.join());
+    await waitFor(() => lastFeedback('lengths')?.value === 'Last 5 min', 3000, 'dial back');
+
     state.fail = true;
+
     event('keyDown', ACTION('save-full'), 'full');
     await waitFor(() => results('full', 'showAlert') === 1, 3000, 'alert');
     check('a failed save says so', svgOf(lastImage('full')).includes('>FAILED<'));

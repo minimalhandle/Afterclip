@@ -17,7 +17,7 @@ const depsDir = path.join(root, 'vendor', 'obs-deps');
 const DEPS_VERSION = '2026-10-23';
 
 // Keep in step with MODULES in afterclip-engine.cpp.
-const MODULES = ['image-source', 'obs-ffmpeg', 'obs-filters', 'obs-nvenc', 'obs-outputs', 'obs-qsv11', 'obs-x264', 'win-capture', 'win-wasapi'];
+const MODULES = ['image-source', 'obs-ffmpeg', 'obs-filters', 'obs-nvenc', 'obs-outputs', 'obs-qsv11', 'obs-x264', 'win-capture', 'win-dshow', 'win-wasapi'];
 // Helpers OBS plugins launch by path from beside the exe, so no import table mentions them.
 const HELPERS = ['obs-ffmpeg-mux.exe', 'obs-amf-test.exe', 'obs-nvenc-test.exe', 'obs-qsv-test.exe'];
 // Loaded at runtime by name.

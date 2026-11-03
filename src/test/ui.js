@@ -640,6 +640,221 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await panel.eval("(() => { const s = document.getElementById('deleteAfterDays'); s.value = '0'; s.dispatchEvent(new Event('change')); })()");
     await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click()");
 
+    // Back to the starting 720p, because the colour card at Full quality barely reaches a recording, which then never stops.
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, quality: 'custom', resolution: 'custom', frameRate: 'custom', width: 1280, height: 720, fps: 30, bitrateKbps: 6000, encoderPreset: 'p3', multipass: false }))");
+    await panel.send('Page.reload');
+    await waitFor(() => panel.eval("document.readyState === 'complete' && !!settings && settings.width === 1280"), 15000, 'the panel to reload at 720p');
+    await waitFor(async () => { const s = await api.status(); return s.state === 'ready' && s.buffering; }, 30000, 'capture at 720p');
+    await sleep(10000);
+    const canvas = { width: 1280, height: 720 };
+
+    // Every message the panel shows, because one can replace another before a check reads it.
+    await panel.eval("(() => { window.seenBanners = []; const real = window.showBanner; window.showBanner = (text, tone) => { window.seenBanners.push(text); real(text, tone); }; })()");
+    const sawBanner = (pattern) => panel.eval(`window.seenBanners.some((t) => ${pattern}.test(t))`);
+    const savedSettings = () => JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8'));
+    const capturing = () => waitFor(async () => { const s = await api.status(); return s.state === 'ready' && s.buffering; }, 30000, 'capture to run again');
+    const openPane = (pane) => panel.eval(`(() => { if (document.getElementById('settings').hidden) document.getElementById('open-settings').click(); document.getElementById('crumb-root').click(); document.querySelector('.nav-item[data-pane=${pane}]').click(); })()`);
+    const choose = (id, value) => panel.eval(`(() => { const s = document.getElementById('${id}'); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change')); })()`);
+
+    // Keep recording after you save: the clip waits, then holds those seconds too.
+    await openPane('video');
+    await choose('clipAfterSeconds', '3');
+    await waitFor(() => savedSettings().clipAfterSeconds === 3, 5000, 'the wait to save');
+    const pressedAt = Date.now();
+    const pending = api.clip(5);
+    await waitFor(() => sawBanner('/Saving in 3 seconds/'), 2500, 'the waiting message');
+    check('the panel says the clip is waiting', true);
+    const waited = await pending;
+    check('a clip waits before saving, when asked to', Date.now() - pressedAt >= 3000, `${Date.now() - pressedAt} ms`);
+    check('the clip holds the extra seconds too', waited.requestedSeconds === 8 && waited.actualSeconds >= 7.5, JSON.stringify(waited));
+    await choose('clipAfterSeconds', '0');
+    await waitFor(() => savedSettings().clipAfterSeconds === 0, 5000, 'the wait to turn off');
+
+    // Push to talk: the mute-key source is silent until the key is held. The key is pretended, never pressed.
+    await openPane('audio');
+    check('the talk key starts as a mouse side button', (await panel.eval("document.getElementById('pushToTalkKey').value")) === 'Mouse 4');
+    await panel.eval("(() => { const f = document.getElementById('pushToTalkKey'); f.focus(); f.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', bubbles: true })); })()");
+    await waitFor(() => savedSettings().pushToTalkKey === 'V', 5000, 'a key as the talk key');
+    check('a single key can be the talk key', (await panel.eval("document.getElementById('pushToTalkKey').value")) === 'V');
+    await panel.eval("(() => { const f = document.getElementById('pushToTalkKey'); f.focus(); f.dispatchEvent(new MouseEvent('mousedown', { button: 4, bubbles: true })); })()");
+    await waitFor(() => savedSettings().pushToTalkKey === 'Mouse5', 5000, 'a mouse button as the talk key');
+    check('a mouse side button can be the talk key', (await panel.eval("document.getElementById('pushToTalkKey').value")) === 'Mouse 5');
+    await api.call('/test/talk/off', 'POST');
+    let logFrom = engineLogNow().length;
+    await panel.eval("document.getElementById('pushToTalk').click()");
+    await waitFor(() => /Mic mute on on 1 source/.test(engineLogNow().slice(logFrom)), 5000, 'push to talk to silence the mic');
+    check('push to talk silences the mic until the key is held', (await api.status()).pushToTalk);
+    logFrom = engineLogNow().length;
+    await api.call('/test/talk/on', 'POST');
+    await waitFor(() => /Mic mute off on 1 source/.test(engineLogNow().slice(logFrom)), 3000, 'the mic to open');
+    check('holding the talk key lets the mic through', (await api.status()).talking);
+    logFrom = engineLogNow().length;
+    await api.call('/test/talk/off', 'POST');
+    await waitFor(() => /Mic mute on on 1 source/.test(engineLogNow().slice(logFrom)), 3000, 'the mic to close');
+    check('letting go silences it again', !(await api.status()).talking);
+    logFrom = engineLogNow().length;
+    await panel.eval("document.getElementById('pushToTalk').click()");
+    await waitFor(() => /Mic mute off on 1 source/.test(engineLogNow().slice(logFrom)), 5000, 'push to talk to turn off');
+    check('turning push to talk off lets the mic through', !savedSettings().pushToTalk);
+
+    // The Stream Deck + mic dial's route, with the open Audio settings following it.
+    const volumeBefore = (await api.status()).micVolume;
+    const turned = await (await api.call('/mic/volume/-10', 'POST')).json();
+    check('the dial route turns the mic down and saves it', turned.micVolume === volumeBefore - 10 && Math.round(savedSettings().audioSources[0].volume * 100) === volumeBefore - 10, `${volumeBefore} to ${turned.micVolume}`);
+    await waitFor(() => panel.eval(`document.querySelector('#audio-list .volume-value').textContent === '${volumeBefore - 10}%'`), 3000, 'the slider to follow');
+    check('the volume slider follows the dial', true);
+    await api.call('/mic/volume/10', 'POST');
+
+    // A folder for each game, with copies made beside the original, and the folder gone once it's empty.
+    await openPane('clips');
+    await panel.eval("document.getElementById('gameFolders').click()");
+    await waitFor(() => savedSettings().gameFolders === true, 5000, 'game folders on');
+    await api.call('/test/game/pretend.exe', 'POST');
+    const inFolder = await api.clip(2);
+    await api.call('/test/game/', 'POST');
+    const gameFolder = path.join(clips, 'pretend');
+    check('a clip goes in its game\'s folder', path.dirname(inFolder.file) === gameFolder, inFolder.file);
+    await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click()");
+    await waitFor(() => panel.eval(`document.querySelector('#media .item-sub')?.title.startsWith(${JSON.stringify(path.basename(inFolder.file))})`), 5000, 'the clip in the list');
+    check('clips in game folders are listed', true);
+
+    // Tags, typed into the clip's menu, then found by the filter and by search.
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Tags').click(); })()`);
+    await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'the tags field');
+    await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Funny, #clutch, funny'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+    await waitFor(() => panel.eval("/#Funny #clutch$/.test(document.querySelector('#media .item-sub').textContent)"), 5000, 'the tags on the clip');
+    check('tags show on the clip, tidied', true);
+    check('tags are kept with the library', JSON.stringify(JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'library.json'), 'utf8')).tags[path.basename(inFolder.file)]) === '["Funny","clutch"]');
+    await panel.eval("document.getElementById('view-all').click()");
+    check('the tag filter lists the tags', (await panel.eval("[...document.getElementById('library-tag').options].map((o) => o.value).join()")) === ',clutch,Funny');
+    await choose('library-tag', 'clutch');
+    check('the tag filter shows only tagged clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 1);
+    await choose('library-tag', '');
+    check('search finds a clip by its tag', (await search('#funny')) === 1);
+    await search('');
+
+    // Hovering over a video scrubs through it.
+    const strip = await panel.eval(`window.afterclip.invoke('preview-strip', ${JSON.stringify(inFolder.file)})`);
+    check('a preview strip is made for a clip', /^data:image\/jpeg;base64,/.test(strip?.url) && strip.frames === 10);
+    await panel.eval("(() => { const t = [...document.querySelectorAll('#media .thumb')].find((b) => b.dataset.file.includes('pretend')); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('mouseenter')); t.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + r.width * 0.75, clientY: r.top + 5 })); })()");
+    await waitFor(() => panel.eval("!!document.querySelector('#media .thumb .scrub')?.style.backgroundImage.includes('data:image/jpeg')"), 5000, 'the scrub preview');
+    const scrubbed = await panel.eval("parseFloat(document.querySelector('#media .thumb .scrub').style.backgroundPositionX)");
+    check('hovering three quarters along shows the eighth of ten frames', Math.abs(scrubbed - (7 / 9) * 100) < 0.1, String(scrubbed));
+    await panel.eval("document.querySelector('#media .thumb .scrub').parentElement.dispatchEvent(new MouseEvent('mouseleave'))");
+    check('the preview goes when the mouse leaves', await panel.eval("!document.querySelector('#media .thumb .scrub')"));
+    check('a screenshot has no preview strip', (await panel.eval(`window.afterclip.invoke('preview-strip', ${JSON.stringify(shotFile)})`)) === null);
+
+    const besideCopy = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(inFolder.file)})`);
+    check('a copy is made beside the original, in its game folder', path.dirname(besideCopy) === gameFolder, besideCopy);
+    for (const file of [inFolder.file, besideCopy]) await panel.eval(`window.afterclip.invoke('trash', ${JSON.stringify(file)})`);
+    check('an empty game folder is removed', !fs.existsSync(gameFolder));
+    await panel.eval("document.getElementById('library-back').click()");
+    await openPane('clips');
+    await panel.eval("document.getElementById('gameFolders').click()");
+    await waitFor(() => savedSettings().gameFolders === false, 5000, 'game folders off');
+
+    // Low disk space, pretended: a warning, then a recording stopped safely before the drive fills.
+    await api.call('/test/free-space/5000000000', 'POST');
+    await waitFor(() => sawBanner('/only 5 GB free/'), 8000, 'the low space warning');
+    check('low disk space warns you', true);
+    await api.toggleRecord();
+    await waitFor(async () => (await api.status()).recording, 10000, 'a recording');
+    await api.call('/test/free-space/1000000000', 'POST');
+    await waitFor(async () => !(await api.status()).recording, 20000, 'the recording to stop');
+    check('a recording stops when the drive is nearly full', true);
+    await waitFor(() => sawBanner('/Recording stopped and saved/'), 5000, 'the reason');
+    check('it says why the recording stopped', (await panel.eval("window.seenBanners.filter((t) => /only 5 GB free/.test(t)).length")) === 1);
+    await api.call('/test/free-space/none', 'POST');
+
+    // Only buffering during games: it waits with no game, starts with one, and Record still works.
+    await openPane('video');
+    await panel.eval("document.getElementById('bufferOnlyInGames').click()");
+    await waitFor(async () => (await api.status()).waitingForGame, 20000, 'the buffer to wait for a game');
+    check('with no game open, the buffer stops and waits', !(await api.status()).buffering);
+    await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click()");
+    check('the panel says it is waiting for a game', /Waiting for a game/.test(await panel.eval("document.getElementById('capture-title').textContent")) && !(await panel.eval("document.getElementById('record').disabled")));
+    const refusedClip = await api.call('/clip/5', 'POST');
+    check('saving while waiting says why', refusedClip.status === 500 && /only buffers while a game is open/.test((await refusedClip.json()).error));
+    await api.call('/test/game/pretend.exe', 'POST');
+    await waitFor(async () => { const s = await api.status(); return s.buffering && !s.waitingForGame; }, 30000, 'the buffer to start with the game');
+    check('the buffer starts when a game opens', true);
+    await api.call('/test/game/', 'POST');
+    await waitFor(async () => (await api.status()).waitingForGame, 20000, 'the buffer to stop after the game');
+    check('it stops again after the game closes', true);
+    await api.toggleRecord();
+    await waitFor(async () => (await api.status()).recording, 30000, 'a recording with no game');
+    check('Record still works with no game open', true);
+    await api.toggleRecord();
+    await waitFor(async () => !(await api.status()).recording, 10000, 'that recording to stop');
+    await openPane('video');
+    await panel.eval("document.getElementById('bufferOnlyInGames').click()");
+    await waitFor(() => savedSettings().bufferOnlyInGames === false, 5000, 'the setting to turn off');
+    await capturing();
+    check('turning it off starts the buffer again', !(await api.status()).waitingForGame);
+
+    // Export and import: the webhook never leaves, and stays when settings come in.
+    const exported = path.join(session.home, 'exported.json');
+    check('settings export to a file', (await panel.eval(`window.afterclip.invoke('export-settings', ${JSON.stringify(exported)})`)) === exported);
+    const exportedSettings = JSON.parse(fs.readFileSync(exported, 'utf8'));
+    check('the export leaves out the Discord webhook', !('discordWebhook' in exportedSettings) && exportedSettings.presets.length > 0 && !fs.readFileSync(exported, 'utf8').includes('secret-token'));
+    fs.writeFileSync(exported, JSON.stringify({ ...exportedSettings, clipAfterSeconds: 5, deleteAfterDays: 365 }));
+    check('importing loads the file', (await panel.eval(`window.afterclip.invoke('import-settings', ${JSON.stringify(exported)})`)) === true);
+    check('imported settings apply, and the webhook stays', savedSettings().clipAfterSeconds === 5 && savedSettings().deleteAfterDays === 365 && savedSettings().discordWebhook === webhook, JSON.stringify({ clip: savedSettings().clipAfterSeconds, days: savedSettings().deleteAfterDays, hook: savedSettings().discordWebhook === webhook, onlyGames: savedSettings().bufferOnlyInGames, fileOnlyGames: exportedSettings.bufferOnlyInGames }));
+    const notSettings = path.join(session.home, 'not-settings.json');
+    fs.writeFileSync(notSettings, '{"hello": 1}');
+    check('a file that is not settings is refused', /isn't an Afterclip settings file/.test(await panel.eval(`window.afterclip.invoke('import-settings', ${JSON.stringify(notSettings)}).then(() => 'loaded', (e) => e.message)`)));
+    fs.writeFileSync(exported, JSON.stringify(exportedSettings));
+    await panel.eval(`window.afterclip.invoke('import-settings', ${JSON.stringify(exported)})`);
+    check('importing again puts them back', savedSettings().clipAfterSeconds === 0 && savedSettings().deleteAfterDays === 0);
+    check('General has the export and import buttons', await panel.eval("!!document.querySelector('[data-pane=general] #export-settings') && !!document.querySelector('[data-pane=general] #import-settings')"));
+
+    // The webcam, as a colour card in its corner: in clips, and on top in a vertical copy.
+    const webcamOn = { cameraEnabled: true, cameraDevice: 'test', cameraCorner: 'bottom-right', cameraSize: 25 };
+    check('webcams can be listed', Array.isArray(await panel.eval("window.afterclip.invoke('camera-choices')")));
+    await panel.eval(`window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, ...${JSON.stringify(webcamOn)} }))`);
+    await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the webcam restart').catch(() => undefined);
+    await capturing();
+    await sleep(5000);
+    const withCam = await api.clip(2);
+    const camWidth = Math.floor(Math.floor(canvas.width * 25 / 100) / 2) * 2;
+    const camHeight = Math.floor(Math.floor(camWidth * 9 / 16) / 2) * 2;
+    const margin = Math.floor(Math.floor(canvas.height / 40) / 2) * 2;
+    const at = (file, x, y) => spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', file, '-vf', `crop=8:8:${Math.round(x)}:${Math.round(y)},scale=1:1:flags=area`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer', windowsHide: true }).stdout;
+    // The test camera is 0xffd03cf0 in ABGR, which is f03cd0. The rest is the green card.
+    const isCam = (p) => Math.abs(p[0] - 0xf0) < 12 && Math.abs(p[1] - 0x3c) < 12 && Math.abs(p[2] - 0xd0) < 12;
+    const isCard = (p) => Math.abs(p[0] - 0x3f) < 12 && Math.abs(p[1] - 0x8c) < 12 && Math.abs(p[2] - 0x2a) < 12;
+    const camPixel = at(withCam.file, canvas.width - margin - camWidth / 2, canvas.height - margin - camHeight / 2);
+    check('the webcam is in its corner', isCam(camPixel), [...camPixel].join());
+    check('the rest of the picture is the game', isCard(at(withCam.file, canvas.width / 2, canvas.height / 2)));
+    check('where the webcam sits is remembered for the clip', !!JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'library.json'), 'utf8')).cameras?.[path.basename(withCam.file)]);
+    const faceCam = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(withCam.file)})`);
+    const faceSize = /(\d{3,4})x(\d{3,4})/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', faceCam], { encoding: 'utf8', windowsHide: true }).stderr);
+    // The copy is encoded again at a lower bitrate, so its colours are only roughly the same.
+    const magenta = (p) => p[0] > 180 && p[1] < 100 && p[2] > 160;
+    const green = (p) => p[1] > 100 && p[1] > p[0] + 40 && p[1] > p[2] + 40;
+    const top = at(faceCam, faceSize[1] / 2, 40);
+    const below = at(faceCam, faceSize[1] / 2, faceSize[2] * 0.75);
+    check('a vertical copy puts the webcam on top', magenta(top), [...top].join());
+    check('and the game below it', green(below), [...below].join());
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, cameraEnabled: false }))");
+    await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the webcam to go').catch(() => undefined);
+    await capturing();
+
+    // The Stream Deck keys for the last clip, on a clip big enough to compress.
+    const now = new Date();
+    fs.utimesSync(bigClip, now, now);
+    const compressedLast = await (await api.call('/last-clip/compress', 'POST')).json();
+    check('the Compress Last Clip route compresses the newest clip', /Big clip_small\.mp4$/.test(compressedLast.file ?? ''), JSON.stringify(compressedLast));
+    const sentLast = await api.call('/last-clip/discord', 'POST');
+    const sentError = (await sentLast.json()).error ?? '';
+    check('the Send Last Clip route tries Discord, without the secret', sentLast.status === 500 && /Couldn't reach Discord/.test(sentError) && !sentError.includes('secret-token'), sentError);
+
+    // The form saved over above, so the page starts again from what's saved.
+    await panel.send('Page.reload');
+    await waitFor(() => panel.eval("document.readyState === 'complete' && !!settings && settings.cameraEnabled === false"), 15000, 'the panel to reload');
+    await panel.eval("document.getElementById('go-back').click()");
+
+
     // The updater, against a pretend release on this PC. The test copy stops short of running the installer.
     // Normal builds only accept updates over HTTPS, so this needs the build described in the README.
     if (process.env.AFTERCLIP_TEST_UPDATER) {

@@ -25,6 +25,10 @@ const SYMBOLS = {
   copy: (fill, background) => `<rect x="50" y="38" width="30" height="36" rx="5" fill="none" stroke="${fill}" stroke-width="4.5"/><rect x="62" y="50" width="30" height="36" rx="5" fill="${background}" stroke="${fill}" stroke-width="4.5"/>`,
   camera: (fill, background) => `<path d="M50 50h9l5-8h16l5 8h9a3 3 0 0 1 3 3v27a3 3 0 0 1-3 3H50a3 3 0 0 1-3-3V53a3 3 0 0 1 3-3z" fill="${fill}"/><circle cx="72" cy="65" r="10" fill="${background}"/>`,
   alert: (fill) => `<rect x="67.5" y="38" width="9" height="30" rx="4.5" fill="${fill}"/><circle cx="72" cy="79" r="5.5" fill="${fill}"/>`,
+  // Four corners pointing in: the same picture, smaller.
+  compress: (fill) => `<path d="M50 42l13 13M63 45v10H53M94 42L81 55M81 45v10h10M50 86l13-13M63 83V73H53M94 86L81 73M81 83V73h10" fill="none" stroke="${fill}" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // A paper plane, for sending somewhere.
+  send: (fill, background) => `<path d="M46 63l50-22-15 50-12-17z" fill="${fill}" stroke="${fill}" stroke-width="3" stroke-linejoin="round"/><path d="M69 74l27-33" stroke="${background}" stroke-width="3.5"/>`,
 };
 
 function ringLayer(colour, head, width, opacity) {

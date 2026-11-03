@@ -349,15 +349,29 @@ static int cmdJoin(const std::string &output, const std::vector<Segment> &segmen
 	return 0;
 }
 
-static int writeJpeg(const AVFrame *frame, const std::string &output)
+/** A full-range 4:2:0 picture of this size, ready to be drawn into and saved as a JPEG. */
+static AVFrame *jpegFrame(int width, int height)
 {
-	const int height = FFMAX(2, (int)((int64_t)frame->height * THUMB_WIDTH / frame->width) & ~1);
+	AVFrame *picture = av_frame_alloc();
+	picture->format = AV_PIX_FMT_YUVJ420P;
+	picture->width = width;
+	picture->height = height;
+	picture->color_range = AVCOL_RANGE_JPEG;
+	picture->pts = 0;
+	if (av_frame_get_buffer(picture, 0) < 0)
+		av_frame_free(&picture);
+	return picture;
+}
+
+/** Saves a picture from jpegFrame as a JPEG. */
+static int saveJpeg(AVFrame *picture, const std::string &output)
+{
 	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
 	if (!codec)
 		return fail("No JPEG encoder");
 	AVCodecContext *enc = avcodec_alloc_context3(codec);
-	enc->width = THUMB_WIDTH;
-	enc->height = height;
+	enc->width = picture->width;
+	enc->height = picture->height;
 	enc->pix_fmt = AV_PIX_FMT_YUVJ420P;
 	enc->color_range = AVCOL_RANGE_JPEG;
 	enc->time_base = {1, 25};
@@ -366,25 +380,10 @@ static int writeJpeg(const AVFrame *frame, const std::string &output)
 	int err = avcodec_open2(enc, codec, nullptr);
 	if (err < 0)
 		return fail("Could not open JPEG encoder", err);
-
-	AVFrame *small = av_frame_alloc();
-	small->format = enc->pix_fmt;
-	small->width = enc->width;
-	small->height = enc->height;
-	small->color_range = AVCOL_RANGE_JPEG;
-	small->quality = enc->global_quality;
-	small->pts = 0;
-	if ((err = av_frame_get_buffer(small, 0)) < 0)
-		return fail("Could not allocate frame", err);
-	SwsContext *sws = sws_getContext(frame->width, frame->height, (AVPixelFormat)frame->format, enc->width, enc->height,
-					 enc->pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr);
-	if (!sws)
-		return fail("Could not create scaler");
-	sws_scale(sws, frame->data, frame->linesize, 0, frame->height, small->data, small->linesize);
-	sws_freeContext(sws);
+	picture->quality = enc->global_quality;
 
 	AVPacket *pkt = av_packet_alloc();
-	if ((err = avcodec_send_frame(enc, small)) < 0 || (err = avcodec_send_frame(enc, nullptr)) < 0 ||
+	if ((err = avcodec_send_frame(enc, picture)) < 0 || (err = avcodec_send_frame(enc, nullptr)) < 0 ||
 	    (err = avcodec_receive_packet(enc, pkt)) < 0)
 		return fail("Could not encode JPEG", err);
 	// Written to a temp name and renamed, so a crash can't leave a half-written file in the thumbnail cache.
@@ -397,9 +396,102 @@ static int writeJpeg(const AVFrame *frame, const std::string &output)
 	if (!MoveFileExW(partial.c_str(), toWide(output).c_str(), MOVEFILE_REPLACE_EXISTING))
 		return fail("Could not finish thumbnail");
 	av_packet_free(&pkt);
-	av_frame_free(&small);
 	avcodec_free_context(&enc);
 	return 0;
+}
+
+static int writeJpeg(const AVFrame *frame, const std::string &output)
+{
+	const int height = FFMAX(2, (int)((int64_t)frame->height * THUMB_WIDTH / frame->width) & ~1);
+	AVFrame *small = jpegFrame(THUMB_WIDTH, height);
+	if (!small)
+		return fail("Could not allocate frame");
+	SwsContext *sws = sws_getContext(frame->width, frame->height, (AVPixelFormat)frame->format, small->width, small->height,
+					 AV_PIX_FMT_YUVJ420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+	if (!sws)
+		return fail("Could not create scaler");
+	sws_scale(sws, frame->data, frame->linesize, 0, frame->height, small->data, small->linesize);
+	sws_freeContext(sws);
+	const int result = saveJpeg(small, output);
+	av_frame_free(&small);
+	return result;
+}
+
+/**
+ * A row of small frames spread evenly across a video, for scrubbing through it on hover. Each frame is the
+ * keyframe nearest its moment, so only one picture is decoded for each, however long the video is.
+ */
+static int cmdStrip(const std::string &input, const std::string &output, int count)
+{
+	const int FRAME_WIDTH = 160;
+	count = FFMAX(1, FFMIN(count, 40));
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	const AVCodec *codec = nullptr;
+	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+	if (video < 0 || !codec || in->duration <= 0)
+		return fail("No decodable video stream");
+	AVStream *stream = in->streams[video];
+	AVCodecContext *dec = avcodec_alloc_context3(codec);
+	avcodec_parameters_to_context(dec, stream->codecpar);
+	dec->thread_count = 2;
+	int err = avcodec_open2(dec, codec, nullptr);
+	if (err < 0)
+		return fail("Could not open decoder", err);
+
+	const int height = FFMAX(2, (int)((int64_t)stream->codecpar->height * FRAME_WIDTH / stream->codecpar->width) & ~1);
+	AVFrame *strip = jpegFrame(FRAME_WIDTH * count, height);
+	if (!strip)
+		return fail("Could not allocate frame");
+	// Black, in case a moment can't be decoded.
+	for (int plane = 0; plane < 3; plane++)
+		memset(strip->data[plane], plane ? 128 : 0, (size_t)strip->linesize[plane] * (plane ? height / 2 : height));
+
+	const int64_t start = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+	AVPacket *pkt = av_packet_alloc();
+	AVFrame *frame = av_frame_alloc();
+	SwsContext *sws = nullptr;
+	for (int i = 0; i < count; i++) {
+		const int64_t moment = (int64_t)((double)in->duration * (i + 0.5) / count);
+		av_seek_frame(in, video, start + av_rescale_q(moment, {1, AV_TIME_BASE}, stream->time_base), AVSEEK_FLAG_BACKWARD);
+		avcodec_flush_buffers(dec);
+		bool got = false, draining = false;
+		while (!got) {
+			if (!draining) {
+				if (av_read_frame(in, pkt) < 0) {
+					draining = true;
+					avcodec_send_packet(dec, nullptr);
+				} else {
+					if (pkt->stream_index == video)
+						avcodec_send_packet(dec, pkt);
+					av_packet_unref(pkt);
+				}
+			}
+			err = avcodec_receive_frame(dec, frame);
+			if (err == 0)
+				got = true;
+			else if (err != AVERROR(EAGAIN))
+				break;
+		}
+		if (!got)
+			continue;
+		sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, FRAME_WIDTH, height,
+					   AV_PIX_FMT_YUVJ420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+		if (!sws)
+			return fail("Could not create scaler");
+		uint8_t *to[4] = {strip->data[0] + i * FRAME_WIDTH, strip->data[1] + i * FRAME_WIDTH / 2, strip->data[2] + i * FRAME_WIDTH / 2, nullptr};
+		sws_scale(sws, frame->data, frame->linesize, 0, frame->height, to, strip->linesize);
+		av_frame_unref(frame);
+	}
+	const int result = saveJpeg(strip, output);
+	sws_freeContext(sws);
+	av_frame_free(&frame);
+	av_frame_free(&strip);
+	av_packet_free(&pkt);
+	avcodec_free_context(&dec);
+	avformat_close_input(&in);
+	return result;
 }
 
 static int cmdThumb(const std::string &input, const std::string &output)
@@ -750,7 +842,63 @@ static int verticalWidth(int height)
 	return FFMAX(2, height * 9 / 16 / 2 * 2);
 }
 
-static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps, bool vertical = false)
+/** Cuts a part out of a frame without copying it. Every edge is kept even, which 4:2:0 needs. */
+static AVFrame *cropped(const AVFrame *frame, int x, int y, int width, int height)
+{
+	AVFrame *part = av_frame_clone(frame);
+	if (!part)
+		return nullptr;
+	x = FFMAX(0, FFMIN(x & ~1, frame->width - 2));
+	y = FFMAX(0, FFMIN(y & ~1, frame->height - 2));
+	width = FFMAX(2, FFMIN(width & ~1, frame->width - x));
+	height = FFMAX(2, FFMIN(height & ~1, frame->height - y));
+	part->crop_left = x;
+	part->crop_top = y;
+	part->crop_right = frame->width - x - width;
+	part->crop_bottom = frame->height - y - height;
+	if (av_frame_apply_cropping(part, AV_FRAME_CROP_UNALIGNED) < 0)
+		av_frame_free(&part);
+	return part;
+}
+
+/**
+ * Draws a vertical face-cam picture: the webcam across the top, as wide as the picture, and the middle of the
+ * game filling the rest. camera is the webcam's place in the frame, as fractions.
+ */
+static int drawFaceCam(const AVFrame *frame, const double *camera, AVFrame *out, SwsContext *&top, SwsContext *&bottom)
+{
+	const int camX = (int)(camera[0] * frame->width), camY = (int)(camera[1] * frame->height);
+	const int camW = FFMAX(2, (int)(camera[2] * frame->width)), camH = FFMAX(2, (int)(camera[3] * frame->height));
+	const int topHeight = FFMIN((int)((int64_t)out->width * camH / camW), out->height * 45 / 100) & ~1;
+	const int bottomHeight = out->height - topHeight;
+	// The middle of the game, in the shape of the space left for it.
+	const int keptWidth = FFMIN(frame->width, (int)((int64_t)frame->height * out->width / bottomHeight));
+	const int keptHeight = FFMIN(frame->height, (int)((int64_t)keptWidth * bottomHeight / out->width));
+	AVFrame *cam = cropped(frame, camX, camY, camW, camH);
+	AVFrame *game = cropped(frame, (frame->width - keptWidth) / 2, (frame->height - keptHeight) / 2, keptWidth, keptHeight);
+	int result = cam && game ? 0 : AVERROR(ENOMEM);
+	if (result == 0) {
+		top = sws_getCachedContext(top, cam->width, cam->height, (AVPixelFormat)cam->format, out->width, topHeight, (AVPixelFormat)out->format,
+					   SWS_BICUBIC, nullptr, nullptr, nullptr);
+		bottom = sws_getCachedContext(bottom, game->width, game->height, (AVPixelFormat)game->format, out->width, bottomHeight,
+					      (AVPixelFormat)out->format, SWS_BICUBIC, nullptr, nullptr, nullptr);
+		if (!top || !bottom) {
+			result = AVERROR(EINVAL);
+		} else {
+			uint8_t *upper[4] = {out->data[0], out->data[1], out->data[2], nullptr};
+			uint8_t *lower[4] = {out->data[0] + (size_t)topHeight * out->linesize[0], out->data[1] + (size_t)topHeight / 2 * out->linesize[1],
+					     out->data[2] + (size_t)topHeight / 2 * out->linesize[2], nullptr};
+			sws_scale(top, cam->data, cam->linesize, 0, cam->height, upper, out->linesize);
+			sws_scale(bottom, game->data, game->linesize, 0, game->height, lower, out->linesize);
+		}
+	}
+	av_frame_free(&cam);
+	av_frame_free(&game);
+	return result;
+}
+
+static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps, bool vertical = false,
+			const double *camera = nullptr)
 {
 	AVFormatContext *in = openInput(input);
 	if (!in)
@@ -796,7 +944,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	AVFrame *frame = av_frame_alloc();
 	AVPacket *read = av_packet_alloc();
 	AVPacket *written = av_packet_alloc();
-	SwsContext *sws = nullptr;
+	SwsContext *sws = nullptr, *camSws = nullptr;
 	int64_t lastIndex = -1;
 
 	const auto drainDecoder = [&]() -> int {
@@ -805,7 +953,15 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 			const int64_t micro = av_rescale_q(frame->pts, source->time_base, {1, AV_TIME_BASE}) - startMicro;
 			const int64_t index = (micro * fps + AV_TIME_BASE / 2) / AV_TIME_BASE;
 			// Lowering the frame rate means leaving frames out.
-			if (micro >= 0 && index > lastIndex) {
+			if (micro >= 0 && index > lastIndex && vertical && camera) {
+				if ((result = av_frame_make_writable(scaled)) < 0 || (result = drawFaceCam(frame, camera, scaled, camSws, sws)) < 0)
+					return result;
+				scaled->pts = index;
+				lastIndex = index;
+				if ((result = avcodec_send_frame(enc, scaled)) < 0 ||
+				    (result = drainEncoder(enc, out, videoOut, written)) < 0)
+					return result;
+			} else if (micro >= 0 && index > lastIndex) {
 				if (vertical) {
 					const int kept = FFMIN(frame->width, verticalWidth(frame->height));
 					frame->crop_left = (frame->width - kept) / 2 / 2 * 2;
@@ -850,6 +1006,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 		return fail("Could not finish file", err);
 
 	sws_freeContext(sws);
+	sws_freeContext(camSws);
 	av_frame_free(&scaled);
 	av_frame_free(&frame);
 	av_packet_free(&read);
@@ -991,8 +1148,11 @@ static int cmdShrink(const std::string &input, const std::string &output, int64_
 	return 4;
 }
 
-/** Makes a 9:16 copy of a wide clip for phones, keeping as many of the original pixels as it can. */
-static int cmdVertical(const std::string &input, const std::string &output)
+/**
+ * Makes a 9:16 copy of a wide clip for phones, keeping as many of the original pixels as it can. With a webcam's
+ * place given, the webcam goes across the top and the game below it.
+ */
+static int cmdVertical(const std::string &input, const std::string &output, const double *camera)
 {
 	const int MAX_HEIGHT = 1920;
 	const double BITS_PER_PIXEL = 0.12;
@@ -1016,7 +1176,7 @@ static int cmdVertical(const std::string &input, const std::string &output)
 	}
 	const int height = FFMIN(sourceHeight, MAX_HEIGHT) & ~1;
 	const int kbps = (int)((double)verticalWidth(height) * height * fps * BITS_PER_PIXEL / 1000.0);
-	return encodeShrunk(input, output, FFMAX(MIN_KBPS, FFMIN(kbps, MAX_KBPS)), AUDIO_KBPS, height, fps, true);
+	return encodeShrunk(input, output, FFMAX(MIN_KBPS, FFMIN(kbps, MAX_KBPS)), AUDIO_KBPS, height, fps, true, camera);
 }
 
 /** Turns the frame the engine saved, as raw NV12 in video levels, into a PNG. */
@@ -1097,8 +1257,16 @@ int main()
 			return cmdShrink(in, toUtf8(argv[3]), _wtoi64(argv[4]));
 		if (cmd == L"compress" && argc >= 5)
 			return cmdCompress(in, toUtf8(argv[3]), _wtoi64(argv[4]));
+		if (cmd == L"vertical" && argc >= 8) {
+			const double camera[4] = {_wtof(argv[4]), _wtof(argv[5]), _wtof(argv[6]), _wtof(argv[7])};
+			const bool usable = camera[2] > 0.0 && camera[3] > 0.0 && camera[0] >= 0.0 && camera[1] >= 0.0 && camera[0] + camera[2] <= 1.001 && camera[1] + camera[3] <= 1.001;
+			return cmdVertical(in, toUtf8(argv[3]), usable ? camera : nullptr);
+		}
 		if (cmd == L"vertical" && argc >= 4)
-			return cmdVertical(in, toUtf8(argv[3]));
+			return cmdVertical(in, toUtf8(argv[3]), nullptr);
+		if (cmd == L"strip" && argc >= 5)
+			return cmdStrip(in, toUtf8(argv[3]), _wtoi(argv[4]));
+
 		if (cmd == L"png" && argc >= 6)
 			return cmdPng(in, toUtf8(argv[3]), _wtoi(argv[4]), _wtoi(argv[5]));
 		if (cmd == L"retrack" && argc >= 5) {

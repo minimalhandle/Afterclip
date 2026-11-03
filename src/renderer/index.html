@@ -97,6 +97,7 @@
     <input id="library-search" type="search" placeholder="Search clips" aria-label="Search clips">
     <div class="row">
       <select id="library-game" aria-label="Filter by game"></select>
+      <select id="library-tag" aria-label="Filter by tag"></select>
       <select id="library-sort" aria-label="Sort by">
         <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="largest">Largest</option><option value="name">Name</option>
       </select>
@@ -158,6 +159,17 @@
       <div class="setting">
         <div class="setting-text"><div id="version-note" class="setting-name"></div><div id="update-note" class="setting-desc"></div></div>
         <button id="check-update" class="small">Check now</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Backup</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Export settings</div><div class="setting-desc">Saves your settings, hotkeys and game profiles to a file, for a reinstall or another PC. Your Discord webhook is left out.</div></div>
+        <button id="export-settings" class="small">Export</button>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Import settings</div><div class="setting-desc">Loads a file you exported. Your Discord webhook stays as it is here.</div></div>
+        <button id="import-settings" class="small">Import</button>
       </div>
     </div>
     <div class="card">
@@ -225,6 +237,16 @@
           <option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option>
         </select>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Keep recording after you save</div><div class="setting-desc">Waits this long before saving, so what happens just after you press is in the clip too.</div></div>
+        <select id="clipAfterSeconds" aria-label="Keep recording after you save">
+          <option value="0">Off</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="15">15 seconds</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Only buffer during games</div><div class="setting-desc">Frees memory and GPU on the desktop. The buffer starts when a game opens, and stops 10 minutes after it closes. Record still works any time.</div></div>
+        <input id="bufferOnlyInGames" class="switch" type="checkbox" aria-label="Only buffer during games">
+      </div>
     </div>
     <p id="estimate" class="note"></p>
     <div class="card">
@@ -238,6 +260,33 @@
       </div>
     </div>
     <p class="note">Press the marker key while recording to add a chapter you can jump to in most video players. Changes apply to your next recording.</p>
+    <div class="card">
+      <div class="card-title">Webcam</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Show your webcam</div><div id="camera-note" class="setting-desc">Puts your webcam in a corner of every clip and recording. Its light stays on while Afterclip is buffering.</div></div>
+        <input id="cameraEnabled" class="switch" type="checkbox" aria-label="Show your webcam">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Camera</div></div>
+        <select id="cameraDevice" aria-label="Camera"></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Corner</div></div>
+        <select id="cameraCorner" aria-label="Webcam corner">
+          <option value="top-left">Top left</option><option value="top-right">Top right</option><option value="bottom-left">Bottom left</option><option value="bottom-right">Bottom right</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Size</div></div>
+        <select id="cameraSize" aria-label="Webcam size">
+          <option value="16">Small</option><option value="22">Medium</option><option value="30">Large</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Face cam in vertical copies</div><div class="setting-desc">A vertical copy of a clip with your webcam puts it above the game, ready for TikTok or Shorts.</div></div>
+        <input id="verticalFaceCam" class="switch" type="checkbox" aria-label="Face cam in vertical copies">
+      </div>
+    </div>
     <p id="perf-health" class="perf-health">Checking.</p>
     <div class="card">
       <div class="card-title">Performance</div>
@@ -255,6 +304,17 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Clean Mic</div><div class="setting-desc">Removes background noise and keyboard sound on sources ticked Mute key, in your clips only.</div></div>
         <input id="cleanMicSwitch" class="switch" type="checkbox" aria-label="Clean Mic">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Push to talk</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Push to talk</div><div class="setting-desc">Your mic is only in clips while you hold the key below. It affects sources ticked Mute key, and only in Afterclip.</div></div>
+        <input id="pushToTalk" class="switch" type="checkbox" aria-label="Push to talk">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Talk key</div><div class="setting-desc">Click, then press a key or a mouse side button. Your game still gets the press.</div></div>
+        <input id="pushToTalkKey" readonly aria-label="Push to talk key" class="key-field">
       </div>
     </div>
     <div class="card">
@@ -380,8 +440,19 @@
           <option value="60">After 60 days</option><option value="90">After 90 days</option><option value="180">After 180 days</option><option value="365">After a year</option>
         </select>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">A folder for each game</div><div class="setting-desc">Saves new clips, recordings and screenshots into a folder named after the game. Files you already have stay where they are.</div></div>
+        <input id="gameFolders" class="switch" type="checkbox" aria-label="A folder for each game">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Low disk space warning</div><div class="setting-desc">Warns you when your save location has less free than this. A recording always stops safely below 2 GB.</div></div>
+        <select id="lowSpaceWarnGb" aria-label="Low disk space warning">
+          <option value="0">Off</option><option value="5">5 GB</option><option value="10">10 GB</option><option value="20">20 GB</option><option value="50">50 GB</option>
+        </select>
+      </div>
       <p id="storage-used" class="note"></p>
     </div>
+
     <div class="card">
       <div class="card-title">Discord</div>
       <div class="setting wide">

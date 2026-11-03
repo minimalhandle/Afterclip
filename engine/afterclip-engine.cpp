@@ -28,7 +28,7 @@
 namespace {
 
 const char *const MODULES[] = {"image-source", "obs-ffmpeg", "obs-filters", "obs-nvenc", "obs-outputs",
-			       "obs-qsv11",    "obs-x264",   "win-capture", "win-wasapi"};
+			       "obs-qsv11",    "obs-x264",   "win-capture", "win-dshow", "win-wasapi"};
 // Hardware encoders first. Each one only registers on hardware that can run it. Columns: NVIDIA, AMD, Intel, CPU.
 const char *const H264_ENCODERS[] = {"obs_nvenc_h264_tex", "h264_texture_amf", "obs_qsv11_v2", "obs_x264"};
 const char *const HEVC_ENCODERS[] = {"obs_nvenc_hevc_tex", "h265_texture_amf", "obs_qsv11_hevc", nullptr};
@@ -44,7 +44,7 @@ std::mutex g_writeLock;
 FILE *g_log = nullptr;
 
 obs_scene_t *g_scene = nullptr;
-obs_source_t *g_display = nullptr, *g_game = nullptr, *g_card = nullptr;
+obs_source_t *g_display = nullptr, *g_game = nullptr, *g_card = nullptr, *g_camera = nullptr;
 std::vector<obs_source_t *> g_audioSources;
 std::vector<obs_source_t *> g_micSources; // The ones the mute key controls. g_audioSources owns them.
 std::vector<obs_source_t *> g_sourceByIndex; // By position in the settings list, with null for any that failed.
@@ -64,7 +64,7 @@ std::string g_stagingDir;
 obs_source_t *g_gameAudio = nullptr; // Also in g_audioSources, which owns it.
 uint32_t g_gameAudioTrackBit = 0;
 std::string g_gameAudioWindow;
-obs_sceneitem_t *g_displayItem = nullptr, *g_gameItem = nullptr, *g_cardItem = nullptr;
+obs_sceneitem_t *g_displayItem = nullptr, *g_gameItem = nullptr, *g_cardItem = nullptr, *g_cameraItem = nullptr;
 obs_encoder_t *g_video = nullptr;
 std::vector<obs_encoder_t *> g_audio; // Index 0 is the main mix. The rest are per-source tracks.
 obs_output_t *g_replay = nullptr, *g_record = nullptr;
@@ -442,6 +442,48 @@ void listChoices(obs_data_t *reply, const char *key, const char *sourceId, const
 	obs_data_array_release(array);
 }
 
+/**
+ * Puts the webcam on top of everything, filling its box exactly. Anything that doesn't fit the box is
+ * cropped off, so the box is exactly what a vertical copy can cut out later. The tests use a colour card.
+ */
+void addCamera(obs_data_t *camera, bool testPattern)
+{
+	const std::string device = obs_data_get_string(camera, "device");
+	if (testPattern && device == "test") {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_int(s, "color", 0xffd03cf0);
+		obs_data_set_int(s, "width", 640);
+		obs_data_set_int(s, "height", 480);
+		g_camera = createSource("color_source_v3", "Test Camera", s);
+		obs_data_release(s);
+	} else {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_string(s, "video_device_id", device.c_str());
+		obs_data_set_bool(s, "active", true);
+		obs_data_set_bool(s, "deactivate_when_not_showing", false);
+		obs_data_set_int(s, "res_type", 0); // The camera's own preferred size.
+		g_camera = createSource("dshow_input", "Webcam", s);
+		obs_data_release(s);
+	}
+	if (!g_camera) {
+		blog(LOG_WARNING, "Could not create the webcam");
+		return;
+	}
+	// Only the picture: a webcam's microphone would be recorded twice alongside the real mic.
+	obs_source_set_audio_mixers(g_camera, 0);
+	obs_source_set_muted(g_camera, true);
+	g_cameraItem = obs_scene_add(g_scene, g_camera);
+	vec2 pos, bounds;
+	vec2_set(&pos, (float)obs_data_get_int(camera, "x"), (float)obs_data_get_int(camera, "y"));
+	vec2_set(&bounds, (float)obs_data_get_int(camera, "width"), (float)obs_data_get_int(camera, "height"));
+	obs_sceneitem_set_alignment(g_cameraItem, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+	obs_sceneitem_set_pos(g_cameraItem, &pos);
+	obs_sceneitem_set_bounds_type(g_cameraItem, OBS_BOUNDS_SCALE_OUTER);
+	obs_sceneitem_set_bounds_alignment(g_cameraItem, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds(g_cameraItem, &bounds);
+	obs_sceneitem_set_bounds_crop(g_cameraItem, true);
+}
+
 bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 {
 	const uint32_t width = (uint32_t)obs_data_get_int(c, "width");
@@ -505,6 +547,11 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		g_gameItem = obs_scene_add(g_scene, g_game);
 		fitToCanvas(g_gameItem, width, height);
 		obs_sceneitem_set_visible(g_gameItem, false);
+	}
+	obs_data_t *camera = obs_data_get_obj(c, "camera");
+	if (camera) {
+		addCamera(camera, testPattern);
+		obs_data_release(camera);
 	}
 
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
@@ -617,6 +664,8 @@ void shutdownAll()
 		obs_sceneitem_remove(g_gameItem);
 	if (g_cardItem)
 		obs_sceneitem_remove(g_cardItem);
+	if (g_cameraItem)
+		obs_sceneitem_remove(g_cameraItem);
 	obs_output_release(g_record);
 	obs_output_release(g_replay);
 	obs_encoder_release(g_video);
@@ -627,6 +676,7 @@ void shutdownAll()
 	for (obs_source_t *source : g_audioSources)
 		obs_source_release(source);
 	obs_source_release(g_card);
+	obs_source_release(g_camera);
 	obs_scene_release(g_scene);
 	// Sources are destroyed on a background queue, and shutting down before it drains destroys them twice.
 	obs_wait_for_destroy_queue();
@@ -716,6 +766,9 @@ bool handle(const std::string &line)
 		listChoices(reply, "outputs", "wasapi_output_capture", "device_id");
 		listChoices(reply, "inputs", "wasapi_input_capture", "device_id");
 		listChoices(reply, "apps", "wasapi_process_output_capture", "window");
+	} else if (cmd == "cameraChoices") {
+		listChoices(reply, "cameras", "dshow_input", "video_device_id");
+
 	} else if (cmd == "save") {
 		calldata_t cd;
 		calldata_init(&cd);

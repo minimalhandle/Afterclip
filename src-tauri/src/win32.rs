@@ -748,12 +748,81 @@ pub fn play_tones(frequencies: &[f64]) {
     }
 }
 
+/// Free space for this user on the drive holding a folder, or None if it can't be read.
+pub fn free_bytes(folder: &Path) -> Option<u64> {
+    let wide: Vec<u16> = folder.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free = 0u64;
+    unsafe { windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut free), None, None) }.ok()?;
+    Some(free)
+}
+
+/// The Windows key code for a push-to-talk key, written as the panel writes it: a letter, a digit, F1 to F24,
+/// a named key, or Mouse4, Mouse5 and MouseMiddle for mouse buttons.
+pub fn virtual_key(name: &str) -> Option<i32> {
+    let upper = name.trim().to_uppercase();
+    if let Some(c) = upper.chars().next().filter(|c| upper.len() == 1 && c.is_ascii_alphanumeric()) {
+        return Some(c as i32);
+    }
+    if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<i32>().ok()).filter(|n| (1..=24).contains(n)) {
+        return Some(0x70 + n - 1);
+    }
+    if let Some(n) = upper.strip_prefix("NUMPAD").and_then(|n| n.parse::<i32>().ok()).filter(|n| (0..=9).contains(n)) {
+        return Some(0x60 + n);
+    }
+    Some(match upper.as_str() {
+        "MOUSE4" => 0x05,
+        "MOUSE5" => 0x06,
+        "MOUSEMIDDLE" => 0x04,
+        "SPACE" => 0x20,
+        "TAB" => 0x09,
+        "CAPSLOCK" => 0x14,
+        "LEFTSHIFT" => 0xA0,
+        "RIGHTSHIFT" => 0xA1,
+        "LEFTCTRL" => 0xA2,
+        "RIGHTCTRL" => 0xA3,
+        "LEFTALT" => 0xA4,
+        "RIGHTALT" => 0xA5,
+        "BACKQUOTE" => 0xC0,
+        "INSERT" => 0x2D,
+        "HOME" => 0x24,
+        "END" => 0x23,
+        "PAGEUP" => 0x21,
+        "PAGEDOWN" => 0x22,
+        "DELETE" => 0x2E,
+        _ => return None,
+    })
+}
+
+/// Whether a key or mouse button is held right now. It only reads the state, so the game still gets the press.
+pub fn key_held(code: i32) -> bool {
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(code) as u16 & 0x8000 != 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn push_to_talk_keys_are_read() {
+        assert_eq!(virtual_key("V"), Some(0x56));
+        assert_eq!(virtual_key("7"), Some(0x37));
+        assert_eq!(virtual_key("F13"), Some(0x7C));
+        assert_eq!(virtual_key("Mouse4"), Some(0x05));
+        assert_eq!(virtual_key("CapsLock"), Some(0x14));
+        assert_eq!(virtual_key("Numpad0"), Some(0x60));
+        assert_eq!(virtual_key(""), None);
+        assert_eq!(virtual_key("F25"), None);
+        assert_eq!(virtual_key("Nonsense"), None);
+    }
+
+    #[test]
+    fn free_space_is_read() {
+        assert!(free_bytes(&std::env::temp_dir()).is_some_and(|b| b > 0));
+    }
+
+    #[test]
     fn a_window_counts_as_a_game_if_fullscreen_or_added() {
+
         assert!(counts_as_game(true, "somegame", false));
         assert!(!counts_as_game(false, "somegame", false), "an ordinary window");
         assert!(counts_as_game(false, "somegame", true), "a game you added, in a window");
