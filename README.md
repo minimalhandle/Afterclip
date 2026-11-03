@@ -13,13 +13,13 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
   <img src="docs/screenshots/audio.png" width="32%" alt="Audio settings, with sources, volumes and Clean Mic">
 </p>
 
-<p align="center"><sub>Screenshots use sample data and placeholder thumbnails.</sub></p>
+<p align="center"><sub>The library, audio and games screenshots use sample data and placeholder thumbnails.</sub></p>
 
 ## Why Afterclip
 
 - **It's always ready.** A rolling buffer keeps your recent gameplay in RAM, so you can save a clip after the moment happens.
 - **It stays out of the way.** It lives in the tray, opens no window at startup, and frees the panel's memory 20 seconds after you close it.
-- **It's small.** The installer is about 17 MB, and you don't need OBS installed. Capture runs on OBS's libobs libraries in a small windowless engine.
+- **It's small.** The installer is about 18 MB, and you don't need OBS installed. Capture runs on OBS's libobs libraries in a small windowless engine.
 - **Saves are lossless.** Clips are cut from the buffer without re-encoding, so they keep their full quality.
 
 ## Features
@@ -39,9 +39,8 @@ Afterclip spots exclusive and borderless fullscreen games by itself and hooks th
 Record whole sessions while the clip buffer keeps running, with no extra encode. Long recordings can split into a new file on a timer, and markers become chapters in the file.
 
 <p align="center">
-  <img src="docs/screenshots/recording.png" width="32%" alt="The panel while recording, with the buffer line in red">
-  <img src="docs/screenshots/video.png" width="32%" alt="Video settings">
-  <img src="docs/screenshots/settings.png" width="32%" alt="The settings sections">
+  <img src="docs/screenshots/video.png" width="32%" alt="Video settings, with quality and encoder options">
+  <img src="docs/screenshots/settings.png" width="32%" alt="The six settings sections">
 </p>
 
 ### Audio that stays separate
@@ -89,7 +88,7 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip** and **Copy Last Clip**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip** and **Copy Last Clip**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
 
 <p align="center">
   <img src="branding/streamdeck-keys-preview.png" width="60%" alt="Afterclip's Stream Deck keys">
@@ -133,7 +132,7 @@ npm run plugin
 
 ## Using it
 
-Click the tray icon to open the panel. It closes when you click away, and frees its memory 20 seconds later. Clips and recordings save to `Videos\Afterclip`, and you can change the folder in Settings.
+Click the tray icon to open the panel. It closes when you click away, and frees its memory 20 seconds later. Clips, recordings and screenshots save to `Videos\Afterclip`, and you can change the folder in Settings.
 
 ### Default hotkeys
 
@@ -146,6 +145,7 @@ Click the tray icon to open the panel. It closes when you click away, and frees 
 | `Alt+Shift+R` | Start or stop recording |
 | `Alt+Shift+M` | Mute or unmute your mic in clips |
 | `Alt+Shift+K` | Add a marker to a recording |
+| `Alt+Shift+S` | Take a screenshot |
 
 You can change these and add more clip lengths in Settings.
 
@@ -157,9 +157,9 @@ You can change these and add more clip lengths in Settings.
 - **Trim accuracy:** keyframes are 1 second apart, so a clip or trim can start up to about 1 second early, but never late. Only clips with matching video settings can merge.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
-- **Not detected:** windowed games aren't detected, so they're only recorded if they're on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
+- **Not detected:** a windowed game you haven't added under **Settings > Games** isn't detected, so it's only recorded if it's on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
 - **Controllers:** turn this on in Settings, Controls. Hold Create, View or −, then press R3 to save a clip. Other actions can be added there. Afterclip only listens, and never sends anything to the controller, so your game also receives these presses. Tested on a DualSense over USB and Bluetooth. Xbox and Switch Pro support hasn't been tried on real controllers yet. Switch Pro needs Bluetooth, unless Steam is running.
-- **Adding a game:** open the game, then choose it in Settings, Games. Afterclip lists what's open, with likely games first, and only looks at the list, so it never touches the game. Settings and auto-record apply when the game runs fullscreen. Some games hidden by anti-cheat may not be listed, so use Browse to find their program file.
+- **Adding a game:** open the game, then choose it in Settings, Games. Afterclip lists what's open, with likely games first, and only looks at the list, so it never touches the game. Some games hidden by anti-cheat may not be listed, so use Browse to find their program file.
 - **Game profiles:** a profile that changes capture settings restarts capture when the game opens, which clears the buffer. Normal settings return 10 minutes after the game closes, so you can still clip its last moments. Neither happens during a recording.
 - **Long clips:** Compress keeps a long clip at 1080p60 and lets it go over 100 MB. Send to Discord can't, so it asks you to trim a clip too long to fit.
 - **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
@@ -172,15 +172,15 @@ Afterclip has three parts of its own, and never starts the OBS app:
 
 - **`afterclip.exe`:** the app, written in Rust with Tauri. Its windows use Windows' built-in WebView2.
 - **`afterclip-engine.exe`:** a windowless capture program built on libobs.
-- **`afterclip-media.exe`:** a small helper that trims clips and makes thumbnails, one job per process.
+- **`afterclip-media.exe`:** a small helper that trims and compresses clips, and makes thumbnails and screenshots, one job per process.
 
 Some details:
 
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
-- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
+- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
 - **Library data:** favourites, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
-- **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips and recordings are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails and logs, is in `%LOCALAPPDATA%\Afterclip`.
+- **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips, recordings and screenshots are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails and logs, is in `%LOCALAPPDATA%\Afterclip`.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.
 
 `npm run build:engine` downloads the official OBS release and its FFmpeg headers, verifies their checksums, compiles the engine and media helper, and assembles `vendor/engine` with only the files they need (about 56 MB). To change version, edit `OBS_VERSION` in `scripts/fetch-obs.js` and `DEPS_VERSION` in `scripts/build-engine.js`.
