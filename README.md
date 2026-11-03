@@ -164,6 +164,7 @@ You can change these and add more clip lengths in Settings.
 - **Long clips:** Compress keeps a long clip at 1080p60 and lets it go over 100 MB. Send to Discord can't, so it asks you to trim a clip too long to fit.
 - **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
 - **Updates:** installing by itself needs Run as administrator, because otherwise Windows would show a UAC prompt out of nowhere. Without it, updates wait for you to click **Update now**. Turn **Automatic updates** off in General to stop Afterclip checking GitHub.
+- **Reporting a problem:** in General, **Save diagnostics** saves your logs and settings in one zip file to attach to a GitHub issue. Your Discord webhook and Windows user folder are left out, and nothing is sent anywhere. The logs do show your hardware, monitors, audio devices and game names.
 - **HEVC and AV1:** these give smaller files, but not every app can play them, and the editor's preview may not.
 
 ## How it works

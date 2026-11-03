@@ -4,6 +4,7 @@ mod api;
 mod capture;
 mod controller;
 mod data_move;
+mod diagnostics;
 mod discord;
 mod elevated_task;
 mod engine;
@@ -959,6 +960,41 @@ fn pick_folder(core: tauri::State<Shared>) -> Option<String> {
     picked
 }
 
+/// Saves the logs and settings in one zip, to send with a problem report. A test copy names the file itself.
+#[tauri::command(async)]
+fn save_diagnostics(core: tauri::State<Shared>, payload: Option<String>) -> Result<Option<String>, String> {
+    use std::os::windows::process::CommandExt;
+    let chosen = payload.filter(|_| api::is_test_instance()).map(PathBuf::from);
+    let target = match chosen.clone() {
+        Some(path) => path,
+        None => {
+            let name = format!("Afterclip diagnostics {}.zip", chrono::Local::now().format("%Y-%m-%d %H-%M"));
+            core.keep_panel_open.store(true, Ordering::SeqCst);
+            let picked = core.app.dialog().file().set_file_name(name).add_filter("Zip file", &["zip"]).blocking_save_file();
+            core.keep_panel_open.store(false, Ordering::SeqCst);
+            match picked.and_then(|p| p.into_path().ok()) {
+                Some(path) => path,
+                None => return Ok(None),
+            }
+        }
+    };
+    let home = core.ui_log.parent().map(Path::to_path_buf).unwrap_or_default();
+    let (engine_log, previous_log) = (home.join("engine").join("engine.log"), home.join("engine").join("engine-previous.log"));
+    let about = format!(
+        "Afterclip {}\nSaved {}\nRunning as administrator: {}\n",
+        core.app.package_info().version,
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        if win32::is_self_elevated() { "yes" } else { "no" },
+    );
+    let profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let files = [("ui.log", core.ui_log.as_path()), ("engine.log", engine_log.as_path()), ("engine-previous.log", previous_log.as_path())];
+    diagnostics::write(&target, &files, &core.settings_file, &about, &profile)?;
+    if chosen.is_none() {
+        let _ = Command::new("explorer").raw_arg(format!("/select,\"{}\"", target.display())).spawn();
+    }
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
 #[tauri::command(async)]
 fn running_apps() -> Vec<win32::RunningApp> {
     win32::running_apps()
@@ -1479,7 +1515,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, running_apps, pick_game, audio_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, pick_folder, save_diagnostics, running_apps, pick_game, audio_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {
