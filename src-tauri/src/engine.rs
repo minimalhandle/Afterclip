@@ -288,6 +288,9 @@ impl Engine {
         if !exe.exists() {
             return Err(format!("Afterclip's capture engine is missing from {}", bin.display()));
         }
+        // The engine starts its log afresh, so the one from the last time Afterclip ran is kept for a problem report.
+        static KEEP_LAST_LOG: std::sync::Once = std::sync::Once::new();
+        KEEP_LAST_LOG.call_once(|| { let _ = fs::rename(config.join("engine.log"), config.join("engine-previous.log")); });
         let mut child = Command::new(&exe)
             .arg(&self.root)
             .arg(&config)

@@ -1371,6 +1371,13 @@ $('pick-folder').onclick = async () => { const dir = await api.invoke('pick-fold
 $('quality').onchange = () => { applyQuality(); scheduleSave(); };
 $('bufferMinutes').onchange = () => { renderEstimate(); scheduleSave(); };
 $('quit').onclick = () => api.invoke('quit-app');
+$('save-diagnostics').onclick = async () => {
+  try {
+    if (await api.invoke('save-diagnostics')) $('save-note').textContent = 'Diagnostics saved. Send that zip file with your problem report.';
+  } catch (e) {
+    $('save-note').textContent = errorText(e);
+  }
+};
 
 refresh().then((state) => {
   settings = state.settings;

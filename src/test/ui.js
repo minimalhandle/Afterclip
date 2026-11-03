@@ -608,6 +608,19 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const offline = await sendToDiscord(discordFile);
     check('a failed upload never shows the secret address', /Couldn't reach Discord/.test(offline) && !offline.includes('secret-token'), offline);
     check('the secret address stays out of the log', !fs.existsSync(path.join(session.home, 'ui.log')) || !fs.readFileSync(path.join(session.home, 'ui.log'), 'utf8').includes('secret-token'));
+    // Diagnostics: one zip of the logs and settings, with the webhook and the Windows user folder left out.
+    check('General has a Save diagnostics button', await panel.eval("!!document.querySelector('[data-pane=general] #save-diagnostics')"));
+    const diagnosticsZip = path.join(session.home, 'diagnostics.zip');
+    const savedTo = await panel.eval(`window.afterclip.invoke('save-diagnostics', ${JSON.stringify(diagnosticsZip)})`);
+    const unpacked = path.join(session.home, 'diagnostics');
+    fs.mkdirSync(unpacked);
+    execFileSync('tar', ['-xf', diagnosticsZip, '-C', unpacked], { windowsHide: true });
+    const inZip = fs.readdirSync(unpacked).sort();
+    check('diagnostics hold the logs, settings and version', savedTo === diagnosticsZip && ['about.txt', 'engine.log', 'settings.json'].every((n) => inZip.includes(n)) && !inZip.includes('api-token.txt'), inZip.join());
+    const zipped = inZip.map((n) => fs.readFileSync(path.join(unpacked, n), 'utf8')).join('\n');
+    const profile = process.env.USERPROFILE.toLowerCase();
+    check('diagnostics leave out the webhook and the user folder', !zipped.includes('secret-token') && !zipped.toLowerCase().includes(profile) && !zipped.toLowerCase().includes(profile.replaceAll('\\', '\\\\')) && zipped.includes('%USERPROFILE%'));
+    check('diagnostics say which version this is', /^Afterclip \d+\.\d+\.\d+/.test(fs.readFileSync(path.join(unpacked, 'about.txt'), 'utf8')));
     await panel.eval("document.querySelector('.tab[data-kind=clip]').click()");
 
     // Cleaning up by age: an old clip goes, a new one stays, and so does an old favourite.
