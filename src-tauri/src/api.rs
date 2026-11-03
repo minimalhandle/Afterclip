@@ -35,6 +35,11 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn copy_last_clip(&self) -> Result<Value, String>;
     fn compress_last_clip(&self) -> Result<Value, String>;
     fn send_last_clip(&self) -> Result<Value, String>;
+    fn vertical_last_clip(&self) -> Result<Value, String>;
+    fn star_last_clip(&self) -> Result<Value, String>;
+    fn toggle_camera(&self) -> Result<Value, String>;
+    /// The Stream Deck's Hold to Talk key going down or up.
+    fn deck_talk(&self, held: bool) -> Result<Value, String>;
     /// Turns every mute-key source up or down by this many percent.
     fn change_mic_volume(&self, percent: i64) -> Result<Value, String>;
     fn status(&self) -> Value;
@@ -90,6 +95,12 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
         (Method::Post, "/last-clip/copy") => handlers.copy_last_clip(),
         (Method::Post, "/last-clip/compress") => handlers.compress_last_clip(),
         (Method::Post, "/last-clip/discord") => handlers.send_last_clip(),
+        (Method::Post, "/last-clip/vertical") => handlers.vertical_last_clip(),
+        (Method::Post, "/last-clip/star") => handlers.star_last_clip(),
+        (Method::Post, "/camera/toggle") => handlers.toggle_camera(),
+        (Method::Post, "/talk/on") => handlers.deck_talk(true),
+        (Method::Post, "/talk/off") => handlers.deck_talk(false),
+
         (Method::Post, volume) if volume.starts_with("/mic/volume/") => match volume.trim_start_matches("/mic/volume/").parse::<i64>() {
             Ok(percent) => handlers.change_mic_volume(percent.clamp(-200, 200)),
             Err(_) => return (404, json!({ "error": "not found" })),

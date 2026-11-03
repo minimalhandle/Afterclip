@@ -27,6 +27,12 @@ const SYMBOLS = {
   alert: (fill) => `<rect x="67.5" y="38" width="9" height="30" rx="4.5" fill="${fill}"/><circle cx="72" cy="79" r="5.5" fill="${fill}"/>`,
   // Four corners pointing in: the same picture, smaller.
   compress: (fill) => `<path d="M50 42l13 13M63 45v10H53M94 42L81 55M81 45v10h10M50 86l13-13M63 83V73H53M94 86L81 73M81 83V73h10" fill="none" stroke="${fill}" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // A webcam on its stand.
+  webcam: (fill, background) => `<circle cx="72" cy="58" r="19" fill="${fill}"/><circle cx="72" cy="58" r="7.5" fill="${background}"/><path d="M72 77v8M58 87h28" stroke="${fill}" stroke-width="4.5" stroke-linecap="round"/>`,
+  webcamOff: (fill, background) => `${SYMBOLS.webcam(fill, background)}<path d="M50 38l44 48" stroke="${background}" stroke-width="9"/><path d="M50 38l44 48" stroke="${fill}" stroke-width="4.5" stroke-linecap="round"/>`,
+  star: (fill) => `<path d="M72 38l7.6 15.4 17 2.5-12.3 12 2.9 16.9L72 76.8l-15.2 8 2.9-16.9-12.3-12 17-2.5z" fill="${fill}" stroke="${fill}" stroke-width="2" stroke-linejoin="round"/>`,
+  // A phone held upright, with the webcam across its top.
+  vertical: (fill) => `<rect x="57" y="38" width="30" height="50" rx="6" fill="none" stroke="${fill}" stroke-width="4.5"/><rect x="62.5" y="44" width="19" height="12" rx="2" fill="${fill}"/><rect x="62.5" y="60" width="19" height="22" rx="2" fill="${fill}" fill-opacity=".5"/>`,
   // A paper plane, for sending somewhere.
   send: (fill, background) => `<path d="M46 63l50-22-15 50-12-17z" fill="${fill}" stroke="${fill}" stroke-width="3" stroke-linejoin="round"/><path d="M69 74l27-33" stroke="${background}" stroke-width="3.5"/>`,
 };

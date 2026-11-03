@@ -34,6 +34,11 @@ const EDIT_LAST = 'com.afterclip.clips.edit-last';
 const COPY_LAST = 'com.afterclip.clips.copy-last';
 const SCREENSHOT = 'com.afterclip.clips.screenshot';
 const COMPRESS_LAST = 'com.afterclip.clips.compress-last';
+const VERTICAL_LAST = 'com.afterclip.clips.vertical-last';
+const STAR_LAST = 'com.afterclip.clips.star-last';
+const WEBCAM = 'com.afterclip.clips.webcam';
+// Held rather than pressed: the mic is in clips while it's down.
+const TALK = 'com.afterclip.clips.talk';
 const DISCORD_LAST = 'com.afterclip.clips.discord-last';
 // Stream Deck + dials.
 const MIC_DIAL = 'com.afterclip.clips.mic-dial';
@@ -49,6 +54,9 @@ const SIMPLE_KEYS = {
   // These run until the job is done, and show it on the key meanwhile.
   [COMPRESS_LAST]: { route: '/last-clip/compress', symbol: 'compress', small: 'COMPRESS', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
   [DISCORD_LAST]: { route: '/last-clip/discord', symbol: 'send', small: 'DISCORD', confirm: 'SENT', busy: 'SENDING', timeout: LONG_JOB_MS },
+  [VERTICAL_LAST]: { route: '/last-clip/vertical', symbol: 'vertical', small: 'VERTICAL', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
+  // Starring again takes the star off, so the key says which happened.
+  [STAR_LAST]: { route: '/last-clip/star', symbol: 'star', small: 'STAR LAST', confirm: (reply) => (reply.favourite ? 'STARRED' : 'UNSTAR') },
 };
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -95,6 +103,16 @@ function faceFor(key) {
   if (key.action === CLEAN) {
     if (!status) return { symbol: 'clean', small: 'OFF', tone: 'off' };
     return status.cleanMic ? { symbol: 'clean', small: 'CLEAN', tone: 'active' } : { symbol: 'clean', small: 'CLEAN MIC' };
+  }
+  if (key.action === WEBCAM) {
+    if (!status) return { symbol: 'webcam', small: 'OFF', tone: 'off' };
+    if (!status.cameraChosen) return { symbol: 'webcam', small: 'NO CAM', tone: 'off' };
+    return status.cameraOn ? { symbol: 'webcam', small: 'CAM ON', tone: 'active' } : { symbol: 'webcamOff', small: 'CAM OFF' };
+  }
+  if (key.action === TALK) {
+    if (!status) return { symbol: 'mic', small: 'OFF', tone: 'off' };
+    if (!status.pushToTalk) return { symbol: 'mic', small: 'PTT OFF', tone: 'off' };
+    return key.holding ? { symbol: 'mic', small: 'TALKING', tone: 'active' } : { symbol: 'mic', small: 'HOLD' };
   }
   if (key.action === MARKER) {
     // Markers only exist inside a recording, so the key is dim until one is running.
@@ -270,16 +288,24 @@ async function press(context, action, settings) {
       }
       await call('POST', simple.route, simple.timeout);
       finish = () => confirmed(context, simple.confirm);
-    } else if (action === RECORD || action === MIC || action === CLEAN) {
-      await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean' }[action]);
+    } else if (action === TALK) {
+      if (key) key.holding = true;
+      draw(context);
+      await call('POST', '/talk/on');
+      // The key may have come up before Afterclip answered.
+      if (key && !key.holding) await call('POST', '/talk/off');
+      return;
+    } else if (action === RECORD || action === MIC || action === CLEAN || action === WEBCAM) {
+      await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean', [WEBCAM]: '/camera/toggle' }[action]);
       finish = () => pulsed(context);
     } else if (action === MARKER) {
       await call('POST', '/marker');
       finish = () => confirmed(context, 'MARKED');
     } else if (simple) {
-      await call('POST', simple.route);
+      const reply = await call('POST', simple.route);
+      const words = typeof simple.confirm === 'function' ? simple.confirm(reply) : simple.confirm;
       // Opening a window is its own confirmation.
-      finish = simple.confirm ? () => confirmed(context, simple.confirm) : () => pulsed(context);
+      finish = words ? () => confirmed(context, words) : () => pulsed(context);
     } else {
       if (key?.saving) return; // A second press mid-save would save the same moment twice.
       if (key) {
@@ -292,8 +318,10 @@ async function press(context, action, settings) {
       finish = () => confirmed(context, 'SAVED');
     }
   } catch (error) {
+    if (key) key.holding = false;
     await poll();
-    const reason = /No clips/.test(error.message) ? 'NO CLIPS' : /webhook/i.test(error.message) ? 'NO HOOK' : 'FAILED';
+    const reason = /No clips/.test(error.message) ? 'NO CLIPS' : /webhook/i.test(error.message) ? 'NO HOOK'
+      : /Push to talk/.test(error.message) ? 'PTT OFF' : /Choose a webcam/.test(error.message) ? 'NO CAM' : 'FAILED';
     finish = () => failed(context, action, reason);
   }
   if (key) key.saving = false;
@@ -323,6 +351,14 @@ ws.addEventListener('message', ({ data }) => {
     keys.delete(context);
   } else if (event === 'keyDown') {
     press(context, action, payload.settings);
+  } else if (event === 'keyUp' && action === TALK) {
+    const key = keys.get(context);
+    if (key?.holding) {
+      key.holding = false;
+      draw(context);
+      call('POST', '/talk/off').catch(() => undefined);
+    }
+
   } else if (event === 'dialRotate') {
     if (action === MIC_DIAL) turnMic(context, payload.ticks);
     else turnLength(context, payload.ticks);

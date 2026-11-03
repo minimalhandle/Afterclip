@@ -583,6 +583,12 @@ async function refresh() {
   if (settings) {
     settings.micMuted = state.settings.micMuted;
     settings.cleanMic = state.settings.cleanMic;
+    // The Stream Deck can switch the webcam too.
+    if (settings.cameraEnabled !== state.settings.cameraEnabled) {
+      settings.cameraEnabled = state.settings.cameraEnabled;
+      $('cameraEnabled').checked = settings.cameraEnabled;
+      renderCamera();
+    }
   }
   renderEncoderNote(state.encoderInUse);
   const files = new Set(media.map((m) => m.file));
@@ -1467,7 +1473,12 @@ api.on('feedback', (f) => {
     showBanner(f.cleanMic ? 'Clean Mic is on' : 'Clean Mic is off', 'good');
   } else if (f.kind === 'marker' && f.ok) {
     showBanner(`Marker ${f.number} added`, 'good');
+  } else if (f.kind === 'camera' && f.ok) {
+    showBanner(f.cameraOn ? 'Webcam is on' : 'Webcam is off', 'good');
+  } else if (f.kind === 'favourite' && f.ok) {
+    showBanner(f.favourite ? 'Starred your newest clip' : 'Took the star off your newest clip', 'good');
   } else if (f.kind === 'mic' && f.ok) {
+
     showBanner(f.micMuted ? 'Mic muted in clips' : 'Mic is back on in clips', 'good');
   } else if (!f.ok) {
     showBanner(f.message, 'bad');
