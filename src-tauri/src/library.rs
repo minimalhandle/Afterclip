@@ -1,11 +1,13 @@
-//! What Afterclip remembers about clips beyond the files themselves: favourites, and the game a renamed clip
-//! came from. Kept beside the settings, so clips stay ordinary files you can move around.
+//! What Afterclip remembers about clips beyond the files themselves: favourites, tags, where a webcam sat, and
+//! the game a renamed clip came from. Kept beside the settings, so clips stay ordinary files you can move around.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_NAME_CHARS: usize = 120;
+const MAX_TAG_CHARS: usize = 30;
+const MAX_TAGS: usize = 10;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct LibraryData {
@@ -13,6 +15,11 @@ pub struct LibraryData {
     pub favourites: BTreeSet<String>,
     #[serde(default)]
     pub games: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tags: BTreeMap<String, Vec<String>>,
+    /// Where the webcam sat, as fractions of the picture: x, y, width, height.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cameras: BTreeMap<String, [f64; 4]>,
 }
 
 impl LibraryData {
@@ -31,6 +38,18 @@ impl LibraryData {
     pub fn forget(&mut self, name: &str) {
         self.favourites.remove(name);
         self.games.remove(name);
+        self.tags.remove(name);
+        self.cameras.remove(name);
+    }
+
+    /// Replaces a clip's tags. Empty removes them.
+    pub fn set_tags(&mut self, name: &str, typed: &[String]) {
+        let tags = clean_tags(typed);
+        if tags.is_empty() {
+            self.tags.remove(name);
+        } else {
+            self.tags.insert(name.to_string(), tags);
+        }
     }
 
     pub fn rename(&mut self, from: &str, to: &str, game: Option<String>) {
@@ -41,7 +60,26 @@ impl LibraryData {
         if let Some(game) = known {
             self.games.insert(to.to_string(), game);
         }
+        if let Some(tags) = self.tags.remove(from) {
+            self.tags.insert(to.to_string(), tags);
+        }
+        if let Some(camera) = self.cameras.remove(from) {
+            self.cameras.insert(to.to_string(), camera);
+        }
     }
+}
+
+/// Tags as someone typed them, without blanks, repeats or anything too long. Case is kept, but Funny and funny are one tag.
+pub fn clean_tags(typed: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for tag in typed {
+        let tag: String = tag.trim().trim_start_matches('#').chars().filter(|c| !c.is_control()).take(MAX_TAG_CHARS).collect();
+        let tag = tag.trim().to_string();
+        if !tag.is_empty() && !kept.iter().any(|k| k.eq_ignore_ascii_case(&tag)) && kept.len() < MAX_TAGS {
+            kept.push(tag);
+        }
+    }
+    kept
 }
 
 /// Turns what someone typed into a safe file name, or says why it can't be one.
@@ -136,7 +174,25 @@ mod tests {
     }
 
     #[test]
+    fn tags_are_tidied() {
+        let typed: Vec<String> = [" #Funny ", "funny", "", "clutch", &"x".repeat(50)].iter().map(|s| s.to_string()).collect();
+        assert_eq!(clean_tags(&typed), vec!["Funny".to_string(), "clutch".into(), "x".repeat(MAX_TAG_CHARS)]);
+        let many: Vec<String> = (0..20).map(|n| n.to_string()).collect();
+        assert_eq!(clean_tags(&many).len(), MAX_TAGS);
+        let mut data = LibraryData::default();
+        data.set_tags("a.mp4", &["win".into()]);
+        data.cameras.insert("a.mp4".into(), [0.7, 0.7, 0.25, 0.25]);
+        data.rename("a.mp4", "b.mp4", None);
+        assert_eq!(data.tags.get("b.mp4"), Some(&vec!["win".to_string()]));
+        assert!(data.cameras.contains_key("b.mp4"));
+        data.set_tags("b.mp4", &[]);
+        data.forget("b.mp4");
+        assert!(data.tags.is_empty() && data.cameras.is_empty());
+    }
+
+    #[test]
     fn renaming_carries_favourite_and_game() {
+
         let mut data = LibraryData::default();
         data.favourites.insert("a.mp4".into());
         data.rename("a.mp4", "b.mp4", Some("Game".into()));

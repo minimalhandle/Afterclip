@@ -26,13 +26,17 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 
 ### Clip anything, any length
 
-Press a hotkey, click the panel or tap a Stream Deck key. Set your buffer in minutes, then save the last 15 seconds, 30 minutes, the whole buffer, or any custom length up to its size.
+Press a hotkey, click the panel or tap a Stream Deck key. Set your buffer in minutes, then save the last 15 seconds, 30 minutes, the whole buffer, or any custom length up to its size. **Keep recording after you save** can wait a few seconds before saving, so what happens just after you press is in the clip too.
 
 The glass card at the top of the panel shows your buffer. The timer shows how much has filled, and in the thin line along its bottom edge, the white part is what saving would keep. That part turns red while recording, the glass shines when a clip saves, and the card warns you if frames are being lost. A short tone and a popup confirm each save, so you know it worked mid-game.
 
 ### Automatic game capture
 
-Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor.
+Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor, or with **Only buffer during games** on, it stops the buffer until a game opens, to free memory and GPU on the desktop.
+
+### Your webcam
+
+**Settings > Video** can put your webcam in any corner of every clip and recording, at three sizes. A vertical copy of a clip with your webcam puts it above the game, ready for TikTok or Shorts.
 
 ### Full-session recording
 
@@ -51,6 +55,7 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 - **Live control:** every source has a volume slider up to 200% that applies straight away, plus a level meter.
 - **Clean Mic** removes background noise and keyboard sound with one click.
 - **Mic mute** silences your mic in clips and recordings only, so calls aren't affected.
+- **Push to talk** only puts your mic in clips while you hold a key or a mouse side button. Your game still gets the press.
 
 ### Share anywhere
 
@@ -64,7 +69,7 @@ Clips this good are big, so **Compress** re-encodes a smaller H.264 copy, using 
 
 ### A library that stays tidy
 
-**View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, and rename clips to something you'll recognise. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched.
+**View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, rename clips to something you'll recognise, and tag them, such as #funny, to find them by tag later. Move the mouse across a video's thumbnail to scrub through it without opening it. Afterclip can also save into a folder for each game. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched. When your drive runs low, Afterclip warns you, and a recording stops safely before the drive fills.
 
 ### Settings for each game
 
@@ -88,7 +93,9 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip** and **Copy Last Clip**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip** and **Send Last Clip to Discord**. They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
+
+On a Stream Deck +, the **Mic Volume** dial turns your mic up or down in clips, and pressing it mutes your mic in clips. The **Clip Length Dial** picks a length as you turn it, saves that length when you press it, and shows how full your buffer is.
 
 <p align="center">
   <img src="branding/streamdeck-keys-preview.png" width="60%" alt="Afterclip's Stream Deck keys">
@@ -156,6 +163,11 @@ You can change these and add more clip lengths in Settings.
 - **Changing settings:** buffer, audio and video changes restart capture, which clears the buffer. Volume changes don't.
 - **Trim accuracy:** keyframes are 1 second apart, so a clip or trim can start up to about 1 second early, but never late. Only clips with matching video settings can merge.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
+- **Push to talk:** it affects the sources ticked **Mute key**, and the mute key still wins. Afterclip reads whether the key is held without taking the press, so the game and Discord still get it. It hasn't been tried yet in a game that runs as administrator.
+- **Webcam:** its light stays on while Afterclip is buffering, because the webcam is part of the buffer. Only its picture is used, never its microphone. Changing the webcam restarts capture.
+- **Only buffer during games:** the buffer stops 10 minutes after the game closes, so you can still clip its last moments. Record works at any time, and starts the buffer if needed. A windowed game you haven't added under **Settings > Games** doesn't count as a game.
+- **Game folders:** only new files go into them. A folder is removed once it's empty.
+- **Moving to another PC:** **Export settings** in General saves your settings, hotkeys and game profiles to a file, and **Import settings** loads them. Your Discord webhook is never in the file, and a save location on a drive the PC doesn't have is left as it is.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
 - **Not detected:** a windowed game you haven't added under **Settings > Games** isn't detected, so it's only recorded if it's on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
 - **Controllers:** turn this on in Settings, Controls. Hold Create, View or −, then press R3 to save a clip. Other actions can be added there. Afterclip only listens, and never sends anything to the controller, so your game also receives these presses. Tested on a DualSense over USB and Bluetooth. Xbox and Switch Pro support hasn't been tried on real controllers yet. Switch Pro needs Bluetooth, unless Steam is running.
@@ -173,18 +185,19 @@ Afterclip has three parts of its own, and never starts the OBS app:
 
 - **`afterclip.exe`:** the app, written in Rust with Tauri. Its windows use Windows' built-in WebView2.
 - **`afterclip-engine.exe`:** a windowless capture program built on libobs.
-- **`afterclip-media.exe`:** a small helper that trims and compresses clips, and makes thumbnails and screenshots, one job per process.
+- **`afterclip-media.exe`:** a small helper that trims and compresses clips, and makes thumbnails, previews and screenshots, one job per process.
 
 Some details:
 
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
 - **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
-- **Library data:** favourites, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
-- **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips, recordings and screenshots are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails and logs, is in `%LOCALAPPDATA%\Afterclip`.
+- **Library data:** favourites, tags, where a clip's webcam sat, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
+- **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips, recordings and screenshots are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails, previews and logs, is in `%LOCALAPPDATA%\Afterclip`.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.
 
-`npm run build:engine` downloads the official OBS release and its FFmpeg headers, verifies their checksums, compiles the engine and media helper, and assembles `vendor/engine` with only the files they need (about 56 MB). To change version, edit `OBS_VERSION` in `scripts/fetch-obs.js` and `DEPS_VERSION` in `scripts/build-engine.js`.
+`npm run build:engine` downloads the official OBS release and its FFmpeg headers, verifies their checksums, compiles the engine and media helper, and assembles `vendor/engine` with only the files they need (about 57 MB).
+ To change version, edit `OBS_VERSION` in `scripts/fetch-obs.js` and `DEPS_VERSION` in `scripts/build-engine.js`.
 
 ## Tests
 

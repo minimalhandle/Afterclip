@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MIN_BUFFER_SECONDS: i64 = 5;
 const MAX_BUFFER_SECONDS: i64 = 1800;
@@ -130,9 +130,36 @@ pub struct Settings {
     pub controller_screenshot: String,
     /// How much a controller clip keeps. 0 means the whole buffer.
     pub controller_clip_seconds: i64,
+    /// Keeps capturing this long after a clip is asked for, so the moment isn't cut off. 0 saves straight away.
+    pub clip_after_seconds: i64,
+    /// Stops the buffer while no game is running, and starts it again when one opens.
+    pub buffer_only_in_games: bool,
+    /// The mute-key sources are only recorded while this key is held.
+    pub push_to_talk: bool,
+    /// A key or mouse button, as win32::virtual_key reads it.
+    pub push_to_talk_key: String,
+    /// Puts a webcam in a corner of every clip and recording.
+    pub camera_enabled: bool,
+    /// The webcam's id, from the engine's list.
+    pub camera_device: String,
+    /// top-left, top-right, bottom-left or bottom-right.
+    pub camera_corner: String,
+    /// The webcam's width, as a percentage of the picture's width.
+    pub camera_size: i64,
+    /// Vertical copies of a clip with a webcam put the webcam above the game.
+    pub vertical_face_cam: bool,
+    /// Saves into a folder for each game, inside Clips, Recordings and Screenshots.
+    pub game_folders: bool,
+    /// Warns when the save location has less than this free. 0 never warns.
+    pub low_space_warn_gb: f64,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
     pub test_pattern: bool,
 }
+
+/// Where the webcam sits on the picture, in pixels: x, y, width, height.
+pub type CameraBox = (i64, i64, i64, i64);
+
+const CAMERA_SIZES: (i64, i64) = (10, 50);
 
 impl Settings {
     pub fn defaults(videos_dir: &Path, width: i64, height: i64) -> Self {
@@ -192,8 +219,32 @@ impl Settings {
             controller_marker: String::new(),
             controller_screenshot: String::new(),
             controller_clip_seconds: 30,
+            clip_after_seconds: 0,
+            buffer_only_in_games: false,
+            push_to_talk: false,
+            push_to_talk_key: "Mouse4".into(),
+            camera_enabled: false,
+            camera_device: String::new(),
+            camera_corner: "bottom-right".into(),
+            camera_size: 22,
+            vertical_face_cam: true,
+            game_folders: false,
+            low_space_warn_gb: 10.0,
             test_pattern: false,
         }
+    }
+
+    /// The webcam's place on the picture, in a 16:9 box with a small margin, or None with it off.
+    pub fn camera_box(&self) -> Option<CameraBox> {
+        if !self.camera_enabled || self.camera_device.is_empty() {
+            return None;
+        }
+        let width = (self.width * self.camera_size / 100) / 2 * 2;
+        let height = (width * 9 / 16) / 2 * 2;
+        let margin = (self.height / 40) / 2 * 2;
+        let x = if self.camera_corner.ends_with("left") { margin } else { self.width - width - margin };
+        let y = if self.camera_corner.starts_with("top") { margin } else { self.height - height - margin };
+        Some((x, y, width, height))
     }
 
     /// Works out the real width, height and frame rate from the monitor. Heights never exceed the
@@ -253,6 +304,9 @@ impl Settings {
         self.storage_limit_gb = self.storage_limit_gb.max(0.0);
         self.delete_after_days = self.delete_after_days.max(0);
         self.discord_webhook = self.discord_webhook.trim().to_string();
+        self.clip_after_seconds = self.clip_after_seconds.clamp(0, 30);
+        self.camera_size = self.camera_size.clamp(CAMERA_SIZES.0, CAMERA_SIZES.1);
+        self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
         self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
         self.fps = self.fps.clamp(10, 240);
         self.bitrate_kbps = self.bitrate_kbps.clamp(1000, 200_000);
@@ -320,6 +374,81 @@ impl Settings {
             || self.game_audio != other.game_audio
             || self.game_audio_own_track != other.game_audio_own_track
             || self.test_pattern != other.test_pattern
+            || self.camera_box() != other.camera_box()
+            || (self.camera_box().is_some() && self.camera_device != other.camera_device)
+    }
+
+    /// A settings file someone saved, taken over these settings. What belongs to this PC, or is secret, stays.
+    pub fn imported(&self, file: &Path) -> Result<Settings, String> {
+        let text = fs::read_to_string(file).map_err(|e| format!("Couldn't read that file: {e}"))?;
+        let saved: serde_json::Value = serde_json::from_str(&text).map_err(|_| "That isn't an Afterclip settings file.".to_string())?;
+        if !saved.get("presets").is_some_and(|p| p.is_array()) || saved.get("bufferSeconds").is_none() {
+            return Err("That isn't an Afterclip settings file.".into());
+        }
+        let mut settings = Settings::load(file, self.clone());
+        settings.discord_webhook = self.discord_webhook.clone();
+        settings.skipped_update = self.skipped_update.clone();
+        settings.test_pattern = self.test_pattern;
+        // Another PC's drive may not exist here.
+        let drive = Path::new(&settings.output_dir).components().next().map(|c| PathBuf::from(c.as_os_str()).join("\\"));
+        if !drive.is_some_and(|d| d.exists()) {
+            settings.output_dir = self.output_dir.clone();
+        }
+        Ok(settings)
+    }
+
+    /// What Export settings writes. The webhook is a secret, so it's left out.
+    pub fn exported(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        if let Some(map) = value.as_object_mut() {
+            for key in ["discordWebhook", "skippedUpdate", "testPattern", "micMuted"] {
+                map.remove(key);
+            }
+        }
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Settings {
+        Settings::defaults(Path::new("C:\\Videos"), 1920, 1080)
+    }
+
+    #[test]
+    fn the_webcam_sits_in_its_corner() {
+        let mut s = sample();
+        assert_eq!(s.camera_box(), None);
+        s.camera_enabled = true;
+        s.camera_device = "cam".into();
+        s.camera_size = 25;
+        // 480 wide, 270 tall, with a 26 pixel margin.
+        assert_eq!(s.camera_box(), Some((1920 - 480 - 26, 1080 - 270 - 26, 480, 270)));
+        s.camera_corner = "top-left".into();
+        assert_eq!(s.camera_box(), Some((26, 26, 480, 270)));
+    }
+
+    #[test]
+    fn importing_keeps_the_webhook_and_a_save_location_that_exists() {
+        let dir = std::env::temp_dir().join(format!("afterclip-import-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("exported.json");
+        let mut other = sample();
+        other.buffer_seconds = 300;
+        other.output_dir = "Q:\\Nowhere\\Afterclip".into();
+        fs::write(&file, other.exported().to_string()).unwrap();
+        let mut current = sample();
+        current.discord_webhook = "https://discord.com/api/webhooks/1/secret".into();
+        let imported = current.imported(&file).unwrap();
+        assert_eq!(imported.buffer_seconds, 300);
+        assert_eq!(imported.discord_webhook, current.discord_webhook);
+        assert_eq!(imported.output_dir, current.output_dir);
+        assert!(!other.exported().to_string().contains("discordWebhook"));
+        fs::write(&file, "{\"hello\": 1}").unwrap();
+        assert!(current.imported(&file).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 }
 

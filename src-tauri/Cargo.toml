@@ -40,6 +40,7 @@ windows = { version = "0.62", features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_Storage_FileSystem",
   "Win32_UI_Input",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Input_XboxController",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",

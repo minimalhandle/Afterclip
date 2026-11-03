@@ -16,6 +16,10 @@ const check = (name, ok, detail = '') => {
 };
 const run = (...args) => spawnSync(media, args, { encoding: 'utf8', windowsHide: true });
 const f = (name) => path.join(dir, name);
+const decodes = (file) => {
+  const d = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', file, '-f', 'null', '-'], { encoding: 'utf8' });
+  return d.status === 0 && !d.stderr.trim();
+};
 
 try {
   // Same shape as a real replay: 60 fps, 1s keyframes, B-frames, and audio.
@@ -96,6 +100,35 @@ try {
   run('vertical', sides, middle);
   const pixel = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', middle, '-vf', 'scale=1:1:flags=area', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer' }).stdout;
   check('vertical copy keeps the middle of the picture', pixel[1] > 200 && pixel[0] < 60 && pixel[2] < 60, [...pixel].join());
+  // Face cam: the webcam from the corner goes across the top, and the middle of the game fills the rest.
+  const sample = (file, x, y) => spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', file, '-vf', `crop=4:4:${x}:${y},scale=1:1:flags=area`, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer' }).stdout;
+  const withCam = f('with-cam.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=lime:s=1920x1080:r=30:d=2', '-f', 'lavfi', '-i', 'color=magenta:s=480x270:r=30:d=2', '-filter_complex', '[0][1]overlay=1414:784', '-c:v', 'libx264', withCam]);
+  const faceCam = f('face-cam.mp4');
+  const fc = run('vertical', withCam, faceCam, String(1414 / 1920), String(784 / 1080), String(480 / 1920), String(270 / 1080));
+  check('face cam copy runs', fc.status === 0, fc.stderr.trim());
+  check('face cam copy is 9:16', /Video: h264.*\b606x1080\b/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', faceCam], { encoding: 'utf8' }).stderr));
+  const camPixel = sample(faceCam, 300, 160);
+  const gamePixel = sample(faceCam, 300, 700);
+  check('face cam copy puts the webcam on top', camPixel[0] > 200 && camPixel[1] < 60 && camPixel[2] > 200, [...camPixel].join());
+  check('face cam copy puts the game below', gamePixel[1] > 200 && gamePixel[0] < 60 && gamePixel[2] < 60, [...gamePixel].join());
+  check('face cam copy decodes cleanly', decodes(faceCam));
+  const badCam = run('vertical', withCam, f('bad-cam.mp4'), '0.9', '0.9', '0.5', '0.5');
+  check('a webcam place off the picture makes a plain vertical copy', badCam.status === 0 && sample(f('bad-cam.mp4'), 300, 160)[1] > 200);
+
+  // Hover previews: a row of frames from across the video, in order.
+  const strip = f('strip.jpg');
+  const st = run('strip', input, strip, '10');
+  check('preview strip runs', st.status === 0, st.stderr.trim());
+  check('preview strip is ten 160px frames in a row', /mjpeg.*\b1600x90\b/.test(spawnSync(ffmpeg, ['-hide_banner', '-i', strip], { encoding: 'utf8' }).stderr));
+  check('preview strip is small', fs.statSync(strip).size < 120 * 1024, `${Math.round(fs.statSync(strip).size / 1024)} KB`);
+  const halves = f('halves.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=320x180:r=30:d=4', '-f', 'lavfi', '-i', 'color=blue:s=320x180:r=30:d=4', '-filter_complex', '[0][1]concat=n=2', '-c:v', 'libx264', '-g', '30', halves]);
+  run('strip', halves, f('halves.jpg'), '2');
+  const [first, second] = [sample(f('halves.jpg'), 70, 40), sample(f('halves.jpg'), 230, 40)];
+  check('preview strip frames come from across the video', first[0] > 200 && first[2] < 60 && second[2] > 200 && second[0] < 60, `${[...first].join()} then ${[...second].join()}`);
+  check('preview strip of a missing file fails cleanly', run('strip', f('none.mp4'), f('none.jpg'), '10').status === 1);
+
   const tall = f('tall.mp4');
   execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=360x640:r=30:d=1', '-c:v', 'libx264', tall]);
   const already = run('vertical', tall, f('tall-out.mp4'));

@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub const COMPRESS_TARGET_BYTES: u64 = 100_000_000;
+pub const PREVIEW_FRAMES: u32 = 10;
+
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const SAVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,6 +34,9 @@ pub struct EngineStatus {
     #[serde(rename = "bufferingSince", skip_serializing_if = "Option::is_none")]
     pub buffering_since: Option<u128>,
     pub recording: bool,
+    /// Stopped on purpose, because the buffer only runs during games and none is open.
+    #[serde(rename = "waitingForGame")]
+    pub waiting_for_game: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,7 +86,7 @@ impl Engine {
             home,
             root,
             settings: Mutex::new(settings),
-            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false }),
+            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false }),
             running: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             saved: Mutex::new(None),
@@ -119,6 +124,15 @@ impl Engine {
         self.root.join("bin").join("64bit")
     }
 
+    /// With a game known and game folders on, files go in a folder named after it.
+    fn game_folder(&self, base: PathBuf) -> PathBuf {
+        let wanted = self.settings.lock().unwrap().game_folders;
+        match self.safe_game().filter(|_| wanted) {
+            Some(game) => base.join(game),
+            None => base,
+        }
+    }
+
     /// The file being recorded right now, which isn't playable until it stops.
     pub fn active_recording(&self) -> Option<PathBuf> {
         if self.status().recording {
@@ -126,6 +140,11 @@ impl Engine {
         } else {
             None
         }
+    }
+
+    /// The file a recording writes to, set as soon as it's asked to start.
+    pub fn recording_file(&self) -> Option<PathBuf> {
+        self.recording_file.lock().unwrap().clone()
     }
 
     pub fn status(&self) -> EngineStatus {
@@ -268,6 +287,7 @@ impl Engine {
             s.message = Some("Starting capture".into());
             s.buffering = false;
             s.recording = false;
+            s.waiting_for_game = false;
         });
         let config = self.home.join("engine");
         for dir in [self.clips_dir(), self.recordings_dir(), self.screenshots_dir(), self.staging_dir(), config.clone()] {
@@ -341,6 +361,7 @@ impl Engine {
             "gameAudioVolume": s.game_audio_volume,
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
+            "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
 
@@ -383,6 +404,11 @@ impl Engine {
         });
     }
 
+    /// Says the buffer is off until a game opens, or that it no longer is.
+    pub fn set_waiting_for_game(&self, waiting: bool) {
+        self.update(|s| s.waiting_for_game = waiting);
+    }
+
     /// Saves a clip of the last `seconds`. 0 keeps the whole buffer. Saves run one at a time.
     pub fn clip(&self, seconds: i64) -> Result<ClipResult, String> {
         let _one_at_a_time = self.clip_lock.lock().unwrap();
@@ -391,7 +417,9 @@ impl Engine {
         }
         let replay = PathBuf::from(self.save_replay()?);
         let label = if seconds > 0 { format!("{seconds}s") } else { "full".to_string() };
-        let file = unique_path(&self.clips_dir().join(format!("{}_{}_{label}.mp4", self.name_prefix("Clip"), timestamp())));
+        let folder = self.game_folder(self.clips_dir());
+        fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        let file = unique_path(&folder.join(format!("{}_{}_{label}.mp4", self.name_prefix("Clip"), timestamp())));
 
         let available = self.duration(&replay)?;
         if seconds > 0 && (seconds as f64) < available {
@@ -433,7 +461,7 @@ impl Engine {
     /// Makes a smaller copy that fits `megabytes`, beside the original. In the background, so it can't compete with a game.
     pub fn shrink(&self, file: &Path, megabytes: u64) -> Result<PathBuf, String> {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&self.clips_dir().join(format!("{stem}_{megabytes}MB.mp4")));
+        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_{megabytes}MB.mp4")));
         let bytes = (megabytes * 1000 * 1000).to_string();
         if let Err(e) = self.media(&["shrink".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
             let _ = fs::remove_file(&output);
@@ -445,7 +473,7 @@ impl Engine {
     /// Makes a smaller copy at up to 1080p60. A long clip stops at a good quality instead of reaching the target, so it can end up bigger.
     pub fn compress(&self, file: &Path) -> Result<PathBuf, String> {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&self.clips_dir().join(format!("{stem}_small.mp4")));
+        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_small.mp4")));
         let bytes = COMPRESS_TARGET_BYTES.to_string();
         if let Err(e) = self.media(&["compress".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
             let _ = fs::remove_file(&output);
@@ -455,10 +483,14 @@ impl Engine {
     }
 
     /// Makes a 9:16 copy for phones, beside the original. In the background, so it can't compete with a game.
-    pub fn make_vertical(&self, file: &Path) -> Result<PathBuf, String> {
+    /// With a webcam's place given, as fractions of the picture, the webcam goes above the game.
+    pub fn make_vertical(&self, file: &Path, camera: Option<[f64; 4]>) -> Result<PathBuf, String> {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&self.clips_dir().join(format!("{stem}_vertical.mp4")));
-        if let Err(e) = self.media(&["vertical".as_ref(), file.as_os_str(), output.as_os_str()], true) {
+        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_vertical.mp4")));
+        let place: Vec<String> = camera.iter().flatten().map(|f| f.to_string()).collect();
+        let mut args: Vec<&std::ffi::OsStr> = vec!["vertical".as_ref(), file.as_os_str(), output.as_os_str()];
+        args.extend(place.iter().map(|v| std::ffi::OsStr::new(v.as_str())));
+        if let Err(e) = self.media(&args, true) {
             let _ = fs::remove_file(&output);
             return Err(e);
         }
@@ -472,7 +504,9 @@ impl Engine {
         }
         let stamp = timestamp();
         let raw = unique_path(&self.staging_dir().join(format!("{stamp}.nv12")));
-        let output = unique_path(&self.screenshots_dir().join(format!("{}_{stamp}.png", self.name_prefix("Screenshot"))));
+        let folder = self.game_folder(self.screenshots_dir());
+        fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        let output = unique_path(&folder.join(format!("{}_{stamp}.png", self.name_prefix("Screenshot"))));
         let converted = self.rpc("screenshot", json!({ "path": raw })).and_then(|frame| {
             let (width, height) = (frame["width"].to_string(), frame["height"].to_string());
             self.media(&["png".as_ref(), raw.as_os_str(), output.as_os_str(), width.as_ref(), height.as_ref()], true)
@@ -532,19 +566,28 @@ impl Engine {
         *self.game.lock().unwrap() = game;
     }
 
-    fn name_prefix(&self, fallback: &str) -> String {
+    /// The captured game's name, made safe for a file or folder name.
+    fn safe_game(&self) -> Option<String> {
         let game = self.game.lock().unwrap();
         let safe: String = game.as_deref().unwrap_or("").chars()
             // % too, because split recordings name their files through a date pattern.
             .filter(|c| !r#"<>:"/\|?*%"#.contains(*c) && !c.is_control())
             .collect();
-        let safe = safe.trim().trim_end_matches('.').to_string();
-        if safe.is_empty() { fallback.to_string() } else { safe }
+        Some(safe.trim().trim_end_matches('.').trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    fn name_prefix(&self, fallback: &str) -> String {
+        self.safe_game().unwrap_or_else(|| fallback.to_string())
     }
 
     /// The audio devices and running apps that can be recorded right now.
     pub fn audio_choices(&self) -> Result<Value, String> {
         self.rpc("audioChoices", json!({}))
+    }
+
+    /// The webcams that can be shown.
+    pub fn camera_choices(&self) -> Result<Value, String> {
+        self.rpc("cameraChoices", json!({})).map(|m| m["cameras"].clone())
     }
 
     /// Joins ranges of clips into a new file in Clips, losslessly. Originals are never changed.
@@ -608,20 +651,28 @@ impl Engine {
         self.media(&["thumb".as_ref(), input.as_os_str(), output.as_os_str()], true).map(|_| ())
     }
 
+    /// A row of small frames from across a video, for scrubbing through it on hover.
+    pub fn make_preview_strip(&self, input: &Path, output: &Path) -> Result<(), String> {
+        let frames = PREVIEW_FRAMES.to_string();
+        self.media(&["strip".as_ref(), input.as_os_str(), output.as_os_str(), frames.as_ref()], true).map(|_| ())
+    }
+
     pub fn toggle_record(&self) -> Result<bool, String> {
         if self.status().recording {
             self.rpc("recordStop", json!({}))?;
             return Ok(false);
         }
         let prefix = self.name_prefix("Recording");
-        let file = unique_path(&self.recordings_dir().join(format!("{prefix}_{}.mp4", timestamp())));
+        let folder = self.game_folder(self.recordings_dir());
+        fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        let file = unique_path(&folder.join(format!("{prefix}_{}.mp4", timestamp())));
         *self.recording_file.lock().unwrap() = Some(file.clone());
         self.marker_count.store(0, Ordering::SeqCst);
         let split = self.settings.lock().unwrap().record_split_seconds;
         let started = self.rpc("recordStart", json!({
             "path": file,
             "splitSeconds": split,
-            "directory": self.recordings_dir(),
+            "directory": folder,
             "format": format!("{prefix}_%CCYY-%MM-%DD_%hh-%mm-%ss"),
         }));
         if let Err(e) = started {
@@ -691,6 +742,11 @@ impl Engine {
 fn window_match(app: &FullscreenApp) -> String {
     let encode = |s: &str| s.replace('#', "#22").replace(':', "#3A");
     format!("{}:{}:{}", encode(&app.title), encode(&app.window_class), encode(&app.exe))
+}
+
+/// The folder a file is in, for copies made from it.
+fn beside(file: &Path, fallback: &Path) -> PathBuf {
+    file.parent().map(Path::to_path_buf).unwrap_or_else(|| fallback.to_path_buf())
 }
 
 fn timestamp() -> String {

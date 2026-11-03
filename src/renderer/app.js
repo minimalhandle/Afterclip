@@ -12,6 +12,9 @@ const info = new Map(); // file|mtime -> { url, duration }
 let activeProfile = null;
 let activeBuffer = null; // The running game's profile can use a different buffer from Settings.
 let renaming = null;
+let tagging = null;
+let cameraChoices; // Undefined until asked for, and null if capture couldn't list them.
+const strips = new Map(); // file|mtime -> { url, frames }, or a promise while one is being made
 let favouritesOnly = false;
 let update = { status: 'idle' };
 let appVersion = '';
@@ -49,6 +52,7 @@ function renderStatus() {
   let title = labels[capture.mode] ?? 'Recording';
   let detail = capture.mode === 'game' ? 'Game capture' : capture.mode === 'fallback' ? 'Recording its monitor' : capture.mode === 'detecting' ? 'Recording its monitor for now' : 'Waiting for a game';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }
+  else if (status.waitingForGame) { title = 'Waiting for a game'; detail = 'The buffer starts when a game opens'; }
   else if (!ready) { title = 'Starting capture'; detail = ''; }
   else if (status.recording) { detail = `Full recording running · ${detail}`; }
   $('capture-title').textContent = title;
@@ -58,7 +62,8 @@ function renderStatus() {
   const rec = $('record');
   rec.textContent = status.recording ? 'Stop' : 'Record';
   rec.classList.toggle('on', status.recording);
-  rec.disabled = status.state !== 'ready';
+  // Recording doesn't need a game, so it can start the buffer that's waiting for one.
+  rec.disabled = status.state !== 'ready' && !status.waitingForGame;
   $('save-clip').disabled = !status.buffering;
 
   const cleanMic = settings?.cleanMic ?? false;
@@ -97,7 +102,7 @@ function renderBuffer() {
   $('buffer-note').classList.toggle('warn', !!frameProblem);
   $('buffer-note').title = frameProblem;
   $('buffer-note').textContent = frameProblem ? 'Losing frames'
-    : !status.buffering ? 'Not buffering'
+    : !status.buffering ? (status.waitingForGame ? 'Off until a game opens' : 'Not buffering')
     : wanted >= buffer ? 'Whole buffer selected'
       : kept < wanted ? `Filling to ${lengthLabel(wanted)}`
         : `Last ${lengthLabel(wanted)} selected`;
@@ -183,6 +188,50 @@ const observer = new IntersectionObserver((entries) => {
     });
   }
 });
+
+/** Moving across a video's thumbnail scrubs through it, from a strip of frames made the first time. */
+const SCRUB_DELAY_MS = 250;
+function wireScrub(thumb, m, key) {
+  let timer = null;
+  let over = false;
+  let x = 0;
+  const show = (strip) => {
+    if (!over || !strip?.url) return;
+    let scrub = thumb.querySelector('.scrub');
+    if (!scrub) {
+      scrub = document.createElement('div');
+      scrub.className = 'scrub';
+      scrub.innerHTML = '<div class="scrub-line"></div>';
+      scrub.style.backgroundImage = `url("${strip.url}")`;
+      scrub.style.backgroundSize = `${strip.frames * 100}% 100%`;
+      thumb.append(scrub);
+    }
+    const index = Math.min(strip.frames - 1, Math.floor(x * strip.frames));
+    scrub.style.backgroundPositionX = `${strip.frames > 1 ? (index / (strip.frames - 1)) * 100 : 0}%`;
+    scrub.firstChild.style.width = `${x * 100}%`;
+  };
+  const load = () => {
+    if (!strips.has(key)) {
+      strips.set(key, api.invoke('preview-strip', m.file).then((strip) => {
+        strips.set(key, strip);
+        return strip;
+      }, () => { strips.delete(key); }));
+    }
+    Promise.resolve(strips.get(key)).then(show);
+  };
+  thumb.addEventListener('mouseenter', () => { over = true; timer = setTimeout(load, SCRUB_DELAY_MS); });
+  thumb.addEventListener('mousemove', (e) => {
+    const box = thumb.getBoundingClientRect();
+    x = Math.min(0.999, Math.max(0, (e.clientX - box.left) / box.width));
+    const known = strips.get(key);
+    if (known && !(known instanceof Promise)) show(known);
+  });
+  thumb.addEventListener('mouseleave', () => {
+    over = false;
+    clearTimeout(timer);
+    thumb.querySelector('.scrub')?.remove();
+  });
+}
 
 function applyInfo(thumb, result) {
   thumb.querySelector('img').src = result.url;
@@ -277,6 +326,17 @@ function setLibrary(open) {
 }
 
 const gameOf = (m) => m.game ?? parseName(m.name).game;
+const tagsOf = (m) => m.tags ?? [];
+
+/** The tag filter offers the tags in use, and stays hidden until there are some. */
+function renderTagFilter(all) {
+  const select = $('library-tag');
+  const chosen = select.value;
+  const tags = [...new Set(all.flatMap(tagsOf))].sort((a, b) => a.localeCompare(b));
+  select.replaceChildren(...[['', 'All tags'], ...tags.map((t) => [t, `#${t}`])].map(([value, label]) => new Option(label, value)));
+  select.value = tags.includes(chosen) ? chosen : '';
+  select.hidden = tags.length === 0;
+}
 
 /** The game filter only offers games you have clips of, plus whatever's chosen. */
 function renderGameFilter(all) {
@@ -303,10 +363,12 @@ const SORTS = {
 function filtered(all) {
   const words = $('library-search').value.trim().toLowerCase();
   const game = $('library-game').value;
+  const tag = $('library-tag').value;
   return all
     .filter((m) => !favouritesOnly || m.favourite)
     .filter((m) => !game || gameOf(m) === game)
-    .filter((m) => !words || `${m.name} ${gameOf(m)}`.toLowerCase().includes(words))
+    .filter((m) => !tag || tagsOf(m).includes(tag))
+    .filter((m) => !words || `${m.name} ${gameOf(m)} ${tagsOf(m).map((t) => `#${t}`).join(' ')}`.toLowerCase().includes(words))
     .sort(SORTS[$('library-sort').value] ?? SORTS.newest);
 }
 
@@ -337,9 +399,40 @@ function renameField(m, title) {
   return input;
 }
 
+/** Tags are typed in one field, separated by commas. */
+function tagField(m) {
+  const input = document.createElement('input');
+  input.className = 'rename-field';
+  input.value = tagsOf(m).join(', ');
+  input.placeholder = 'Tags, separated by commas';
+  input.setAttribute('aria-label', 'Tags');
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    tagging = null;
+    if (save) {
+      const tags = input.value.split(',').map((t) => t.trim()).filter(Boolean);
+      await api.invoke('set-tags', { file: m.file, tags }).catch((e) => showBanner(errorText(e), 'bad'));
+      await refresh();
+    } else {
+      renderMedia();
+    }
+  };
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+  };
+  input.onblur = () => finish(true);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+  return input;
+}
+
 function renderMedia() {
   const all = media.filter((m) => m.kind === kind);
   renderGameFilter(all);
+  renderTagFilter(all);
   const shown = libraryOpen ? filtered(all) : all.slice(0, HOME_CLIPS);
   $('view-all').textContent = `View all (${all.length})`;
   $('library-title').textContent = KIND_TEXT[kind].title;
@@ -369,6 +462,7 @@ function renderMedia() {
     thumb.dataset.key = key;
     const known = info.get(key);
     if (known) applyInfo(thumb, known); else observer.observe(thumb);
+    if (m.kind !== 'screenshot') wireScrub(thumb, m, key);
 
     const text = document.createElement('div');
     text.className = 'item-text';
@@ -379,9 +473,11 @@ function renderMedia() {
     const sub = document.createElement('div');
     sub.className = 'item-sub';
     // A renamed clip's title no longer says which game it came from.
-    sub.textContent = `${m.game && m.game !== shownName ? `${m.game} · ` : ''}${timeAgo(m.mtime)} · ${sizeLabel(m.size)}`;
-    sub.title = m.name;
+    const tags = tagsOf(m).map((t) => `#${t}`).join(' ');
+    sub.textContent = `${m.game && m.game !== shownName ? `${m.game} · ` : ''}${timeAgo(m.mtime)} · ${sizeLabel(m.size)}${tags ? ` · ${tags}` : ''}`;
+    sub.title = tags ? `${m.name}\n${tags}` : m.name;
     if (renaming === m.file) text.append(renameField(m, shownName), sub);
+    else if (tagging === m.file) text.append(title, tagField(m));
     else text.append(title, sub);
 
     const actions = document.createElement('div');
@@ -442,6 +538,7 @@ function buildMenu(m) {
     item(video ? 'Play' : 'Open', () => api.invoke('open', m.file)),
     ...(video ? [item('Edit', () => api.invoke('open-editor', [m.file]))] : []),
     item('Rename', () => { renaming = m.file; renderMedia(); }),
+    item('Tags', () => { tagging = m.file; renderMedia(); }),
     item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
     item('Send to Discord', () => {
       if (!settings.discordWebhook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
@@ -491,8 +588,8 @@ async function refresh() {
   const files = new Set(media.map((m) => m.file));
   for (const f of selected) if (!files.has(f)) selected.delete(f);
   renderStatus();
-  // Redrawing would throw away a name being typed.
-  if (!renaming) renderMedia();
+  // Redrawing would throw away a name or tags being typed.
+  if (!renaming && !tagging) renderMedia();
   return state;
 }
 
@@ -528,6 +625,73 @@ function bindHotkey(input, get, set) {
     const accel = acceleratorFrom(e);
     if (accel) { set(accel); input.blur(); }
   };
+}
+
+/** Push-to-talk takes one key on its own, or a mouse button, because it's held rather than pressed. */
+const TALK_KEYS = {
+  Space: 'Space', Tab: 'Tab', CapsLock: 'CapsLock', Backquote: 'Backquote',
+  ShiftLeft: 'LeftShift', ShiftRight: 'RightShift', ControlLeft: 'LeftCtrl', ControlRight: 'RightCtrl', AltLeft: 'LeftAlt', AltRight: 'RightAlt',
+  Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+};
+const TALK_BUTTONS = { 1: 'MouseMiddle', 3: 'Mouse4', 4: 'Mouse5' };
+const talkLabel = (key) => ({ Mouse4: 'Mouse 4', Mouse5: 'Mouse 5', MouseMiddle: 'Middle mouse', LeftShift: 'Left Shift', RightShift: 'Right Shift', LeftCtrl: 'Left Ctrl', RightCtrl: 'Right Ctrl', LeftAlt: 'Left Alt', RightAlt: 'Right Alt', CapsLock: 'Caps Lock', Backquote: '`' }[key] ?? key) || 'None';
+
+function talkKeyFrom(e) {
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
+  if (/^F\d{1,2}$/.test(e.code) || /^Numpad\d$/.test(e.code)) return e.code;
+  return TALK_KEYS[e.code] ?? null;
+}
+
+function bindTalkKey(input) {
+  const show = () => { input.value = talkLabel(settings.pushToTalkKey); };
+  const set = (key) => { settings.pushToTalkKey = key; scheduleSave(); input.blur(); };
+  show();
+  input.classList.add('hotkey');
+  input.onfocus = () => { input.classList.add('listening'); input.value = 'Press a key or button'; };
+  input.onblur = () => { input.classList.remove('listening'); show(); };
+  input.onkeydown = (e) => {
+    e.preventDefault();
+    if (e.code === 'Escape') return input.blur();
+    const key = talkKeyFrom(e);
+    if (key) set(key);
+  };
+  input.onmousedown = (e) => {
+    const key = document.activeElement === input && TALK_BUTTONS[e.button];
+    if (!key) return;
+    e.preventDefault();
+    set(key);
+  };
+  // Side buttons would otherwise go back a page.
+  input.onmouseup = (e) => { if (e.button > 2) e.preventDefault(); };
+  input.onauxclick = (e) => e.preventDefault();
+}
+
+/* Webcam */
+
+async function loadCameraChoices() {
+  try {
+    cameraChoices = await api.invoke('camera-choices');
+  } catch {
+    cameraChoices = null; // Capture isn't running, so the list can't be read.
+  }
+  renderCamera();
+}
+
+function renderCamera() {
+  const select = $('cameraDevice');
+  const choices = cameraChoices ?? [];
+  select.replaceChildren(...choices.map((c) => new Option(c.name, c.id)));
+  if (settings.cameraDevice && !choices.some((c) => c.id === settings.cameraDevice)) {
+    select.add(new Option(cameraChoices ? 'Saved camera (not connected)' : 'Saved camera', settings.cameraDevice));
+  }
+  const none = cameraChoices ? 'No webcam found' : cameraChoices === undefined ? 'Looking for webcams' : status.waitingForGame ? 'Start a game to list webcams' : 'Webcams can be listed once capture starts';
+  if (!select.options.length) select.add(new Option(none, ''));
+
+  select.value = settings.cameraDevice;
+  if (!settings.cameraDevice && choices.length) select.value = choices[0].id;
+  const on = $('cameraEnabled').checked;
+  for (const id of ['cameraDevice', 'cameraCorner', 'cameraSize', 'verticalFaceCam']) $(id).disabled = !on;
 }
 
 function renderPresets(failures = []) {
@@ -1127,7 +1291,13 @@ function fillForm() {
   const minutes = +(settings.bufferSeconds / 60).toFixed(2);
   ensureOption($('bufferMinutes'), minutes, `Custom (${settings.bufferSeconds} seconds)`);
   $('bufferMinutes').value = minutes;
-  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate']) $(k).checked = settings[k];
+  for (const k of SWITCHES) $(k).checked = settings[k];
+  ensureOption($('clipAfterSeconds'), settings.clipAfterSeconds, `${settings.clipAfterSeconds} seconds`);
+  ensureOption($('cameraSize'), settings.cameraSize, `${settings.cameraSize}%`);
+  ensureOption($('lowSpaceWarnGb'), settings.lowSpaceWarnGb, `${settings.lowSpaceWarnGb} GB`);
+  for (const k of ['clipAfterSeconds', 'cameraCorner', 'cameraSize', 'lowSpaceWarnGb']) $(k).value = settings[k];
+  bindTalkKey($('pushToTalkKey'));
+  renderCamera();
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
   bindHotkey($('markerHotkey'), () => settings.markerHotkey, (v) => { settings.markerHotkey = v; scheduleSave(); });
@@ -1137,6 +1307,8 @@ function fillForm() {
   $('game-level').replaceChildren(levelControl(-1, settings.gameAudioVolume, (v) => { settings.gameAudioVolume = v; }));
 }
 
+const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
+  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1191,8 +1363,10 @@ function readForm() {
   settings.deleteAfterDays = Number($('deleteAfterDays').value);
   settings.discordWebhook = $('discordWebhook').value.trim();
   settings.bufferSeconds = Math.round(Number($('bufferMinutes').value) * 60);
-  for (const k of ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate']) settings[k] = $(k).checked;
-  for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder']) settings[k] = $(k).value;
+  for (const k of SWITCHES) settings[k] = $(k).checked;
+  for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder', 'cameraCorner']) settings[k] = $(k).value;
+  for (const k of ['clipAfterSeconds', 'cameraSize', 'lowSpaceWarnGb']) settings[k] = Number($(k).value);
+  settings.cameraDevice = $('cameraDevice').value || settings.cameraDevice;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
 }
@@ -1200,11 +1374,11 @@ function readForm() {
 const icon = (path) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 const SECTIONS = [
   ['general', 'General', 'Startup, notifications, updates', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/>'],
-  ['video', 'Video', 'Quality, buffer, recordings, performance', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
-  ['audio', 'Audio', 'Game audio, devices, apps, tracks', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
+  ['video', 'Video', 'Quality, buffer, webcam, performance', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
+  ['audio', 'Audio', 'Push to talk, game audio, devices', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
   ['controls', 'Controls', 'Hotkeys, clip lengths, controller', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
   ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
-  ['clips', 'Clips and sharing', 'Save location, clean up, Discord', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+  ['clips', 'Clips and sharing', 'Save location, folders, Discord', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
 ];
 let currentPane = null;
 
@@ -1229,6 +1403,7 @@ function showPane(id) {
   if (id === 'audio') loadAudioChoices();
   if (id === 'games') renderGamePicker();
   if (id === 'controls') fillController();
+  if (id === 'video') loadCameraChoices();
   updateLiveViews();
 }
 
@@ -1257,7 +1432,20 @@ api.on('panel-shown', () => { refresh(); updateLiveViews(); });
 window.addEventListener('focus', updateLiveViews);
 document.addEventListener('visibilitychange', updateLiveViews);
 api.on('feedback', (f) => {
-  if (f.kind === 'clip' && f.ok) {
+  // A Stream Deck dial changed the mic volume, so the form takes it, or a later save would put it back.
+  if (f.kind === 'mic-volume') {
+    refresh().then((state) => {
+      settings?.audioSources.forEach((s, i) => {
+        const saved = state.settings.audioSources[i];
+        if (saved?.device === s.device) s.volume = saved.volume;
+      });
+      if (currentPane === 'audio' && !$('settings').hidden) renderAudio();
+    });
+    return;
+  }
+  if (f.kind === 'clip-waiting') {
+    showBanner(`Saving in ${f.seconds} seconds, so what happens next is in the clip too.`);
+  } else if (f.kind === 'clip' && f.ok) {
     shineBuffer();
     if (f.short) showBanner(`Only ${Math.round(f.actualSeconds)}s was buffered, so the clip is shorter than the ${f.requestedSeconds}s you asked for.`);
     else showBanner(`Saved ${Math.round(f.actualSeconds)}s clip`, 'good');
@@ -1299,6 +1487,7 @@ document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => addAu
 $('open-settings').onclick = () => showView('settings');
 $('library-search').oninput = () => renderMedia();
 $('library-game').onchange = () => renderMedia();
+$('library-tag').onchange = () => renderMedia();
 $('library-sort').onchange = () => renderMedia();
 $('library-favourites').onclick = () => {
   favouritesOnly = !favouritesOnly;
@@ -1331,7 +1520,10 @@ $('clean-mic').onclick = () => api.invoke('toggle-clean-mic').catch(() => undefi
 $('cleanMicSwitch').onchange = () => api.invoke('toggle-clean-mic').catch(() => renderStatus());
 $('marker').onclick = () => api.invoke('add-marker').catch(() => undefined);
 $('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
-for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup']) $(id).onchange = () => scheduleSave();
+for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup',
+  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize']) $(id).onchange = () => scheduleSave();
+$('cameraEnabled').onchange = () => { renderCamera(); scheduleSave(); };
+$('cameraDevice').onchange = () => { settings.cameraDevice = $('cameraDevice').value; scheduleSave(); };
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
   const on = $('runAsAdmin').checked;
@@ -1371,7 +1563,25 @@ $('pick-folder').onclick = async () => { const dir = await api.invoke('pick-fold
 $('quality').onchange = () => { applyQuality(); scheduleSave(); };
 $('bufferMinutes').onchange = () => { renderEstimate(); scheduleSave(); };
 $('quit').onclick = () => api.invoke('quit-app');
+$('export-settings').onclick = async () => {
+  try {
+    if (await api.invoke('export-settings')) $('save-note').textContent = 'Settings exported. Import that file on your other PC, under General.';
+  } catch (e) {
+    $('save-note').textContent = errorText(e);
+  }
+};
+$('import-settings').onclick = async () => {
+  if (saveTimer) await saveNow();
+  try {
+    // Everything on the page comes from the settings, so the simplest redraw is a fresh page.
+    if (await api.invoke('import-settings')) window.location.reload();
+  } catch (e) {
+    $('save-note').classList.add('warn');
+    $('save-note').textContent = errorText(e);
+  }
+};
 $('save-diagnostics').onclick = async () => {
+
   try {
     if (await api.invoke('save-diagnostics')) $('save-note').textContent = 'Diagnostics saved. Send that zip file with your problem report.';
   } catch (e) {

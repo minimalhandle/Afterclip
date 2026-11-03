@@ -19,6 +19,10 @@ pub trait ApiHandlers: Send + Sync + 'static {
     /// Pretends this program is the running game. Empty means none. Only reachable in a test instance.
     fn test_game(&self, exe: &str);
     fn test_controller(&self, kind: &str, report: &str);
+    /// Pretends the drive has this much free. Only reachable in a test instance.
+    fn test_free_space(&self, bytes: Option<u64>);
+    /// Pretends the push-to-talk key is held or let go. Only reachable in a test instance.
+    fn test_talk(&self, held: bool);
     fn clip(&self, seconds: i64) -> Result<Value, String>;
     fn toggle_record(&self) -> Result<Value, String>;
     fn toggle_mic(&self) -> Result<Value, String>;
@@ -29,6 +33,10 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn open_clips_folder(&self) -> Result<Value, String>;
     fn edit_last_clip(&self) -> Result<Value, String>;
     fn copy_last_clip(&self) -> Result<Value, String>;
+    fn compress_last_clip(&self) -> Result<Value, String>;
+    fn send_last_clip(&self) -> Result<Value, String>;
+    /// Turns every mute-key source up or down by this many percent.
+    fn change_mic_volume(&self, percent: i64) -> Result<Value, String>;
     fn status(&self) -> Value;
 }
 
@@ -80,6 +88,21 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
         (Method::Post, "/open/clips") => handlers.open_clips_folder(),
         (Method::Post, "/last-clip/edit") => handlers.edit_last_clip(),
         (Method::Post, "/last-clip/copy") => handlers.copy_last_clip(),
+        (Method::Post, "/last-clip/compress") => handlers.compress_last_clip(),
+        (Method::Post, "/last-clip/discord") => handlers.send_last_clip(),
+        (Method::Post, volume) if volume.starts_with("/mic/volume/") => match volume.trim_start_matches("/mic/volume/").parse::<i64>() {
+            Ok(percent) => handlers.change_mic_volume(percent.clamp(-200, 200)),
+            Err(_) => return (404, json!({ "error": "not found" })),
+        },
+        (Method::Post, space) if space.starts_with("/test/free-space/") && is_test_instance() => {
+            handlers.test_free_space(space.trim_start_matches("/test/free-space/").parse().ok());
+            Ok(json!({}))
+        }
+        (Method::Post, "/test/talk/on" | "/test/talk/off") if is_test_instance() => {
+            handlers.test_talk(url.ends_with("/on"));
+            Ok(json!({}))
+        }
+
         (Method::Post, "/test/open/panel" | "/test/open/editor") if is_test_instance() => {
             handlers.test_open(url.rsplit('/').next().unwrap_or(""));
             Ok(json!({}))

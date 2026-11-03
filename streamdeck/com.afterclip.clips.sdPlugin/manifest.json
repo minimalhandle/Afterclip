@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.7.0.0",
+  "Version": "0.8.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -298,7 +298,6 @@
       "Name": "Save Custom Length",
       "Tooltip": "Save a length you choose in the key's settings.",
       "Icon": "imgs/action-clip",
-      "PropertyInspectorPath": "ui/clip.html",
       "Controllers": [
         "Keypad"
       ],
@@ -310,7 +309,8 @@
           "Image": "imgs/clip",
           "ShowTitle": false
         }
-      ]
+      ],
+      "PropertyInspectorPath": "ui/clip.html"
     },
     {
       "UUID": "com.afterclip.clips.open-panel",
@@ -401,6 +401,94 @@
           "ShowTitle": false
         }
       ]
+    },
+    {
+      "UUID": "com.afterclip.clips.compress-last",
+      "Name": "Compress Last Clip",
+      "Tooltip": "Make a smaller copy of your newest clip, ready to share.",
+      "Icon": "imgs/action-compress-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/compress-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.discord-last",
+      "Name": "Send Last Clip to Discord",
+      "Tooltip": "Send your newest clip to the Discord channel set in Afterclip.",
+      "Icon": "imgs/action-discord-last",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/discord-last",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "UUID": "com.afterclip.clips.mic-dial",
+      "Name": "Mic Volume",
+      "Tooltip": "Turn to change your mic volume in clips. Press to mute your mic in clips.",
+      "Icon": "imgs/action-mic-dial",
+      "Controllers": [
+        "Encoder"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/mic-dial",
+          "ShowTitle": false
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Mic volume",
+          "Push": "Mute mic in clips",
+          "Touch": "Mute mic in clips"
+        }
+      }
+    },
+    {
+      "UUID": "com.afterclip.clips.clip-dial",
+      "Name": "Clip Length Dial",
+      "Tooltip": "Turn to choose a length, then press to save a clip. The bar shows how full your buffer is.",
+      "Icon": "imgs/action-clip-dial",
+      "Controllers": [
+        "Encoder"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/clip-dial",
+          "ShowTitle": false
+        }
+      ],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Choose a length",
+          "Push": "Save a clip",
+          "Touch": "Save a clip"
+        }
+      }
     }
   ]
 }

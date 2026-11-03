@@ -1,7 +1,8 @@
 // Stream Deck launches this with: -port <n> -pluginUUID <id> -registerEvent <name> -info <json>
 const fs = require('node:fs');
 const path = require('node:path');
-const { keySvg, confirmSvg } = require('./key-art.cjs');
+const { keySvg, confirmSvg, COLOURS } = require('./key-art.cjs');
+
 
 const arg = (name) => process.argv[process.argv.indexOf(`-${name}`) + 1];
 const API = process.env.AFTERCLIP_API ?? 'http://127.0.0.1:4467';
@@ -17,6 +18,10 @@ const CONFIRM_FRAME_MS = 70;
 const CONFIRM_HOLD_MS = 650;
 const PULSE_MS = 220;
 const FAIL_HOLD_MS = 1200;
+// Compressing or sending a long clip can take minutes.
+const LONG_JOB_MS = 15 * 60_000;
+const VOLUME_STEP = 5;
+const DIAL_LENGTHS = [15, 30, 60, 120, 300, 600, 0];
 
 const RECORD = 'com.afterclip.clips.record';
 const MIC = 'com.afterclip.clips.mic';
@@ -28,6 +33,12 @@ const OPEN_CLIPS = 'com.afterclip.clips.open-clips';
 const EDIT_LAST = 'com.afterclip.clips.edit-last';
 const COPY_LAST = 'com.afterclip.clips.copy-last';
 const SCREENSHOT = 'com.afterclip.clips.screenshot';
+const COMPRESS_LAST = 'com.afterclip.clips.compress-last';
+const DISCORD_LAST = 'com.afterclip.clips.discord-last';
+// Stream Deck + dials.
+const MIC_DIAL = 'com.afterclip.clips.mic-dial';
+const CLIP_DIAL = 'com.afterclip.clips.clip-dial';
+const DIALS = new Set([MIC_DIAL, CLIP_DIAL]);
 // Keys that do one thing and don't depend on the capture state.
 const SIMPLE_KEYS = {
   [OPEN_PANEL]: { route: '/open/panel', symbol: 'panel', small: 'OPEN' },
@@ -35,6 +46,9 @@ const SIMPLE_KEYS = {
   [EDIT_LAST]: { route: '/last-clip/edit', symbol: 'edit', small: 'EDIT LAST' },
   [COPY_LAST]: { route: '/last-clip/copy', symbol: 'copy', small: 'COPY LAST', confirm: 'COPIED' },
   [SCREENSHOT]: { route: '/screenshot', symbol: 'camera', small: 'SHOT', confirm: 'SAVED' },
+  // These run until the job is done, and show it on the key meanwhile.
+  [COMPRESS_LAST]: { route: '/last-clip/compress', symbol: 'compress', small: 'COMPRESS', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
+  [DISCORD_LAST]: { route: '/last-clip/discord', symbol: 'send', small: 'DISCORD', confirm: 'SENT', busy: 'SENDING', timeout: LONG_JOB_MS },
 };
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -68,6 +82,7 @@ function lengthFace(seconds) {
 
 function faceFor(key) {
   const simple = SIMPLE_KEYS[key.action];
+  if (simple && key.saving) return { symbol: simple.symbol, small: simple.busy, tone: 'active' };
   if (simple) return { symbol: simple.symbol, small: status ? simple.small : 'OFF', tone: status ? 'normal' : 'off' };
   if (key.action === RECORD) {
     if (!status) return { symbol: 'record', small: 'OFF', tone: 'off' };
@@ -91,8 +106,34 @@ function faceFor(key) {
   return face;
 }
 
+const lengthText = (seconds) => (seconds === 0 ? 'Whole buffer' : seconds % 60 === 0 ? `Last ${seconds / 60} min` : `Last ${seconds} sec`);
+
+/** What a dial's screen shows: a title, a value, and a bar in Afterclip's purple. */
+function dialFace(key) {
+  const bar = (value, colour = COLOURS.ring) => ({ value: Math.round(Math.min(100, Math.max(0, value))), bar_fill_c: colour });
+  if (key.action === MIC_DIAL) {
+    const volume = status?.micVolume ?? 100;
+    const face = !status ? { symbol: 'mic', small: 'OFF', tone: 'off' } : status.micMuted ? { symbol: 'micMuted', small: 'MUTED', tone: 'active' } : { symbol: 'mic', small: `${volume}%` };
+    const value = key.note ?? (!status ? 'Not open' : status.micMuted ? 'Muted' : `${volume}%`);
+    return { title: 'Mic in clips', value, icon: image(face), indicator: bar(status && !status.micMuted ? volume / 2 : 0, key.note ? COLOURS.fail : COLOURS.ring) };
+  }
+  const seconds = DIAL_LENGTHS[key.lengthIndex];
+  const filled = status?.buffering && status.bufferingSince && status.bufferSeconds ? ((Date.now() - status.bufferingSince) / 1000 / status.bufferSeconds) * 100 : 0;
+  const value = key.note ?? (key.saving ? 'Saving' : !status ? 'Not open' : lengthText(seconds));
+  return { title: 'Save a clip', value, icon: image({ ...lengthFace(seconds), tone: key.saving ? 'active' : status?.buffering ? 'normal' : 'off' }), indicator: bar(filled, key.note === 'Failed' ? COLOURS.fail : COLOURS.ring) };
+}
+
 function draw(context) {
   const key = keys.get(context);
+  if (key?.dial) {
+    const feedback = dialFace(key);
+    const shown = JSON.stringify(feedback);
+    if (shown !== key.drawn) {
+      key.drawn = shown;
+      sd('setFeedback', context, feedback);
+    }
+    return;
+  }
   if (!key || key.playing) return;
   const picture = image(faceFor(key));
   // Only sends a change, because this runs every poll and the hardware doesn't need the traffic.
@@ -151,12 +192,85 @@ const customSeconds = (settings) => {
 };
 const secondsFor = (action, settings) => fixedSeconds(action) ?? customSeconds(settings);
 
+/** Shows a word on a dial for a moment, such as Saved, then its live state again. */
+async function note(context, words) {
+  const key = keys.get(context);
+  if (!key) return;
+  key.note = words;
+  draw(context);
+  await sleep(words === 'Failed' ? FAIL_HOLD_MS : CONFIRM_HOLD_MS);
+  if (key.note === words) key.note = undefined;
+  draw(context);
+}
+
+/** Turning sends one change at a time, adding up any ticks that arrive while one is on its way. */
+async function turnMic(context, ticks) {
+  const key = keys.get(context);
+  if (!key) return;
+  key.ticks = (key.ticks ?? 0) + ticks;
+  if (key.turning) return;
+  key.turning = true;
+  while (key.ticks) {
+    const change = key.ticks * VOLUME_STEP;
+    key.ticks = 0;
+    try {
+      const reply = await call('POST', `/mic/volume/${change}`);
+      if (status) status.micVolume = reply.micVolume;
+      draw(context);
+    } catch {
+      await poll();
+      note(context, 'Failed');
+    }
+  }
+  key.turning = false;
+}
+
+function turnLength(context, ticks) {
+  const key = keys.get(context);
+  if (!key) return;
+  key.lengthIndex = Math.min(DIAL_LENGTHS.length - 1, Math.max(0, key.lengthIndex + ticks));
+  sd('setSettings', context, { seconds: DIAL_LENGTHS[key.lengthIndex] });
+  draw(context);
+}
+
+async function pushDial(context, action) {
+  const key = keys.get(context);
+  if (!key || key.saving) return;
+  try {
+    if (action === MIC_DIAL) {
+      await call('POST', '/mic/toggle');
+      await poll();
+      return;
+    }
+    key.saving = true;
+    draw(context);
+    await call('POST', `/clip/${DIAL_LENGTHS[key.lengthIndex]}`);
+    key.saving = false;
+    await poll();
+    note(context, 'Saved');
+  } catch {
+    key.saving = false;
+    await poll();
+    note(context, 'Failed');
+  }
+}
+
 async function press(context, action, settings) {
   const key = keys.get(context);
   const simple = SIMPLE_KEYS[action];
   let finish;
   try {
-    if (action === RECORD || action === MIC || action === CLEAN) {
+    if (simple?.busy) {
+      if (key?.saving) return; // It's already working on the last clip.
+      if (key) {
+        key.saving = true;
+        key.run = (key.run ?? 0) + 1;
+        key.playing = false;
+        draw(context);
+      }
+      await call('POST', simple.route, simple.timeout);
+      finish = () => confirmed(context, simple.confirm);
+    } else if (action === RECORD || action === MIC || action === CLEAN) {
       await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean' }[action]);
       finish = () => pulsed(context);
     } else if (action === MARKER) {
@@ -179,7 +293,8 @@ async function press(context, action, settings) {
     }
   } catch (error) {
     await poll();
-    finish = () => failed(context, action, /No clips/.test(error.message) ? 'NO CLIPS' : 'FAILED');
+    const reason = /No clips/.test(error.message) ? 'NO CLIPS' : /webhook/i.test(error.message) ? 'NO HOOK' : 'FAILED';
+    finish = () => failed(context, action, reason);
   }
   if (key) key.saving = false;
   await poll();
@@ -195,14 +310,24 @@ ws.addEventListener('message', ({ data }) => {
   const { event, action, context, payload } = JSON.parse(data);
   if (event === 'willAppear' || event === 'didReceiveSettings') {
     const existing = keys.get(context);
-    if (existing) existing.seconds = secondsFor(action, payload.settings);
-    else keys.set(context, { action, seconds: secondsFor(action, payload.settings), saving: false, playing: false, drawn: undefined });
+    const lengthIndex = Math.max(0, DIAL_LENGTHS.indexOf(Number(payload.settings?.seconds ?? 30)));
+    if (existing) {
+      existing.seconds = secondsFor(action, payload.settings);
+      if (existing.dial) existing.lengthIndex = lengthIndex;
+    } else {
+      keys.set(context, { action, seconds: secondsFor(action, payload.settings), saving: false, playing: false, drawn: undefined, dial: DIALS.has(action), lengthIndex });
+    }
     draw(context);
     if (!existing) poll();
   } else if (event === 'willDisappear') {
     keys.delete(context);
   } else if (event === 'keyDown') {
     press(context, action, payload.settings);
+  } else if (event === 'dialRotate') {
+    if (action === MIC_DIAL) turnMic(context, payload.ticks);
+    else turnLength(context, payload.ticks);
+  } else if (event === 'dialDown' || event === 'touchTap') {
+    pushDial(context, action);
   }
 });
 

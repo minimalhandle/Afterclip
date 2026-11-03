@@ -18,16 +18,22 @@ const action = (name, title, tooltip, extra = {}) => ({
   Name: title,
   Tooltip: tooltip,
   Icon: `imgs/action-${name}`,
-  ...extra,
   Controllers: ['Keypad'],
   DisableAutomaticStates: true,
   SupportedInMultiActions: true,
   UserTitleEnabled: false,
   States: [{ Image: `imgs/${name}`, ShowTitle: false }],
+  ...extra,
+});
+// Stream Deck + dials, which draw on the touch strip above them.
+const dial = (name, title, tooltip, triggers) => action(name, title, tooltip, {
+  Controllers: ['Encoder'],
+  Encoder: { layout: '$B1', TriggerDescription: triggers },
+  SupportedInMultiActions: false,
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.7.0.0';
+manifest.Version = '0.8.0.0';
 manifest.Actions = [
   ...LENGTHS.map(([n, unit]) => action(`save-${n}-${unit}`, `Save Last ${n} ${unit === 'sec' ? 'Sec' : 'Min'}`, `Save the last ${n} ${unit === 'sec' ? 'seconds' : n === 1 ? 'minute' : 'minutes'} of your buffer.`)),
   action('save-full', 'Save Full Buffer', 'Save everything in your buffer.'),
@@ -41,6 +47,10 @@ manifest.Actions = [
   action('edit-last', 'Edit Last Clip', 'Open your newest clip in the editor.'),
   action('copy-last', 'Copy Last Clip', 'Copy your newest clip, ready to paste into a chat or another app.'),
   action('screenshot', 'Take Screenshot', 'Save a picture of what Afterclip is capturing.'),
+  action('compress-last', 'Compress Last Clip', 'Make a smaller copy of your newest clip, ready to share.'),
+  action('discord-last', 'Send Last Clip to Discord', 'Send your newest clip to the Discord channel set in Afterclip.'),
+  dial('mic-dial', 'Mic Volume', 'Turn to change your mic volume in clips. Press to mute your mic in clips.', { Rotate: 'Mic volume', Push: 'Mute mic in clips', Touch: 'Mute mic in clips' }),
+  dial('clip-dial', 'Clip Length Dial', 'Turn to choose a length, then press to save a clip. The bar shows how full your buffer is.', { Rotate: 'Choose a length', Push: 'Save a clip', Touch: 'Save a clip' }),
 ];
 fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -61,7 +71,12 @@ for (const [name, list, face] of [
   ['edit-last', 'E', { symbol: 'edit', small: 'EDIT LAST' }],
   ['copy-last', 'P', { symbol: 'copy', small: 'COPY LAST' }],
   ['screenshot', 'S', { symbol: 'camera', small: 'SHOT' }],
+  ['compress-last', 'Z', { symbol: 'compress', small: 'COMPRESS' }],
+  ['discord-last', 'D', { symbol: 'send', small: 'DISCORD' }],
+  ['mic-dial', 'V', { symbol: 'mic', small: 'VOLUME' }],
+  ['clip-dial', 'T', { big: '30', small: 'SEC' }],
 ]) {
+
   fs.writeFileSync(path.join(imgs, `action-${name}.svg`), listIcon(list));
   fs.writeFileSync(path.join(imgs, `${name}.svg`), keySvg(face));
 }
