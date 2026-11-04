@@ -112,6 +112,8 @@ Download the installer from the [latest release](https://github.com/minimalhandl
 
 For Stream Deck keys, download the `.streamDeckPlugin` file from the same release and double-click it.
 
+**Two PCs:** the Stream Deck can control Afterclip on another PC, such as your gaming PC from your streaming PC. On the PC that runs Afterclip, turn on **Allow a Stream Deck on another PC** in **Settings > Controls**, and copy the address it shows. On the PC with the Stream Deck, install the plugin, open any Afterclip key's settings, paste the address into **Address**, and press **Connect**. All the keys then control that PC. Install Afterclip on the PC that runs the game, because it records the game where it runs, not from a capture card.
+
 ### Build from source
 
 You need Node, Rust, and Visual Studio with the C++ tools.
@@ -168,7 +170,9 @@ You can change these and add more clip lengths in Settings.
 - **Webcam:** its light stays on while it's shown and Afterclip is buffering, because the webcam is part of the buffer. Switching it off lets go of the webcam, and switching it on or off doesn't restart capture. Choosing a different webcam, corner or size does. Only its picture is used, never its microphone.
 - **Only buffer during games:** the buffer stops 10 minutes after the game closes, so you can still clip its last moments. Record works at any time, and starts the buffer if needed. A windowed game you haven't added under **Settings > Games** doesn't count as a game.
 - **Game folders:** only new files go into them. A folder is removed once it's empty.
-- **Moving to another PC:** **Export settings** in General saves your settings, hotkeys and game profiles to a file, and **Import settings** loads them. Your Discord webhook is never in the file, and a save location on a drive the PC doesn't have is left as it is.
+- **Stream Deck on another PC:** keys act on the PC running Afterclip, so Copy Last Clip, Open Clips Folder, Open Afterclip and Edit Last Clip copy and open things there. The first time it's turned on, Windows Firewall may ask whether Afterclip can use your network: allow it on private networks. Importing settings never turns this on.
+- **Moving to another PC:**
+ **Export settings** in General saves your settings, hotkeys and game profiles to a file, and **Import settings** loads them. Your Discord webhook is never in the file, and a save location on a drive the PC doesn't have is left as it is.
 - **Doubled game audio:** Afterclip avoids this when the main mix already records the game's device. It can't see inside a mixer's routing, so if you record a mixer output that also carries the game, turn **Record the game's audio** off.
 - **Not detected:** a windowed game you haven't added under **Settings > Games** isn't detected, so it's only recorded if it's on your primary monitor. Fullscreen browsers and video players count as normal desktop use.
 - **Controllers:** turn this on in Settings, Controls. Hold Create, View or −, then press R3 to save a clip. Other actions can be added there. Afterclip only listens, and never sends anything to the controller, so your game also receives these presses. Tested on a DualSense over USB and Bluetooth. Xbox and Switch Pro support hasn't been tried on real controllers yet. Switch Pro needs Bluetooth, unless Steam is running.
@@ -193,7 +197,7 @@ Some details:
 
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
-- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`.
+- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`. With **Allow a Stream Deck on another PC** on, it also listens on your local network on port 4468, or one you choose, and every request must carry the key from the address. A wrong key is answered slowly, so guessing it is impractical. The connection isn't encrypted, so use it on your own network, not on shared Wi-Fi. **New key** in Settings stops an old address working.
 - **Library data:** favourites, tags, where a clip's webcam sat, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
 - **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips, recordings and screenshots are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails, previews and logs, is in `%LOCALAPPDATA%\Afterclip`.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.

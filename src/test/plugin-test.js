@@ -92,6 +92,8 @@ async function main() {
   try {
     await waitFor(() => received.some((m) => m.event === 'registerPlugin'), 5000, 'register');
     check('registers with Stream Deck', true);
+    await waitFor(() => received.some((m) => m.event === 'getGlobalSettings' && m.context === 'test'), 3000, 'the shared address');
+    check('asks Stream Deck for the shared address', true);
 
     const layout = [
       ['s15', 'save-15-sec', '/clip/15', '>15<'], ['s30', 'save-30-sec', '/clip/30', '>30<'],
@@ -301,9 +303,53 @@ async function main() {
     state.clipDelay = 0;
 
 
+    // Another PC: a second pretend Afterclip with its own key, reached through the address from its Settings.
+    const far = { recording: true, buffering: true, micMuted: false, routes: [] };
+    const farApi = http.createServer((req, res) => {
+      const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+      if (req.headers.authorization !== 'Bearer far-key') return send(401, { error: 'unauthorized' });
+      if (req.url === '/status') return send(200, far);
+      far.routes.push(`${req.method} ${req.url}`);
+      send(200, { actualSeconds: 1 });
+    });
+    await new Promise((r) => farApi.listen(0, '127.0.0.1', r));
+    const farAddress = `http://127.0.0.1:${farApi.address().port}/?k=far-key`;
+    const global = (address) => deck.send(JSON.stringify({ event: 'didReceiveGlobalSettings', payload: { settings: { address } } }));
+    const linkSaid = () => received.filter((m) => m.event === 'sendToPropertyInspector' && m.context === 'pi').at(-1)?.payload;
+    deck.send(JSON.stringify({ event: 'propertyInspectorDidAppear', action: ACTION('record'), context: 'pi', payload: {} }));
+    await waitFor(() => linkSaid()?.link === 'local', 4000, 'the local connection');
+    check('the settings page says it is connected on this PC', linkSaid().host === null);
+    state.recording = false;
+    global(farAddress);
+    await waitFor(() => svgOf(lastImage('rec')).includes('STOP'), 5000, 'the other PC\'s recording');
+    check('with an address, keys show the other PC', true);
+    await waitFor(() => linkSaid()?.link === 'ok', 4000, 'the remote connection');
+    check('the settings page says which PC it is connected to', linkSaid().host === '127.0.0.1');
+    routes.length = 0;
+    event('keyDown', ACTION('save-15-sec'), 's15');
+    await waitFor(() => far.routes.includes('POST /clip/15'), 4000, 'a clip on the other PC');
+    check('a clip key saves on the other PC, not this one', routes.length === 0, routes.join());
+    global(farAddress.replace('far-key', 'wrong-key'));
+    await waitFor(() => linkSaid()?.link === 'key', 5000, 'the wrong key');
+    check('a wrong key is reported to the settings page', true);
+    await waitFor(() => svgOf(lastImage('one')).includes('>OFF<'), 5000, 'keys off with a wrong key');
+    event('keyDown', ACTION('save-1-min'), 'one');
+    await waitFor(() => svgOf(lastImage('one')).includes('>BAD KEY<'), 4000, 'bad key face');
+    check('a key pressed with a wrong key says so', true);
+    global('http://127.0.0.1:1/');
+    await waitFor(() => linkSaid()?.link === 'bad', 5000, 'an address with no key');
+    check('an address with no key in it is reported', true);
+    global('');
+    await waitFor(() => linkSaid()?.link === 'local' && svgOf(lastImage('rec')).includes('>REC<'), 5000, 'back on this PC');
+    check('an empty address goes back to this PC', true);
+    farApi.close();
+    const manifestNow = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
+    check('every key has a settings page with the address', manifestNow.PropertyInspectorPath === 'ui/connection.html' && fs.existsSync(path.join(pluginDir, 'ui', 'connection.html')) && fs.readFileSync(path.join(pluginDir, 'ui', 'clip.html'), 'utf8').includes('afterclipConnection'));
+
     state.fail = true;
 
     event('keyDown', ACTION('save-full'), 'full');
+
     await waitFor(() => results('full', 'showAlert') === 1, 3000, 'alert');
     check('a failed save says so', svgOf(lastImage('full')).includes('>FAILED<'));
     state.fail = false;
@@ -317,8 +363,9 @@ async function main() {
     await new Promise((r) => api.close(r));
     await waitFor(() => svgOf(lastImage('rec')).includes('>OFF<') && svgOf(lastImage('one')).includes('>OFF<'), 5000, 'off faces');
     check('keys show OFF when Afterclip is closed', true);
+    const failsBefore = results('one', 'showAlert');
     event('keyDown', ACTION('save-1-min'), 'one');
-    await waitFor(() => results('one', 'showAlert') === 1, 4000, 'off alert');
+    await waitFor(() => results('one', 'showAlert') === failsBefore + 1, 4000, 'off alert');
     check('pressing a key while Afterclip is closed says so', svgOf(lastImage('one')).includes('>NOT OPEN<'));
     await sleep(1500);
     const beforeKeyCount = received.filter((m) => m.event === 'setImage').length;

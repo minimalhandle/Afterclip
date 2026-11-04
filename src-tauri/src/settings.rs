@@ -152,6 +152,10 @@ pub struct Settings {
     pub game_folders: bool,
     /// Warns when the save location has less than this free. 0 never warns.
     pub low_space_warn_gb: f64,
+    /// Lets a Stream Deck on another PC on the local network control Afterclip, with the key.
+    pub remote_stream_deck: bool,
+    /// The port a Stream Deck on another PC connects to.
+    pub remote_port: i64,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
     pub test_pattern: bool,
 }
@@ -230,6 +234,8 @@ impl Settings {
             vertical_face_cam: true,
             game_folders: false,
             low_space_warn_gb: 10.0,
+            remote_stream_deck: false,
+            remote_port: crate::api::REMOTE_PORT as i64,
             test_pattern: false,
         }
     }
@@ -308,6 +314,10 @@ impl Settings {
         self.clip_after_seconds = self.clip_after_seconds.clamp(0, 30);
         self.camera_size = self.camera_size.clamp(CAMERA_SIZES.0, CAMERA_SIZES.1);
         self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
+        // Below 1024 needs administrator rights on some systems, and this PC's own port is taken.
+        if !(1024..=65535).contains(&self.remote_port) || self.remote_port == crate::api::LOCAL_PORT as i64 {
+            self.remote_port = crate::api::REMOTE_PORT as i64;
+        }
         self.buffer_seconds = self.buffer_seconds.clamp(MIN_BUFFER_SECONDS, MAX_BUFFER_SECONDS);
         self.fps = self.fps.clamp(10, 240);
         self.bitrate_kbps = self.bitrate_kbps.clamp(1000, 200_000);
@@ -379,7 +389,13 @@ impl Settings {
             || (self.camera_box().is_some() && self.camera_device != other.camera_device)
     }
 
+    /// The port the API listens on for other PCs, or None if only this PC may use it.
+    pub fn remote_port(&self) -> Option<u16> {
+        self.remote_stream_deck.then_some(self.remote_port as u16)
+    }
+
     /// A settings file someone saved, taken over these settings. What belongs to this PC, or is secret, stays.
+
     pub fn imported(&self, file: &Path) -> Result<Settings, String> {
         let text = fs::read_to_string(file).map_err(|e| format!("Couldn't read that file: {e}"))?;
         let saved: serde_json::Value = serde_json::from_str(&text).map_err(|_| "That isn't an Afterclip settings file.".to_string())?;
@@ -390,6 +406,9 @@ impl Settings {
         settings.discord_webhook = self.discord_webhook.clone();
         settings.skipped_update = self.skipped_update.clone();
         settings.test_pattern = self.test_pattern;
+        // Opening this PC to the network is its own choice, never something a file from another PC decides.
+        settings.remote_stream_deck = self.remote_stream_deck;
+        settings.remote_port = self.remote_port;
         // Another PC's drive may not exist here.
         let drive = Path::new(&settings.output_dir).components().next().map(|c| PathBuf::from(c.as_os_str()).join("\\"));
         if !drive.is_some_and(|d| d.exists()) {

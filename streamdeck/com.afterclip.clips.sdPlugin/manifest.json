@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.9.0.0",
+  "Version": "0.10.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -562,5 +562,6 @@
         }
       }
     }
-  ]
+  ],
+  "PropertyInspectorPath": "ui/connection.html"
 }

@@ -67,6 +67,12 @@ struct Core {
     token_file: PathBuf,
     ui_log: PathBuf,
     api: Mutex<Option<Arc<tiny_http::Server>>>,
+    /// The API for a Stream Deck on another PC, while that's on.
+    remote_api: Mutex<Option<Arc<tiny_http::Server>>>,
+    /// The Stream Deck key, which every request must carry.
+    api_key: Arc<std::sync::RwLock<String>>,
+    /// Why the API couldn't start, such as another app holding its port.
+    api_error: Mutex<Option<String>>,
     hotkey_failures: Mutex<Vec<String>>,
     thumbnail_lock: Mutex<()>,
     restart_lock: Mutex<()>,
@@ -1182,6 +1188,7 @@ fn state(core: tauri::State<Shared>) -> Value {
         "activeBufferSeconds": core.engine.current_settings().buffer_seconds,
         "update": core.update.lock().unwrap().clone(),
         "version": core.app.package_info().version.to_string(),
+        "remote": remote_json(&core),
     })
 }
 
@@ -1589,6 +1596,7 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
         win32::set_launch_on_startup(clean.launch_on_startup)?;
     }
     // Unelevated, it can wait: an off setting never uses the task, and the next elevated start tidies it.
+    let remote_changed = clean.remote_port() != current.remote_port();
     if clean.run_as_admin != current.run_as_admin && win32::is_self_elevated() {
         sync_elevated_task(&core.ui_log, clean.run_as_admin);
     }
@@ -1596,6 +1604,9 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     let clean_size = (clean.width, clean.height, clean.fps);
     let (clean_camera, clean_push_to_talk) = (clean.camera_enabled, clean.push_to_talk);
     *core.settings.lock().unwrap() = clean;
+    if remote_changed {
+        sync_remote_api(&core);
+    }
     register_hotkeys(&core);
     if restart {
         let again = Arc::clone(&core);
@@ -1665,9 +1676,7 @@ fn restart_admin(core: tauri::State<Shared>) -> Result<(), String> {
         return Err("Stop recording before restarting as administrator".into());
     }
     core.engine.stop();
-    if let Some(server) = core.api.lock().unwrap().take() {
-        server.unblock();
-    }
+    stop_api(&core);
     // Without this the elevated copy would see this one and quit as a second instance.
     tauri_plugin_single_instance::destroy(&core.app);
 
@@ -1733,26 +1742,84 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// The API for a Stream Deck on this PC, which runs the whole time, and the one for another PC if it's on.
 fn start_services(core: &Shared) {
     let handlers: Arc<dyn ApiHandlers> = Arc::new(Api(Arc::clone(core)));
-    match start_api(load_token(&core.token_file), handlers) {
+    match start_api(&format!("127.0.0.1:{}", api::local_port()), Arc::clone(&core.api_key), handlers) {
         Ok(server) => *core.api.lock().unwrap() = Some(server),
         Err(message) => core.log_ui(&format!("Stream Deck API could not start: {message}")),
     }
+    sync_remote_api(core);
+}
+
+fn stop_api(core: &Core) {
+    for server in [core.api.lock().unwrap().take(), core.remote_api.lock().unwrap().take()].into_iter().flatten() {
+        api::stop_api(server);
+    }
+}
+
+/// Opens or closes the API to other PCs on the network, to match the settings. This PC's own never stops.
+fn sync_remote_api(core: &Shared) {
+    let mut remote = core.remote_api.lock().unwrap();
+    if let Some(server) = remote.take() {
+        api::stop_api(server);
+    }
+    *core.api_error.lock().unwrap() = None;
+    let Some(port) = core.settings.lock().unwrap().remote_port() else { return };
+    let handlers: Arc<dyn ApiHandlers> = Arc::new(Api(Arc::clone(core)));
+    match start_api(&format!("0.0.0.0:{port}"), Arc::clone(&core.api_key), handlers) {
+        Ok(server) => *remote = Some(server),
+        Err(message) => {
+            core.log_ui(&format!("Stream Deck API for other PCs could not start: {message}"));
+            *core.api_error.lock().unwrap() = Some(format!("{message}. Try another port."));
+        }
+    }
+}
+
+/// What Settings shows for a Stream Deck on another PC: the address to paste into it, with the key in it.
+fn remote_json(core: &Core) -> Value {
+    let settings = core.settings.lock().unwrap();
+    let key = core.api_key.read().unwrap().clone();
+    let address = api::lan_address().map(|ip| format!("http://{ip}:{}/?k={key}", settings.remote_port));
+    json!({
+        "on": settings.remote_stream_deck,
+        "port": settings.remote_port,
+        "address": address.filter(|_| settings.remote_stream_deck),
+        "error": *core.api_error.lock().unwrap(),
+    })
+}
+
+fn new_token() -> String {
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes).expect("the system random source failed");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn save_token(file: &Path, token: &str) {
+    if let Some(dir) = file.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(file, token);
 }
 
 fn load_token(file: &Path) -> String {
     if let Ok(token) = fs::read_to_string(file) {
         return token.trim().to_string();
     }
-    let mut bytes = [0u8; 24];
-    getrandom::fill(&mut bytes).expect("the system random source failed");
-    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    if let Some(dir) = file.parent() {
-        let _ = fs::create_dir_all(dir);
-    }
-    let _ = fs::write(file, &token);
+    let token = new_token();
+    save_token(file, &token);
     token
+}
+
+/// Makes a new Stream Deck key, so an address someone else has seen stops working. A Stream Deck on this PC
+/// picks the new key up by itself, and one on another PC needs the new address.
+#[tauri::command(async)]
+fn new_api_key(core: tauri::State<Shared>) -> Value {
+    let core: Shared = Arc::clone(&core);
+    let key = new_token();
+    save_token(&core.token_file, &key);
+    *core.api_key.write().unwrap() = key;
+    remote_json(&core)
 }
 
 /// Reloads a window that never reported rendering, then shows it regardless, and logs both for diagnosis.
@@ -2092,7 +2159,8 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, preview_strip, pick_folder, save_diagnostics, export_settings, import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
+ import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
         .on_window_event(|window, event| {
@@ -2168,6 +2236,10 @@ fn main() {
                 token_file: user_data.join("api-token.txt"),
                 ui_log: home.join("ui.log"),
                 api: Mutex::new(None),
+                remote_api: Mutex::new(None),
+                api_key: Arc::new(std::sync::RwLock::new(load_token(&user_data.join("api-token.txt")))),
+
+                api_error: Mutex::new(None),
                 hotkey_failures: Mutex::new(Vec::new()),
                 thumbnail_lock: Mutex::new(()),
                 restart_lock: Mutex::new(()),

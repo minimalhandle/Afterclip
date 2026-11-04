@@ -33,7 +33,9 @@ const dial = (name, title, tooltip, triggers) => action(name, title, tooltip, {
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.9.0.0';
+manifest.Version = '0.10.0.0';
+// Every key's settings show the address it connects to, so a Stream Deck can control Afterclip on another PC.
+manifest.PropertyInspectorPath = 'ui/connection.html';
 manifest.Actions = [
   ...LENGTHS.map(([n, unit]) => action(`save-${n}-${unit}`, `Save Last ${n} ${unit === 'sec' ? 'Sec' : 'Min'}`, `Save the last ${n} ${unit === 'sec' ? 'seconds' : n === 1 ? 'minute' : 'minutes'} of your buffer.`)),
   action('save-full', 'Save Full Buffer', 'Save everything in your buffer.'),

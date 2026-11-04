@@ -1,9 +1,22 @@
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server};
 
-const DEFAULT_PORT: &str = "4467";
+/// Where a Stream Deck on this PC finds Afterclip, with no address typed in.
+pub const LOCAL_PORT: u16 = 4467;
+/// Where a Stream Deck on another PC finds it. A port of its own, so the two never get in each other's way.
+pub const REMOTE_PORT: u16 = 4468;
+// How long a stopped server is given to let go of its port.
+const RELEASE_TRIES: u32 = 40;
+const RELEASE_RETRY: Duration = Duration::from_millis(50);
+// A wrong key waits this long for its answer, which makes guessing the key slow.
+const WRONG_KEY_DELAY: Duration = Duration::from_millis(400);
+// After the API stops, its port can take a moment to come free.
+const BIND_TRIES: u32 = 15;
+const BIND_RETRY: Duration = Duration::from_millis(200);
 
 /// True for a copy started by the tests, which must not touch a real running copy.
 /// Never while elevated: these variables redirect files and open a debug port, and anything can set them.
@@ -51,27 +64,76 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
-/// Local control API for the Stream Deck plugin. It listens on loopback only and needs a
-/// bearer token, and it sends no CORS headers, so a web page can't trigger a clip.
-pub fn start_api(token: String, handlers: Arc<dyn ApiHandlers>) -> Result<Arc<Server>, String> {
-    let port = std::env::var("AFTERCLIP_API_PORT").ok().filter(|_| is_test_instance()).unwrap_or_else(|| DEFAULT_PORT.into());
-    let server = Arc::new(Server::http(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?);
-    let expected = format!("Bearer {token}");
-    let listener = Arc::clone(&server);
+pub fn local_port() -> u16 {
+    std::env::var("AFTERCLIP_API_PORT").ok().filter(|_| is_test_instance()).and_then(|p| p.parse().ok()).unwrap_or(LOCAL_PORT)
+}
+
+/// This PC's address on the local network, which a Stream Deck on another PC connects to. Choosing a route
+/// to an outside address finds it without sending anything.
+pub fn lan_address() -> Option<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    Some(socket.local_addr().ok()?.ip()).filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+}
+
+fn bind(address: &str) -> Result<Server, String> {
+    let mut last = String::new();
+    for _ in 0..BIND_TRIES {
+        match Server::http(address) {
+            Ok(server) => return Ok(server),
+            Err(e) => last = e.to_string(),
+        }
+        thread::sleep(BIND_RETRY);
+    }
+    Err(format!("Couldn't listen on port {}: {last}", address.rsplit(':').next().unwrap_or(address)))
+}
+
+/// Control API for the Stream Deck plugin. Every request needs the key as a bearer token, and it sends no
+/// CORS headers, so a web page can't trigger a clip. On 127.0.0.1 it's for this PC only. On 0.0.0.0 it's
+/// for a Stream Deck on another PC on the local network. The key is read on every request, so a new one
+/// takes effect at once.
+pub fn start_api(address: &str, key: Arc<RwLock<String>>, handlers: Arc<dyn ApiHandlers>) -> Result<Arc<Server>, String> {
+    let server = Arc::new(bind(address)?);
+    serve(Arc::clone(&server), key, handlers);
+    Ok(server)
+}
+
+/// Stops a server and waits until its port is free. The library wakes its listener by connecting to the
+/// address it listens on, which can't work for 0.0.0.0, so this connects to it on this PC instead.
+pub fn stop_api(server: Arc<Server>) {
+    let port = server.server_addr().to_ip().map(|a| a.port());
+    server.unblock();
+    drop(server);
+    let Some(port) = port else { return };
+    let here = SocketAddr::from(([127, 0, 0, 1], port));
+    for _ in 0..RELEASE_TRIES {
+        thread::sleep(RELEASE_RETRY);
+        let _ = TcpStream::connect_timeout(&here, RELEASE_RETRY);
+        if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+            return;
+        }
+    }
+}
+
+fn serve(server: Arc<Server>, key: Arc<RwLock<String>>, handlers: Arc<dyn ApiHandlers>) {
+    let listener = server;
     thread::spawn(move || {
         // incoming_requests ends when the server is told to unblock, which is how the API stops.
         for request in listener.incoming_requests() {
+            let expected = format!("Bearer {}", key.read().unwrap());
             let authorized = request
                 .headers()
                 .iter()
                 .find(|h| h.field.equiv("Authorization"))
                 .is_some_and(|h| constant_time_eq(h.value.as_str().as_bytes(), expected.as_bytes()));
+
             let handlers = Arc::clone(&handlers);
             // Clips take a moment, and must not hold up other requests.
             thread::spawn(move || {
                 let (code, body) = if authorized {
                     route(request.method(), request.url(), handlers.as_ref())
                 } else {
+                    thread::sleep(WRONG_KEY_DELAY);
                     (401, json!({ "error": "unauthorized" }))
                 };
                 let header = Header::from_bytes("Content-Type", "application/json").expect("valid header");
@@ -80,8 +142,8 @@ pub fn start_api(token: String, handlers: Arc<dyn ApiHandlers>) -> Result<Arc<Se
             });
         }
     });
-    Ok(server)
 }
+
 
 fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value) {
     let result = match (method, url) {

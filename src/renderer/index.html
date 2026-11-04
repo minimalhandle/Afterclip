@@ -403,7 +403,30 @@
         <select id="controllerScreenshot" class="controller-combo" aria-label="Screenshot"></select>
       </div>
     </div>
-    <p class="note">Works with DualSense, Xbox and Switch Pro controllers, while any game is running. Your game receives these presses too, so R3 might also melee or crouch. Switch Pro needs Bluetooth, unless Steam is running.</p>
+    <div class="card">
+      <div class="card-title">Stream Deck</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Allow a Stream Deck on another PC</div><div class="setting-desc">For two-PC setups. Afterclip listens on your home network, and only answers requests that carry the key in the address below. Nothing is sent to the internet.</div></div>
+        <input id="remoteStreamDeck" class="switch" type="checkbox" aria-label="Allow a Stream Deck on another PC">
+      </div>
+      <div id="remote-details" hidden>
+        <div class="setting wide">
+          <div class="setting-text"><div class="setting-name">Address</div><div id="remote-note" class="setting-desc">On the other PC, open any Afterclip key's settings in the Stream Deck app, and paste this into Address.</div></div>
+          <div class="row"><input id="remote-address" type="password" readonly aria-label="Stream Deck address"><button id="copy-remote" class="small">Copy</button></div>
+        </div>
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">Port</div><div class="setting-desc">Change it if another app already uses this one.</div></div>
+          <input id="remotePort" type="number" min="1024" max="65535" class="key-field" aria-label="Stream Deck port">
+        </div>
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">New key</div><div class="setting-desc">Stops the old address working, such as if someone else has seen it. Paste the new address on the other PC.</div></div>
+          <button id="new-remote-key" class="small">New key</button>
+        </div>
+      </div>
+    </div>
+    <p class="note">A Stream Deck on this PC needs no address. The first time, Windows may ask whether Afterclip can use your network: allow it on private networks.</p>
+    <p class="note">Works with DualSense, Xbox and Switch Pro controllers, while any game is running.
+ Your game receives these presses too, so R3 might also melee or crouch. Switch Pro needs Bluetooth, unless Steam is running.</p>
   </div>
 
   <div class="pane" data-pane="games" hidden>
