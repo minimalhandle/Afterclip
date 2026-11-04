@@ -21,6 +21,8 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn test_controller(&self, kind: &str, report: &str);
     /// Pretends the drive has this much free. Only reachable in a test instance.
     fn test_free_space(&self, bytes: Option<u64>);
+    /// Crashes the engine, or stops its buffer as an encoder error would. Only reachable in a test instance.
+    fn test_engine(&self, what: &str);
     /// Pretends the push-to-talk key is held or let go. Only reachable in a test instance.
     fn test_talk(&self, held: bool);
     fn clip(&self, seconds: i64) -> Result<Value, String>;
@@ -109,7 +111,12 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
             handlers.test_free_space(space.trim_start_matches("/test/free-space/").parse().ok());
             Ok(json!({}))
         }
+        (Method::Post, "/test/engine/crash" | "/test/engine/stop-replay") if is_test_instance() => {
+            handlers.test_engine(url.trim_start_matches("/test/engine/"));
+            Ok(json!({}))
+        }
         (Method::Post, "/test/talk/on" | "/test/talk/off") if is_test_instance() => {
+
             handlers.test_talk(url.ends_with("/on"));
             Ok(json!({}))
         }

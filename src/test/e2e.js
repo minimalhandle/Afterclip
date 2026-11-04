@@ -128,6 +128,27 @@ $script:visible = 0; [N.W]::EnumWindows({ param($h,$l) $o = [uint32]0; [void][N.
     event('keyDown', 'com.afterclip.clips.record', 'k2');
     await waitFor(async () => !(await api.status()).recording, 15000, 'recording off');
     check('Stream Deck record key stops', true);
+
+    // Capture starts again by itself after an encoder error or an engine crash, as a graphics driver update can cause.
+    const engineNow = () => powershell(`@(Get-CimInstance Win32_Process -Filter "Name='afterclip-engine.exe' AND ParentProcessId=${session.app.pid}" | ForEach-Object { $_.ProcessId }) -join ' '`);
+    const running = async () => { const s = await api.status(); return s.state === 'ready' && s.buffering; };
+    await api.call('/test/engine/stop-replay', 'POST');
+    const stopped = await waitFor(async () => { const s = await api.status(); return s.state === 'error' && /Starting again/.test(s.message ?? '') && s; }, 8000, 'the buffer to stop');
+    check('a buffer that stops by itself says it will start again', /Starting again in 5 seconds/.test(stopped.message), stopped.message);
+    await waitFor(running, 30000, 'capture to start again');
+    check('capture starts again by itself after the buffer stops', true);
+    const beforeCrash = engineNow();
+    await api.call('/test/engine/crash', 'POST');
+    await waitFor(async () => (await api.status()).state === 'error', 8000, 'the crash to be noticed');
+    await waitFor(running, 40000, 'capture to start after the crash');
+    const afterCrash = engineNow();
+    check('capture starts again by itself after the engine crashes', /^\d+$/.test(afterCrash) && afterCrash !== beforeCrash, `${beforeCrash} then ${afterCrash}`);
+    enginePid = Number(afterCrash);
+    await sleep(4000);
+    const afterRecovery = await api.clip(2);
+    check('clips save after recovering', fs.existsSync(afterRecovery.file));
+    const uiLog = fs.readFileSync(path.join(session.home, 'ui.log'), 'utf8');
+    check('each recovery is logged, waiting longer each time', /starts again in 5s/.test(uiLog) && /starts again in 10s/.test(uiLog) && /capture started again \(try 2\)/.test(uiLog));
   } catch (e) {
     check('no exceptions', false, e.message);
   } finally {

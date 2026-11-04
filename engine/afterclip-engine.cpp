@@ -787,7 +787,15 @@ bool handle(const std::string &line)
 		listChoices(reply, "outputs", "wasapi_output_capture", "device_id");
 		listChoices(reply, "inputs", "wasapi_input_capture", "device_id");
 		listChoices(reply, "apps", "wasapi_process_output_capture", "window");
+	} else if (cmd == "testStopReplay") {
+		// Only on the tests' colour card, so nothing real can be stopped this way.
+		ok = g_card && g_replay;
+		if (ok)
+			obs_output_force_stop(g_replay);
+		else
+			error = "Only for tests";
 	} else if (cmd == "cameraChoices") {
+
 		listChoices(reply, "cameras", "dshow_input", "video_device_id");
 	} else if (cmd == "camera") {
 		ok = showCamera(obs_data_get_bool(c, "on"));
