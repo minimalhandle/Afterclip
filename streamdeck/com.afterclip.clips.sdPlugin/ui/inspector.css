@@ -1,0 +1,9 @@
+body { font: 13px "Segoe UI", sans-serif; color: #d8d8d8; background: transparent; margin: 8px; }
+label { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 8px; }
+input { background: #3d3d3d; color: #fff; border: 0; border-radius: 3px; padding: 5px; min-width: 0; }
+button { background: #5b49e6; color: #fff; border: 0; border-radius: 3px; padding: 5px 12px; font: inherit; cursor: pointer; }
+button:hover { background: #7c6cff; }
+p { color: #969696; font-size: 12px; margin: 8px 0 0 98px; }
+p.good { color: #45d39a; }
+p.bad { color: #f0554f; }
+hr { border: 0; border-top: 1px solid #3d3d3d; margin: 12px 0; }

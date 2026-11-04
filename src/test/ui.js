@@ -969,6 +969,44 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await api.call('/test/open/editor', 'POST');
     await waitFor(async () => (await pagesOpen()).some((u) => /editor\.html/.test(u)), 20000, 'the editor after a browser crash');
     check('the editor opens again after a browser crash', true);
+
+    // A Stream Deck on another PC: off by default, then reachable on the network only with the key. Last,
+    // because a new key changes the one the checks above use.
+    // The editor has focus, so the panel is held open and opened again, or it would close part way through.
+    await api.call('/test/panel-hold/on', 'POST');
+    await api.call('/test/open/panel', 'POST');
+    panel.close();
+    panel = await Page.open(PANEL_URL);
+    await waitFor(() => panel.eval("document.readyState === 'complete' && !!window.afterclip"), 15000, 'the panel for the Stream Deck checks');
+    const remoteState = () => panel.eval("window.afterclip.invoke('state').then((s) => s.remote)");
+    check('a Stream Deck on another PC is off by default', (await remoteState()).on === false && !(await remoteState()).address);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, remoteStreamDeck: true, remotePort: 4569 }))");
+    const remoteOn = await waitFor(async () => { const r = await remoteState(); return r.address && r; }, 8000, 'the remote address');
+    const farUrl = new URL(remoteOn.address);
+    check('Settings shows the address, with this PC\'s network address, the port and the key', farUrl.port === '4569' && farUrl.searchParams.get('k') === session.token && !['127.0.0.1', 'localhost'].includes(farUrl.hostname), `${farUrl.hostname}:${farUrl.port}`);
+    const askFar = (host, key) => fetch(`http://${host}:4569/status`, { headers: key ? { Authorization: `Bearer ${key}` } : {} }).then((r) => r.status, (e) => e.cause?.code ?? e.message);
+    check('another PC can reach Afterclip with the key', (await askFar(farUrl.hostname, session.token)) === 200);
+    const guessStarted = Date.now();
+    const guessed = await askFar(farUrl.hostname, 'not-the-key');
+    check('a wrong key is refused, slowly', guessed === 401 && Date.now() - guessStarted >= 350, `${guessed} after ${Date.now() - guessStarted} ms`);
+    check('no key at all is refused', (await askFar(farUrl.hostname, null)) === 401);
+    check('a Stream Deck on this PC still works on the usual port', (await api.status()).buffering);
+    check('the Controls settings have the Stream Deck card', await panel.eval("!!document.querySelector('[data-pane=controls] #remoteStreamDeck') && !!document.querySelector('[data-pane=controls] #new-remote-key')"));
+    const renewed = await panel.eval("window.afterclip.invoke('new-api-key')");
+    const newKey = new URL(renewed.address).searchParams.get('k');
+    check('a new key replaces the old one', newKey !== session.token && fs.readFileSync(session.tokenFile, 'utf8').trim() === newKey);
+    check('the old key stops working', (await askFar(farUrl.hostname, session.token)) === 401);
+    check('the new key works', (await askFar(farUrl.hostname, newKey)) === 200);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, remoteStreamDeck: false }))");
+    await waitFor(async () => (await askFar(farUrl.hostname, newKey)) !== 200, 8000, 'the network to be closed');
+    check('turning it off closes it to other PCs', (await askFar(farUrl.hostname, newKey)) !== 200);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, remoteStreamDeck: true }))");
+    await waitFor(async () => (await askFar(farUrl.hostname, newKey)) === 200, 8000, 'the network to open again');
+    check('turning it on again reuses the same port', true);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, remoteStreamDeck: false }))");
+    const localAgain = await fetch(`${'http://127.0.0.1:4567'}/status`, { headers: { Authorization: `Bearer ${newKey}` } }).then((r) => r.status, () => 'refused');
+    check('this PC still reaches it, with the new key', localAgain === 200, String(localAgain));
+
   } catch (e) {
     const pages = await fetch(`http://127.0.0.1:${PORT}/json`).then((r) => r.json()).then((l) => l.map((t) => t.url).join(', ')).catch((err) => err.message);
     const uiLog = path.join(session.home, 'ui.log');

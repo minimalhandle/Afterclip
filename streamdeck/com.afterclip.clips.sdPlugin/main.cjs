@@ -72,10 +72,59 @@ let status = null; // The last answer from Afterclip, or null when it isn't runn
 const ws = new WebSocket(`ws://127.0.0.1:${arg('port')}`);
 const sd = (event, context, payload) => ws.send(JSON.stringify({ event, context, payload }));
 
+/**
+ * Where Afterclip is. With no address, it's on this PC, and the key is read from its folder. With the address
+ * from Afterclip's Settings, such as http://192.168.1.20:4467/?k=..., it can be another PC on the network.
+ */
+let remote = null; // { base, key, host } while an address is set
+let link = 'local'; // local, ok, offline, key or bad: how the last request went, for the settings page
+const inspectors = new Set(); // Settings pages open now, which are told how the connection is going.
+
+function parseAddress(text) {
+  const typed = String(text ?? '').trim();
+  if (!typed) return null;
+  try {
+    const url = new URL(/^[a-z]+:\/\//i.test(typed) ? typed : `http://${typed}`);
+    const key = url.searchParams.get('k') ?? '';
+    return { base: `${url.protocol}//${url.host}`, key, host: url.hostname };
+  } catch {
+    return { base: '', key: '', host: typed };
+  }
+}
+
+function tellInspectors() {
+  for (const context of inspectors) sd('sendToPropertyInspector', context, { link, host: remote?.host ?? null });
+}
+
+function setLink(next) {
+  if (next === link) return;
+  link = next;
+  tellInspectors();
+}
+
 async function call(method, route, timeout = REQUEST_TIMEOUT_MS) {
-  const tokenFile = TOKEN_FILES.find((file) => fs.existsSync(file)) ?? TOKEN_FILES[0];
-  const token = fs.readFileSync(tokenFile, 'utf8').trim(); // Read each time: Afterclip may have just created it.
-  const res = await fetch(API + route, { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeout) });
+  let base = API;
+  let token;
+  if (remote) {
+    if (!remote.base || !remote.key) {
+      setLink('bad');
+      throw new Error('The address has no key');
+    }
+    ({ base } = remote);
+    token = remote.key;
+  } else {
+    const tokenFile = TOKEN_FILES.find((file) => fs.existsSync(file)) ?? TOKEN_FILES[0];
+    token = fs.readFileSync(tokenFile, 'utf8').trim(); // Read each time: Afterclip may have just created it.
+  }
+  let res;
+  try {
+    res = await fetch(base + route, { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeout) });
+  } catch (error) {
+    setLink('offline');
+    throw error;
+  }
+  if (res.status === 401) setLink('key');
+  else setLink(remote ? 'ok' : 'local');
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Afterclip returned ${res.status}`);
   return res.json();
 }
@@ -194,13 +243,17 @@ const pulsed = (context) => {
 };
 
 function failed(context, action, reason) {
-  const small = !status ? 'NOT OPEN' : action === MARKER && !status.recording ? 'NO REC' : reason;
+  const small = !status ? (link === 'key' || link === 'bad' ? 'BAD KEY' : 'NOT OPEN') : action === MARKER && !status.recording ? 'NO REC' : reason;
   play(context, [[image({ symbol: 'alert', small, tone: 'fail', mark: 'failed' }), FAIL_HOLD_MS]]);
 }
 
 async function poll() {
-  if (keys.size === 0) return;
-  status = await call('GET', '/status', STATUS_TIMEOUT_MS).catch(() => null);
+  if (keys.size === 0 && inspectors.size === 0) return;
+  status = await call('GET', '/status', STATUS_TIMEOUT_MS).catch(() => {
+    // A missing key file means Afterclip has never run on this PC.
+    if (!remote && link === 'local') setLink('offline');
+    return null;
+  });
   drawAll();
 }
 
@@ -331,12 +384,39 @@ async function press(context, action, settings) {
 
 ws.addEventListener('open', () => {
   ws.send(JSON.stringify({ event: arg('registerEvent'), uuid: arg('pluginUUID') }));
+  ws.send(JSON.stringify({ event: 'getGlobalSettings', context: arg('pluginUUID') }));
   setInterval(poll, POLL_MS);
 });
 
 ws.addEventListener('message', ({ data }) => {
   const { event, action, context, payload } = JSON.parse(data);
+  if (event === 'didReceiveGlobalSettings') {
+    remote = parseAddress(payload.settings?.address);
+    link = remote ? 'offline' : 'local';
+    status = null;
+    for (const key of keys.values()) key.drawn = null;
+    drawAll();
+    // A new address always gets an answer on the settings page, even if it ends up the same as before.
+    poll().then(tellInspectors);
+    return;
+  }
+  if (event === 'propertyInspectorDidAppear') {
+    inspectors.add(context);
+    tellInspectors();
+    poll();
+    return;
+  }
+  if (event === 'propertyInspectorDidDisappear') {
+    inspectors.delete(context);
+    return;
+  }
+  if (event === 'sendToPlugin' && payload?.ask === 'status') {
+    inspectors.add(context);
+    poll().then(tellInspectors);
+    return;
+  }
   if (event === 'willAppear' || event === 'didReceiveSettings') {
+
     const existing = keys.get(context);
     const lengthIndex = Math.max(0, DIAL_LENGTHS.indexOf(Number(payload.settings?.seconds ?? 30)));
     if (existing) {

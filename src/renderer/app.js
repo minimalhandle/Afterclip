@@ -19,6 +19,7 @@ let favouritesOnly = false;
 let update = { status: 'idle' };
 let appVersion = '';
 let storageUsed = 0;
+let remote = { on: false };
 
 const errorText = (e) => String(e.message ?? e);
 const lengthLabel = (s) => (s > 0 ? (s >= 60 && s % 60 === 0 ? `${s / 60}m` : `${s}s`) : 'All');
@@ -575,6 +576,8 @@ async function refresh() {
   update = state.update ?? update;
   appVersion = state.version ?? appVersion;
   storageUsed = state.storageUsedBytes ?? 0;
+  remote = state.remote ?? remote;
+  renderRemote();
   controllersSeen = state.controllers ?? controllersSeen;
   renderControllersSeen();
   renderUpdate();
@@ -1061,6 +1064,17 @@ function renderUpdate() {
   $('check-update').disabled = ['checking', 'downloading', 'installing'].includes(state);
 }
 
+/* Stream Deck on another PC */
+
+function renderRemote() {
+  $('remote-details').hidden = !remote.on;
+  $('remote-address').value = remote.address ?? '';
+  const note = $('remote-note');
+  const problem = remote.error ?? (remote.on && !remote.address ? 'This PC isn\'t on a network, so there\'s no address yet.' : '');
+  note.textContent = problem || 'On the other PC, open any Afterclip key\'s settings in the Stream Deck app, and paste this into Address.';
+  note.classList.toggle('warn', !!problem);
+}
+
 /* Storage */
 
 function renderStorageUsed() {
@@ -1303,6 +1317,7 @@ function fillForm() {
   ensureOption($('lowSpaceWarnGb'), settings.lowSpaceWarnGb, `${settings.lowSpaceWarnGb} GB`);
   for (const k of ['clipAfterSeconds', 'cameraCorner', 'cameraSize', 'lowSpaceWarnGb']) $(k).value = settings[k];
   bindTalkKey($('pushToTalkKey'));
+  $('remotePort').value = settings.remotePort;
   renderCamera();
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
@@ -1314,7 +1329,7 @@ function fillForm() {
 }
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
-  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders'];
+  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1372,6 +1387,7 @@ function readForm() {
   for (const k of SWITCHES) settings[k] = $(k).checked;
   for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder', 'cameraCorner']) settings[k] = $(k).value;
   for (const k of ['clipAfterSeconds', 'cameraSize', 'lowSpaceWarnGb']) settings[k] = Number($(k).value);
+  settings.remotePort = Math.round(Number($('remotePort').value)) || settings.remotePort;
   settings.cameraDevice = $('cameraDevice').value || settings.cameraDevice;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
@@ -1538,6 +1554,16 @@ $('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
 for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup',
   'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize']) $(id).onchange = () => scheduleSave();
 $('cameraEnabled').onchange = () => { renderCamera(); scheduleSave(); };
+$('remoteStreamDeck').onchange = () => { remote.on = $('remoteStreamDeck').checked; renderRemote(); scheduleSave(); };
+$('remotePort').oninput = () => scheduleSave(TYPING_DELAY_MS);
+$('copy-remote').onclick = () => navigator.clipboard.writeText($('remote-address').value)
+  .then(() => { $('save-note').textContent = 'Address copied. Paste it into the Stream Deck app on the other PC.'; }, (e) => { $('save-note').textContent = errorText(e); });
+$('new-remote-key').onclick = async () => {
+  remote = await api.invoke('new-api-key');
+  renderRemote();
+  $('save-note').textContent = 'New key made. Paste the new address on the other PC.';
+};
+
 $('cameraDevice').onchange = () => { settings.cameraDevice = $('cameraDevice').value; scheduleSave(); };
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
