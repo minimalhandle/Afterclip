@@ -569,6 +569,13 @@ impl ApiHandlers for Api {
         self.0.deck_talking.store(held, Ordering::SeqCst);
         Ok(json!({ "talking": held }))
     }
+    fn test_engine(&self, what: &str) {
+        match what {
+            "crash" => self.0.engine.test_crash(),
+            "stop-replay" => { let _ = self.0.engine.test_stop_replay(); }
+            _ => {}
+        }
+    }
     fn test_talk(&self, held: bool) {
         *self.0.test_talk.lock().unwrap() = Some(held);
     }
@@ -885,6 +892,110 @@ fn watch_push_to_talk(core: Shared) {
             }
         }
         thread::sleep(if code.is_some() { PUSH_TO_TALK_POLL } else { PUSH_TO_TALK_IDLE });
+    }
+}
+
+// Waits before each try at starting capture again after it stops by itself. A graphics driver update takes a
+// minute or two, during which capture can't start, so the tries spread over about seven minutes.
+const RECOVERY_DELAYS: [u64; 10] = [5, 10, 20, 30, 60, 60, 60, 60, 60, 60];
+// Running this long without a problem starts the count of tries again.
+const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
+const HEALTH_CHECK_EVERY: Duration = Duration::from_secs(1);
+// After falling back to the CPU, how long to wait between tries of the graphics card's encoder again.
+const ENCODER_RETRY_EVERY: Duration = Duration::from_secs(60);
+const ENCODER_RETRIES: u32 = 10;
+
+/// Whether capture fell back to the CPU encoder when the graphics card's one worked earlier, which is
+/// what happens if capture restarts while a graphics driver is being installed.
+fn fell_back_to_cpu(chosen: &str, in_use: Option<&str>, hardware_seen: Option<&str>) -> bool {
+    chosen != "x264" && in_use == Some("obs_x264") && hardware_seen.is_some()
+}
+
+impl Core {
+    /// Stops and starts capture with the current settings. The buffer starts again from empty.
+    fn restart_capture(&self) -> Result<(), String> {
+        let _one_at_a_time = self.restart_lock.lock().unwrap();
+        let settings = self.effective(&self.settings.lock().unwrap().clone());
+        self.engine.stop();
+        let started = self.engine.start(Some(settings));
+        self.allow_media_folders();
+        started
+    }
+}
+
+/// Starts capture again by itself when it stops without being asked, such as after an encoder error, an
+/// engine crash or a graphics driver update. It gives up after a while, so a broken setup can't loop forever.
+fn watch_engine(core: Shared) {
+    let mut tries = 0usize;
+    let mut failed_at: Option<Instant> = None;
+    let mut ready_since: Option<Instant> = None;
+    let mut hardware_seen: Option<String> = None;
+    let mut encoder_retries = 0u32;
+    let mut encoder_tried_at = Instant::now();
+    loop {
+        thread::sleep(HEALTH_CHECK_EVERY);
+        if core.quitting.load(Ordering::SeqCst) || core.paused.load(Ordering::SeqCst) {
+            failed_at = None;
+            continue;
+        }
+        let status = core.engine.status();
+        if status.state == "ready" {
+            failed_at = None;
+            let since = *ready_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= HEALTHY_AFTER {
+                tries = 0;
+            }
+            let in_use = core.engine.encoder_in_use();
+            if in_use.as_deref().is_some_and(|e| e != "obs_x264") {
+                hardware_seen = in_use.clone();
+                encoder_retries = 0;
+            }
+            let chosen = core.settings.lock().unwrap().encoder.clone();
+            let retry_due = encoder_tried_at.elapsed() >= ENCODER_RETRY_EVERY && since.elapsed() >= ENCODER_RETRY_EVERY;
+            if fell_back_to_cpu(&chosen, in_use.as_deref(), hardware_seen.as_deref()) && retry_due && encoder_retries < ENCODER_RETRIES && !status.recording {
+                encoder_retries += 1;
+                encoder_tried_at = Instant::now();
+                core.log_ui(&format!("capture is on the CPU encoder after a problem, so trying the graphics card again ({encoder_retries} of {ENCODER_RETRIES})"));
+                ready_since = None;
+                let _ = core.restart_capture();
+            }
+            continue;
+        }
+        ready_since = None;
+        if status.state != "error" {
+            failed_at = None;
+            continue;
+        }
+        let problem = status.message.clone().unwrap_or_default();
+        let Some(&delay) = RECOVERY_DELAYS.get(tries) else {
+            if !problem.contains("Restart Afterclip") {
+                core.log_ui(&format!("capture could not start again after {tries} tries, so it stays stopped: {problem}"));
+                core.engine.set_message(format!("{problem}. Afterclip tried {tries} times to start it again. Restart Afterclip, or update your graphics driver."));
+            }
+            continue;
+        };
+        let since = match failed_at {
+            Some(at) => at,
+            None => {
+                core.log_ui(&format!("capture stopped by itself ({problem}), so it starts again in {delay}s"));
+                core.engine.set_message(format!("{problem}. Starting again in {delay} seconds."));
+                let _ = core.app.emit("feedback", json!({ "kind": "recovering", "ok": true, "seconds": delay }));
+                *failed_at.insert(Instant::now())
+            }
+        };
+        if since.elapsed() < Duration::from_secs(delay) {
+            continue;
+        }
+        tries += 1;
+        failed_at = None;
+        let started = core.restart_capture();
+        match &started {
+            Ok(()) => core.log_ui(&format!("capture started again (try {tries})")),
+            Err(e) => core.log_ui(&format!("capture could not start again (try {tries}): {e}")),
+        }
+        if started.is_ok() {
+            let _ = core.app.emit("feedback", json!({ "kind": "recovered", "ok": true }));
+        }
     }
 }
 
@@ -1935,8 +2046,17 @@ mod tests {
 
     /// Read-only: lists where a running process plays sound. Run with AFTERCLIP_TEST_PID set and --ignored --nocapture.
     #[test]
+    fn going_back_to_the_graphics_card_only_after_a_fallback() {
+        assert!(fell_back_to_cpu("auto", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "fell back during a driver update");
+        assert!(!fell_back_to_cpu("x264", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "the CPU was chosen");
+        assert!(!fell_back_to_cpu("auto", Some("obs_x264"), None), "no graphics card encoder has ever worked here");
+        assert!(!fell_back_to_cpu("auto", Some("obs_nvenc_h264_tex"), Some("obs_nvenc_h264_tex")), "already on the graphics card");
+    }
+
+    #[test]
     #[ignore]
     fn finds_the_device_a_process_plays_through() {
+
         win32::init_com_for_thread();
         let pid: u32 = std::env::var("AFTERCLIP_TEST_PID").unwrap().parse().unwrap();
         let found = win32::active_endpoints_of(pid);
@@ -2124,6 +2244,8 @@ fn main() {
             updater::start(Arc::clone(&core));
             let watcher = Arc::clone(&core);
             thread::spawn(move || watch_games(watcher));
+            let healer = Arc::clone(&core);
+            thread::spawn(move || watch_engine(healer));
             let talker = Arc::clone(&core);
             thread::spawn(move || watch_push_to_talk(talker));
             core.allow_media_folders();

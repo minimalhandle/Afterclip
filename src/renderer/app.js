@@ -1473,6 +1473,10 @@ api.on('feedback', (f) => {
     showBanner(f.cleanMic ? 'Clean Mic is on' : 'Clean Mic is off', 'good');
   } else if (f.kind === 'marker' && f.ok) {
     showBanner(`Marker ${f.number} added`, 'good');
+  } else if (f.kind === 'recovering') {
+    showBanner(`Capture stopped after a problem. Starting it again in ${f.seconds} seconds.`, 'bad');
+  } else if (f.kind === 'recovered') {
+    showBanner('Capture is running again. The buffer started over.', 'good');
   } else if (f.kind === 'camera' && f.ok) {
     showBanner(f.cameraOn ? 'Webcam is on' : 'Webcam is off', 'good');
   } else if (f.kind === 'favourite' && f.ok) {

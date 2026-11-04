@@ -404,7 +404,25 @@ impl Engine {
         });
     }
 
+    /// Adds to what the status says, such as when capture will try again after a problem.
+    pub fn set_message(&self, message: String) {
+        self.update(|s| s.message = Some(message));
+    }
+
+    /// Ends the engine the way a crash would, for the tests.
+    pub fn test_crash(&self) {
+        if let Some(running) = self.running.lock().unwrap().as_mut() {
+            let _ = running.child.kill();
+        }
+    }
+
+    /// Stops the replay buffer from inside the engine, the way an encoder error does, for the tests.
+    pub fn test_stop_replay(&self) -> Result<(), String> {
+        self.rpc("testStopReplay", json!({})).map(|_| ())
+    }
+
     /// Says the buffer is off until a game opens, or that it no longer is.
+
     pub fn set_waiting_for_game(&self, waiting: bool) {
         self.update(|s| s.waiting_for_game = waiting);
     }
