@@ -65,6 +65,9 @@ obs_source_t *g_gameAudio = nullptr; // Also in g_audioSources, which owns it.
 uint32_t g_gameAudioTrackBit = 0;
 std::string g_gameAudioWindow;
 obs_sceneitem_t *g_displayItem = nullptr, *g_gameItem = nullptr, *g_cardItem = nullptr, *g_cameraItem = nullptr;
+// Vertical mode: a 9:16 picture, with the game filling it from the middle, below the webcam when that's on.
+bool g_vertical = false;
+uint32_t g_canvasWidth = 0, g_canvasHeight = 0;
 obs_encoder_t *g_video = nullptr;
 std::vector<obs_encoder_t *> g_audio; // Index 0 is the main mix. The rest are per-source tracks.
 obs_output_t *g_replay = nullptr, *g_record = nullptr;
@@ -154,6 +157,43 @@ void fitToCanvas(obs_sceneitem_t *item, uint32_t width, uint32_t height)
 	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
 	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds(item, &bounds);
+}
+
+/** Fills an area with the middle of a source, cropping what doesn't fit rather than leaving bars. */
+void fillArea(obs_sceneitem_t *item, float x, float y, float width, float height)
+{
+	vec2 pos, bounds;
+	vec2_set(&pos, x, y);
+	vec2_set(&bounds, width, height);
+	obs_sceneitem_set_alignment(item, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_OUTER);
+	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds(item, &bounds);
+	obs_sceneitem_set_bounds_crop(item, true);
+}
+
+/**
+ * Places the game and its monitor. Wide, they fit the whole picture. Vertical, they fill it from the middle,
+ * or the space below the webcam while that's showing, so the webcam never covers the game.
+ */
+void layoutGame(bool cameraShowing)
+{
+	float top = 0.0f;
+	if (g_vertical && cameraShowing && g_cameraItem) {
+		vec2 pos, bounds;
+		obs_sceneitem_get_pos(g_cameraItem, &pos);
+		obs_sceneitem_get_bounds(g_cameraItem, &bounds);
+		top = pos.y + bounds.y;
+	}
+	for (obs_sceneitem_t *item : {g_displayItem, g_gameItem}) {
+		if (!item)
+			continue;
+		if (g_vertical)
+			fillArea(item, 0.0f, top, (float)g_canvasWidth, (float)g_canvasHeight - top);
+		else
+			fitToCanvas(item, g_canvasWidth, g_canvasHeight);
+	}
 }
 
 obs_source_t *createSource(const char *kind, const char *name, obs_data_t *settings = nullptr)
@@ -451,6 +491,7 @@ bool showCamera(bool on)
 	if (!g_camera || !g_cameraItem)
 		return false;
 	obs_sceneitem_set_visible(g_cameraItem, on);
+	layoutGame(on);
 	if (strcmp(obs_source_get_id(g_camera), "dshow_input") == 0) {
 		obs_data_t *s = obs_data_create();
 		obs_data_set_bool(s, "active", on);
@@ -511,6 +552,9 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	const uint32_t height = (uint32_t)obs_data_get_int(c, "height");
 	const int bitrate = (int)obs_data_get_int(c, "bitrateKbps");
 	const bool testPattern = obs_data_get_bool(c, "testPattern");
+	g_vertical = obs_data_get_bool(c, "vertical");
+	g_canvasWidth = width;
+	g_canvasHeight = height;
 
 	obs_video_info ovi = {};
 	ovi.graphics_module = "libobs-d3d11";
@@ -570,10 +614,13 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		obs_sceneitem_set_visible(g_gameItem, false);
 	}
 	obs_data_t *camera = obs_data_get_obj(c, "camera");
+	const bool cameraOn = camera && obs_data_get_bool(camera, "on");
 	if (camera) {
 		addCamera(camera, testPattern);
 		obs_data_release(camera);
 	}
+	layoutGame(cameraOn);
+
 
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
 	g_cpuInfo = os_cpu_usage_info_start();

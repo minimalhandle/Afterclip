@@ -34,6 +34,10 @@ The glass card at the top of the panel shows your buffer. The timer shows how mu
 
 Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor, or with **Only buffer during games** on, it stops the buffer until a game opens, to free memory and GPU on the desktop.
 
+### Vertical mode
+
+Turn on **Vertical mode** in **Settings > Video**, or for one game in **Settings > Games**, to capture in 9:16 for phones. Clips, recordings and screenshots then save vertical, straight away and without re-encoding. The picture is the middle of the game at your resolution's height, such as 810×1440 on a 1440p monitor. With your webcam on, it goes across the top and the game fills the space below. While it's on, the sides of the game aren't captured, and switching it on or off restarts capture, which clears the buffer.
+
 ### Your webcam
 
 **Settings > Video** can put your webcam in any corner of every clip and recording, at three sizes. A vertical copy of a clip with your webcam puts it above the game, ready for TikTok or Shorts.

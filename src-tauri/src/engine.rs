@@ -338,8 +338,9 @@ impl Engine {
         let s = self.settings.lock().unwrap().clone();
         let started = self.rpc("start", json!({
             "root": self.root,
-            "width": s.width,
-            "height": s.height,
+            "width": s.canvas().0,
+            "height": s.canvas().1,
+            "vertical": s.vertical_mode,
             "fps": s.fps,
             "bitrateKbps": s.bitrate_kbps,
             "bufferSeconds": s.buffer_seconds,

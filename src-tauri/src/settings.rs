@@ -58,6 +58,9 @@ pub struct GameProfile {
     pub buffer_seconds: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_audio: Option<bool>,
+    /// Captures this game in 9:16, or wide, whatever the normal setting says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<bool>,
     /// Starts a recording when the game opens, and stops it when the game closes.
     #[serde(default)]
     pub auto_record: bool,
@@ -152,6 +155,9 @@ pub struct Settings {
     pub game_folders: bool,
     /// Warns when the save location has less than this free. 0 never warns.
     pub low_space_warn_gb: f64,
+    /// Captures in 9:16 for phones: the middle of the game, with the webcam across the top. The resolution
+    /// setting still decides the height, and is kept for when this is off.
+    pub vertical_mode: bool,
     /// Lets a Stream Deck on another PC on the local network control Afterclip, with the key.
     pub remote_stream_deck: bool,
     /// The port a Stream Deck on another PC connects to.
@@ -234,6 +240,7 @@ impl Settings {
             vertical_face_cam: true,
             game_folders: false,
             low_space_warn_gb: 10.0,
+            vertical_mode: false,
             remote_stream_deck: false,
             remote_port: crate::api::REMOTE_PORT as i64,
             test_pattern: false,
@@ -246,12 +253,27 @@ impl Settings {
         if self.camera_device.is_empty() {
             return None;
         }
-        let width = (self.width * self.camera_size / 100) / 2 * 2;
+        let (canvas_width, canvas_height) = self.canvas();
+        // In vertical mode it goes across the top, the whole width, as a face cam does.
+        if self.vertical_mode {
+            return Some((0, 0, canvas_width, (canvas_width * 9 / 16) / 2 * 2));
+        }
+        let width = (canvas_width * self.camera_size / 100) / 2 * 2;
         let height = (width * 9 / 16) / 2 * 2;
-        let margin = (self.height / 40) / 2 * 2;
-        let x = if self.camera_corner.ends_with("left") { margin } else { self.width - width - margin };
-        let y = if self.camera_corner.starts_with("top") { margin } else { self.height - height - margin };
+        let margin = (canvas_height / 40) / 2 * 2;
+        let x = if self.camera_corner.ends_with("left") { margin } else { canvas_width - width - margin };
+        let y = if self.camera_corner.starts_with("top") { margin } else { canvas_height - height - margin };
         Some((x, y, width, height))
+    }
+
+    /// The size of what's captured. Vertical mode keeps the height and narrows the picture to 9:16, so
+    /// it's the game's own pixels from the middle, not scaled up.
+    pub fn canvas(&self) -> (i64, i64) {
+        if self.vertical_mode {
+            ((self.height * 9 / 16) / 2 * 2, self.height)
+        } else {
+            (self.width, self.height)
+        }
     }
 
     /// Works out the real width, height and frame rate from the monitor. Heights never exceed the
@@ -303,6 +325,9 @@ impl Settings {
         }
         if let Some(on) = profile.game_audio {
             s.game_audio = on;
+        }
+        if let Some(on) = profile.vertical {
+            s.vertical_mode = on;
         }
         s.resolved_for(display).sanitized()
     }
@@ -379,6 +404,7 @@ impl Settings {
             || self.fps != other.fps
             || self.width != other.width
             || self.height != other.height
+            || self.vertical_mode != other.vertical_mode
             || self.bitrate_kbps != other.bitrate_kbps
             // Volume changes live, so it alone never needs a restart.
             || without_volume(&self.audio_sources) != without_volume(&other.audio_sources)
@@ -455,7 +481,21 @@ mod tests {
     }
 
     #[test]
+    fn vertical_mode_narrows_the_picture_and_keeps_the_resolution() {
+        let mut s = sample();
+        s.vertical_mode = true;
+        assert_eq!(s.canvas(), (606, 1080));
+        assert_eq!((s.width, s.height), (1920, 1080), "the saved resolution is kept for when it's off");
+        s.camera_device = "cam".into();
+        assert_eq!(s.camera_box(), Some((0, 0, 606, 340)), "the webcam goes across the top");
+        assert!(sample().needs_engine_restart(&s));
+        let profile = GameProfile { exe: "game.exe".into(), name: "Game".into(), quality: None, frame_rate: None, buffer_seconds: None, game_audio: None, vertical: Some(true), auto_record: false };
+        assert_eq!(sample().with_profile(&profile, (1920, 1080, 60)).canvas(), (606, 1080));
+    }
+
+    #[test]
     fn importing_keeps_the_webhook_and_a_save_location_that_exists() {
+
         let dir = std::env::temp_dir().join(format!("afterclip-import-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("exported.json");

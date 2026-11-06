@@ -164,7 +164,8 @@ impl Core {
             return None;
         }
         let (x, y, width, height) = s.camera_box()?;
-        let (w, h) = (s.width.max(1) as f64, s.height.max(1) as f64);
+        let (width_px, height_px) = s.canvas();
+        let (w, h) = (width_px.max(1) as f64, height_px.max(1) as f64);
         Some([x as f64 / w, y as f64 / h, width as f64 / w, height as f64 / h])
     }
 

@@ -125,7 +125,7 @@ function renderSummary() {
   const quality = settings.quality === 'full' ? 'Full' : settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
   $('summary').textContent = activeProfile
     ? `${settings.gameProfiles.find((p) => p.exe === activeProfile)?.name ?? activeProfile} profile · ${bufferLabel(activeBuffer ?? settings.bufferSeconds)} buffer`
-    : `${quality} · ${bufferLabel(settings.bufferSeconds)} buffer · ${settings.fps} FPS`;
+    : `${quality}${settings.verticalMode ? ' · Vertical' : ''} · ${bufferLabel(settings.bufferSeconds)} buffer · ${settings.fps} FPS`;
 }
 
 function renderLengths() {
@@ -204,7 +204,8 @@ function wireScrub(thumb, m, key) {
       scrub.className = 'scrub';
       scrub.innerHTML = '<div class="scrub-line"></div>';
       scrub.style.backgroundImage = `url("${strip.url}")`;
-      scrub.style.backgroundSize = `${strip.frames * 100}% 100%`;
+      // Each frame fills the thumbnail's width. A vertical clip's frames are taller, so their middle shows.
+      scrub.style.backgroundSize = `${strip.frames * 100}% auto`;
       thumb.append(scrub);
     }
     const index = Math.min(strip.frames - 1, Math.floor(x * strip.frames));
@@ -701,6 +702,8 @@ function renderCamera() {
   if (!settings.cameraDevice && choices.length) select.value = choices[0].id;
   const on = $('cameraEnabled').checked;
   for (const id of ['cameraDevice', 'cameraCorner', 'cameraSize', 'verticalFaceCam']) $(id).disabled = !on;
+  // Vertical mode puts the webcam across the top, so its corner and size don't apply.
+  for (const id of ['cameraCorner', 'cameraSize']) $(id).disabled ||= $('verticalMode').checked;
 }
 
 function renderPresets(failures = []) {
@@ -1267,6 +1270,7 @@ function renderProfiles() {
       profileSelect('Frame rate', p.frameRate, [USE_DEFAULT, ['60', '60 fps'], ['120', '120 fps'], ['native', 'Native']], (v) => { p.frameRate = optional(v); }),
       profileSelect('Buffer', p.bufferSeconds, [USE_DEFAULT, ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes'], ['600', '10 minutes'], ['1800', '30 minutes']], (v) => { p.bufferSeconds = v ? Number(v) : undefined; }),
       profileSelect('Game audio', p.gameAudio === undefined || p.gameAudio === null ? '' : String(p.gameAudio), [USE_DEFAULT, ['true', 'On'], ['false', 'Off']], (v) => { p.gameAudio = v ? v === 'true' : undefined; }),
+      profileSelect('Vertical mode', p.vertical === undefined || p.vertical === null ? '' : String(p.vertical), [USE_DEFAULT, ['true', 'On'], ['false', 'Off']], (v) => { p.vertical = v ? v === 'true' : undefined; }),
     );
     return card;
   }));
@@ -1329,7 +1333,7 @@ function fillForm() {
 }
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
-  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck'];
+  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1552,8 +1556,9 @@ $('cleanMicSwitch').onchange = () => api.invoke('toggle-clean-mic').catch(() => 
 $('marker').onclick = () => api.invoke('add-marker').catch(() => undefined);
 $('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
 for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup',
-  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize']) $(id).onchange = () => scheduleSave();
+  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize', 'verticalMode']) $(id).onchange = () => scheduleSave();
 $('cameraEnabled').onchange = () => { renderCamera(); scheduleSave(); };
+$('verticalMode').addEventListener('change', () => { renderCamera(); renderSummary(); });
 $('remoteStreamDeck').onchange = () => { remote.on = $('remoteStreamDeck').checked; renderRemote(); scheduleSave(); };
 $('remotePort').oninput = () => scheduleSave(TYPING_DELAY_MS);
 $('copy-remote').onclick = () => navigator.clipboard.writeText($('remote-address').value)
