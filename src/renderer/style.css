@@ -229,7 +229,7 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 #home.library-open .star { color: #fff; }
 #home.library-open .star.on { color: var(--warn); }
 .rename-field { width: 100%; padding: 3px 6px; font-weight: 600; }
-.scrub { position: absolute; inset: 0; background-repeat: no-repeat; pointer-events: none; }
+.scrub { position: absolute; inset: 0; background-repeat: no-repeat; background-position-y: center; pointer-events: none; }
 .scrub-line { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent-2); box-shadow: 0 0 6px rgb(124 108 255 / .8); }
 .games-note { margin: 0 4px 10px; }
 .profile-head { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; }

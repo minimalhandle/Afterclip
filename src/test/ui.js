@@ -864,7 +864,33 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('Vertical Copy of Last Clip makes a copy of the newest clip', tallLast.file === camBack.file.replace(/\.mp4$/, '_vertical.mp4'), JSON.stringify(tallLast));
 
 
+    // Vertical mode: a 9:16 picture, with the webcam across the top and the game below it, or filling it all.
+    const sizeOf = (file) => /(\d{3,4})x(\d{3,4})/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', file], { encoding: 'utf8', windowsHide: true }).stderr).slice(1).map(Number);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, verticalMode: true, cameraEnabled: true, cameraDevice: 'test' }))");
+    await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the vertical restart').catch(() => undefined);
+    await capturing();
+    await sleep(4000);
+    const tall = await api.clip(2);
+    const [tallWidth, tallHeight] = sizeOf(tall.file);
+    check('vertical mode saves 9:16 clips at the same height', tallWidth === 404 && tallHeight === 720, `${tallWidth}x${tallHeight}`);
+    check('the webcam goes across the top', isCam(at(tall.file, 200, 40)), [...at(tall.file, 200, 40)].join());
+    check('and the game fills the rest', isCard(at(tall.file, 200, 500)), [...at(tall.file, 200, 500)].join());
+    const tallShot = (await (await api.call('/screenshot', 'POST')).json()).file;
+    check('screenshots are vertical too', sizeOf(tallShot).join('x') === '404x720', sizeOf(tallShot).join('x'));
+    await api.call('/camera/toggle', 'POST');
+    await sleep(3000);
+    const noCamTall = await api.clip(2);
+    check('with the webcam off, the game fills the whole picture, without a restart', isCard(at(noCamTall.file, 200, 40)) && (await api.status()).buffering, [...at(noCamTall.file, 200, 40)].join());
+    const alreadyTall = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(noCamTall.file)}).then(() => 'made', (e) => e.message)`);
+    check('a vertical clip needs no vertical copy', /already vertical/.test(alreadyTall), alreadyTall);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, verticalMode: false }))");
+    await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the wide restart').catch(() => undefined);
+    await capturing();
+    await sleep(3000);
+    check('turning it off goes back to the wide picture', sizeOf((await api.clip(2)).file).join('x') === '1280x720');
+
     // The Stream Deck keys for the last clip, on a clip big enough to compress.
+
     const now = new Date();
     fs.utimesSync(bigClip, now, now);
     const compressedLast = await (await api.call('/last-clip/compress', 'POST')).json();
