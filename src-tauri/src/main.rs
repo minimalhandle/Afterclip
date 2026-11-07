@@ -1189,6 +1189,7 @@ fn state(core: tauri::State<Shared>) -> Value {
         "activeBufferSeconds": core.engine.current_settings().buffer_seconds,
         "update": core.update.lock().unwrap().clone(),
         "version": core.app.package_info().version.to_string(),
+        "patchNotes": updater::patch_notes(&core.app.package_info().version.to_string()),
         "remote": remote_json(&core),
     })
 }
@@ -1405,6 +1406,17 @@ fn skip_update(core: tauri::State<Shared>) -> Result<(), String> {
     updater::skip(&core)
 }
 
+/// Hides this version's patch notes until the next update.
+#[tauri::command(async)]
+fn dismiss_patch_notes(core: tauri::State<Shared>) -> Result<(), String> {
+    let saved = {
+        let mut settings = core.settings.lock().unwrap();
+        settings.seen_version = core.app.package_info().version.to_string();
+        settings.clone()
+    };
+    saved.save(&core.settings_file).map_err(|e| e.to_string())
+}
+
 /// Returns a cached thumbnail and duration. They're generated one at a time, only for cards on screen.
 #[tauri::command(async)]
 fn thumbnail(core: tauri::State<Shared>, payload: String) -> Option<Value> {
@@ -1587,6 +1599,7 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     // The form can hold an older value, because the mic key changes this at any time.
     clean.mic_muted = current.mic_muted;
     clean.clean_mic = current.clean_mic;
+    clean.seen_version = current.seen_version.clone();
     let effective = core.effective(&clean);
     let restart = core.engine.current_settings().needs_engine_restart(&effective);
     if restart && core.engine.status().recording {
@@ -2160,7 +2173,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
+            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
  import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
@@ -2187,8 +2200,13 @@ fn main() {
             let (width, height) = win32::primary_monitor_size();
             let videos = app.path().video_dir().unwrap_or_else(|_| home.clone());
             // Native settings are worked out again at every start, in case the monitor changed.
-            let settings = Settings::load(&settings_file, Settings::defaults(&videos, width, height))
+            let first_start = !settings_file.exists();
+            let mut settings = Settings::load(&settings_file, Settings::defaults(&videos, width, height))
                 .resolved_for(win32::primary_display_mode());
+            // Patch notes are for people who updated, not for a fresh install.
+            if first_start {
+                settings.seen_version = app.package_info().version.to_string();
+            }
             let open_at_start = !settings.start_minimized;
             let shared_settings = Arc::new(Mutex::new(settings.clone()));
 

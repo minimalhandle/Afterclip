@@ -38,10 +38,16 @@
 <div id="home" class="view">
   <section id="update-card" class="update-card" hidden>
     <div id="update-text" class="update-text"></div>
+    <details id="update-notes" class="patch-details" hidden><summary>What's new</summary><div class="patch-notes"></div></details>
     <div id="update-actions" class="row">
       <button id="update-now" class="small primary">Update now</button>
       <button id="update-skip" class="small">Skip this version</button>
     </div>
+  </section>
+  <section id="whats-new" class="update-card" hidden>
+    <div class="update-text"><b id="whats-new-title"></b></div>
+    <div id="whats-new-notes" class="patch-notes scroll"></div>
+    <div class="row"><button id="whats-new-close" class="small">Got it</button></div>
   </section>
   <section id="capture-card" class="capture-card">
     <div class="capture-line">
@@ -160,6 +166,7 @@
         <div class="setting-text"><div id="version-note" class="setting-name"></div><div id="update-note" class="setting-desc"></div></div>
         <button id="check-update" class="small">Check now</button>
       </div>
+      <details id="version-notes" class="patch-details" hidden><summary>What's new in this version</summary><div class="patch-notes"></div></details>
     </div>
     <div class="card">
       <div class="card-title">Backup</div>

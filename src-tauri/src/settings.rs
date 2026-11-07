@@ -123,6 +123,8 @@ pub struct Settings {
     pub auto_update: bool,
     /// The version someone chose to skip, which isn't offered again.
     pub skipped_update: String,
+    /// The last version whose patch notes were shown, so they show once after each update.
+    pub seen_version: String,
     /// Lets a controller run the actions below, each with View, Create or Minus held.
     pub controller_enabled: bool,
     /// The second button for each action, by position, as controller::button reads it. Empty is off.
@@ -222,6 +224,7 @@ impl Settings {
             game_profiles: Vec::new(),
             auto_update: true,
             skipped_update: String::new(),
+            seen_version: String::new(),
             controller_enabled: false,
             controller_clip: "r3".into(),
             controller_record: String::new(),
@@ -431,6 +434,7 @@ impl Settings {
         let mut settings = Settings::load(file, self.clone());
         settings.discord_webhook = self.discord_webhook.clone();
         settings.skipped_update = self.skipped_update.clone();
+        settings.seen_version = self.seen_version.clone();
         settings.test_pattern = self.test_pattern;
         // Opening this PC to the network is its own choice, never something a file from another PC decides.
         settings.remote_stream_deck = self.remote_stream_deck;
@@ -447,7 +451,7 @@ impl Settings {
     pub fn exported(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         if let Some(map) = value.as_object_mut() {
-            for key in ["discordWebhook", "skippedUpdate", "testPattern", "micMuted"] {
+            for key in ["discordWebhook", "skippedUpdate", "seenVersion", "testPattern", "micMuted"] {
                 map.remove(key);
             }
         }

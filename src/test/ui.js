@@ -85,6 +85,8 @@ const lengthOf = (file) => {
 async function main() {
   if (shots) fs.mkdirSync(shots, { recursive: true });
   const session = await startApp({
+    // An older seen version, as after an update, so the patch notes show.
+    seenVersion: '1.0.0',
     bufferSeconds: 40, width: 1280, height: 720, fps: 30, bitrateKbps: 6000, testPattern: true, micHotkey: '', markerHotkey: '',
     audioSources: [{ kind: 'output', device: 'default', label: 'Desktop audio', mix: true, ownTrack: false, muteWithKey: true }],
   });
@@ -110,6 +112,14 @@ async function main() {
     panel = await Page.open(PANEL_URL);
     await waitFor(() => panel.eval("document.getElementById('capture-title').textContent.includes('primary') || document.getElementById('capture-title').textContent.length > 0"), 5000, 'status');
     await waitFor(() => panel.eval("!document.getElementById('save-clip').disabled"), 15000, 'save button');
+    const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).version;
+    check('patch notes show after an update', await panel.eval(`!document.getElementById('whats-new').hidden && document.getElementById('whats-new-title').textContent.includes('${version}') && document.querySelectorAll('#whats-new-notes li').length > 0`));
+    await panel.shot('0-whats-new');
+    await panel.eval("document.getElementById('whats-new-close').click()");
+    await waitFor(() => panel.eval("document.getElementById('whats-new').hidden"), 5000, 'the patch notes to close');
+    const seen = JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).seenVersion;
+    check('closed patch notes stay closed', seen === version, seen);
+    check('Settings still has the patch notes', await panel.eval("!document.getElementById('version-notes').hidden && document.querySelectorAll('#version-notes li').length > 0"));
     check('panel shows buffer summary', /buffer/.test(await panel.eval("document.getElementById('summary').textContent")));
     check('buffer reads in minutes', (await panel.eval("document.getElementById('bufferMinutes').value")) === '0.67');
     await panel.shot('1-panel-empty');

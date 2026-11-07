@@ -16,6 +16,16 @@ const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 const TICK: Duration = Duration::from_secs(15);
 /// How long someone has to skip an update before it installs by itself.
 const INSTALL_COUNTDOWN: Duration = Duration::from_secs(5 * 60);
+const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
+
+/// One version's patch notes from CHANGELOG.md, without its heading.
+pub fn patch_notes(version: &str) -> Option<String> {
+    let heading = format!("## {version}");
+    let start = CHANGELOG.lines().position(|line| line.trim() == heading)?;
+    let body: Vec<&str> = CHANGELOG.lines().skip(start + 1).take_while(|line| !line.starts_with("## ")).collect();
+    let notes = body.join("\n").trim().to_string();
+    (!notes.is_empty()).then_some(notes)
+}
 
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +39,9 @@ pub struct UpdateState {
     /// When it installs by itself, in milliseconds since 1970. None means it waits for a click.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installs_at: Option<u128>,
+    /// The patch notes that came with the update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 fn publish(core: &Shared, change: impl FnOnce(&mut UpdateState)) {
@@ -43,6 +56,7 @@ fn set_status(core: &Shared, status: &str, version: Option<String>, message: Opt
         s.version = version;
         s.message = message;
         s.installs_at = None;
+        s.notes = None;
     });
 }
 
@@ -105,8 +119,10 @@ async fn check_inner(core: &Shared, asked: bool) -> bool {
     set_status(core, "downloading", Some(version.clone()), None);
     match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => {
+            let notes = update.body.clone().filter(|n| !n.trim().is_empty());
             *core.update_ready.lock().unwrap() = Some((update, bytes));
             set_status(core, "ready", Some(version.clone()), None);
+            publish(core, |s| s.notes = notes);
             if core.settings.lock().unwrap().toast_enabled {
                 win32::show_toast(&format!("Update {version} is ready"));
             }
@@ -202,4 +218,16 @@ pub fn start(core: Shared) {
             tick_countdown(&core);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_notes_cover_this_version() {
+        let notes = patch_notes(env!("CARGO_PKG_VERSION")).expect("CHANGELOG.md needs a section for this version");
+        assert!(notes.lines().all(|line| !line.starts_with("## ")));
+        assert_eq!(patch_notes("0.0.0"), None);
+    }
 }

@@ -2,7 +2,7 @@
 // Only run this when a release has been decided on. It needs the private signing key, which is never committed.
 //   node scripts/build-release.js
 // The key is read from AFTERCLIP_SIGNING_KEY_FILE, or %USERPROFILE%\.afterclip\updater.key.
-// Upload the installer, its .sig file and latest.json to the GitHub release.
+// Write the patch notes in CHANGELOG.md first. Upload the installer, its .sig file and latest.json to the GitHub release.
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,6 +13,13 @@ const keyFile = process.env.AFTERCLIP_SIGNING_KEY_FILE ?? path.join(os.homedir()
 if (!fs.existsSync(keyFile)) throw new Error(`No signing key at ${keyFile}. Existing copies refuse unsigned updates.`);
 
 const { version, plugins } = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+// The patch notes come from this version's section of CHANGELOG.md, and show in the app before and after updating.
+const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8').split(/\r?\n/);
+const start = changelog.findIndex((line) => line.trim() === `## ${version}`);
+const end = changelog.findIndex((line, i) => i > start && line.startsWith('## '));
+const notes = start < 0 ? '' : changelog.slice(start + 1, end < 0 ? undefined : end).join('\n').trim();
+if (!notes) throw new Error(`CHANGELOG.md has no patch notes for ${version}. Add a "## ${version}" section first.`);
+
 const env = {
   ...process.env,
   TAURI_SIGNING_PRIVATE_KEY: fs.readFileSync(keyFile, 'utf8').trim(),
@@ -30,7 +37,7 @@ if (!fs.existsSync(signature)) throw new Error(`The build didn't sign ${installe
 const repository = plugins.updater.endpoints[0].split('/releases/')[0];
 const latest = {
   version,
-  notes: `See ${repository}/releases/tag/v${version}`,
+  notes,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
