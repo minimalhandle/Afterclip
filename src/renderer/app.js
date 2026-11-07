@@ -18,6 +18,8 @@ const strips = new Map(); // file|mtime -> { url, frames }, or a promise while o
 let favouritesOnly = false;
 let update = { status: 'idle' };
 let appVersion = '';
+let patchNotes = null;
+let seenVersion = '';
 let storageUsed = 0;
 let remote = { on: false };
 
@@ -576,6 +578,8 @@ async function refresh() {
   activeBuffer = state.activeBufferSeconds ?? null;
   update = state.update ?? update;
   appVersion = state.version ?? appVersion;
+  patchNotes = state.patchNotes ?? null;
+  seenVersion = state.settings.seenVersion ?? '';
   storageUsed = state.storageUsedBytes ?? 0;
   remote = state.remote ?? remote;
   renderRemote();
@@ -1034,8 +1038,45 @@ function renderEncoderNote(inUse) {
 
 const UPDATE_COUNTDOWN_REFRESH_MS = 30000;
 let updateTimer = null;
+
+// Patch notes are plain text from CHANGELOG.md: lines starting with "- " become a list.
+function fillNotes(box, text) {
+  const parts = [];
+  let list = null;
+  for (const raw of (text ?? '').split(/\r?\n/)) {
+    const lineText = raw.trim();
+    if (!lineText) { list = null; continue; }
+    if (lineText.startsWith('- ')) {
+      if (!list) parts.push(list = document.createElement('ul'));
+      const li = document.createElement('li');
+      li.textContent = lineText.slice(2);
+      list.append(li);
+    } else {
+      list = null;
+      const p = document.createElement('p');
+      p.textContent = lineText;
+      parts.push(p);
+    }
+  }
+  box.replaceChildren(...parts);
+}
+
+function renderPatchNotes() {
+  const unseen = Boolean(patchNotes && appVersion && seenVersion !== appVersion);
+  $('whats-new').hidden = !unseen;
+  if (unseen) {
+    $('whats-new-title').textContent = `What's new in ${appVersion}`;
+    fillNotes($('whats-new-notes'), patchNotes);
+  }
+  $('version-notes').hidden = !patchNotes;
+  fillNotes($('version-notes').querySelector('.patch-notes'), patchNotes);
+}
+
 function renderUpdate() {
-  const { status: state, version, message, installsAt } = update;
+  renderPatchNotes();
+  const { status: state, version, message, installsAt, notes: updateNotes } = update;
+  $('update-notes').hidden = state !== 'ready' || !updateNotes;
+  fillNotes($('update-notes').querySelector('.patch-notes'), state === 'ready' ? updateNotes : '');
   const card = $('update-card');
   card.hidden = !['downloading', 'ready', 'installing', 'failed'].includes(state);
   $('update-actions').hidden = state !== 'ready';
@@ -1535,6 +1576,10 @@ $('update-skip').onclick = () => api.invoke('skip-update').then(() => {
   return refresh();
 }).catch((e) => showBanner(errorText(e), 'bad'));
 $('check-update').onclick = () => api.invoke('check-update');
+$('whats-new-close').onclick = () => api.invoke('dismiss-patch-notes').then(() => {
+  seenVersion = appVersion;
+  renderPatchNotes();
+}).catch((e) => showBanner(errorText(e), 'bad'));
 $('autoUpdate').onchange = () => scheduleSave();
 $('storageLimitGb').onchange = () => scheduleSave();
 $('deleteAfterDays').onchange = () => scheduleSave();
