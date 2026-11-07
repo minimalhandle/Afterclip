@@ -3,23 +3,29 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.3.0
+
+- Vertical mode: capture in 9:16 all the time, in Settings > Video or for one game. Clips, recordings and screenshots save vertical straight away, with no re-encoding.
+- In vertical mode your webcam goes across the top, with the game below. Turn the webcam off and the game fills the whole picture.
+- Hover previews show vertical clips properly instead of squashing them.
+- What's new: after each update, Afterclip shows what changed. An update that's ready to install shows its notes too, and they're always in Settings > General.
+
 ## 1.2.0
 
-- Vertical mode captures in 9:16 all the time, for Shorts, Reels and TikTok.
-- Add your webcam to clips, and use push to talk for your mic.
-- Tag clips, and keep each game's clips in a folder of its own.
-- Stream Deck dials, plus keys for webcam, hold to talk, star and vertical.
-- A Stream Deck on another PC can control Afterclip.
-- Capture starts again by itself after it stops, such as after a driver update.
-- Save diagnostics makes a file to attach to a problem report.
+- Keep recording after you save, so what happens just after you press is in the clip too.
+- Only buffer during games, to free memory and GPU on the desktop.
+- Your webcam in any corner of every clip and recording.
+- Push to talk: your mic is only in clips while you hold a key or mouse button.
+- Tags, hover to preview, and a folder for each game.
+- Capture comes back by itself after an encoder error, a crash or a driver update.
+- A warning when disk space is low, export and import of settings, and Save diagnostics.
+- A Stream Deck on another PC can control Afterclip, plus new keys and Stream Deck + dials.
 
 ## 1.1.0
 
-- Share-ready clips: Compress makes a copy around 100 MB at 1080p60, and vertical copies are one click away.
-- Take screenshots, Send to Discord, and capture windowed games.
-- Game profiles, picked from a list of your games.
-- Library tools, and deleting several clips at once.
-- Controller support, off by default.
-- Redesigned Stream Deck keys, with new open, edit and copy keys.
-- A new glass bar, grouped settings and larger clip rows.
-- Automatic updates.
+- A cleaner panel, and settings in six sections.
+- Send to Discord, Compress, vertical copies and screenshots.
+- Controller support, windowed games and game profiles.
+- Search, filters, favourites, renaming and deleting several clips at once.
+- Storage rules and automatic updates.
+- Stream Deck plugin 0.7, with redesigned keys.
