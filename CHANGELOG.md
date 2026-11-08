@@ -5,6 +5,14 @@ update itself. Each version starts with `## ` and its number. Lines that start w
 
 ## 1.4.0
 
+- Recover recent gameplay from disk checkpoints, import existing clips or watch a folder, and queue batches with saved share recipes.
+- Automatically bookmark Minecraft Java advancements and deaths, and Counter-Strike 2 kills and round wins.
+- Redact video and audio, export captions or burn them into video, and export an edit with synchronized angle cuts.
+- Share a clip to your phone on Wi-Fi, check audio track routing alongside Voicemeeter labels, and hide protected games when they lose focus.
+
+- Trim and share opens in its own editor with video playback and one-click vertical Discord sharing.
+- Save share recipes, reframe vertical clips with pinned regions, search local transcripts, and switch between synchronized clip angles.
+
 - Trim a clip from its menu and save or share the selected range.
 - Even out audio levels and choose which recorded tracks go into share copies.
 - Add named Discord channels and pick a destination when sending.

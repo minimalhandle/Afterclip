@@ -74,6 +74,8 @@ pub struct GameProfile {
     /// Starts a recording when the game opens, and stops it when the game closes.
     #[serde(default)]
     pub auto_record: bool,
+    #[serde(default)]
+    pub capture_privacy: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,6 +127,10 @@ pub struct Settings {
     pub discord_webhook: String,
     /// Where Send to Discord can post. The first is used by the Stream Deck key and the API.
     pub discord_webhooks: Vec<Webhook>,
+    #[serde(default)]
+    pub share_recipes: Vec<crate::advanced::Recipe>,
+    #[serde(default)]
+    pub vertical_layouts: std::collections::BTreeMap<String, crate::advanced::Layout>,
     /// Compress, Send to Discord and vertical copies even out the volume, so quiet clips come out as loud as others.
     pub even_audio: bool,
     /// Saves a clip of star_clip_seconds and stars it, so clean-up never removes it.
@@ -238,6 +244,8 @@ impl Settings {
             screenshot_hotkey: "Alt+Shift+S".into(),
             discord_webhook: String::new(),
             discord_webhooks: Vec::new(),
+            share_recipes: Vec::new(),
+            vertical_layouts: Default::default(),
             even_audio: true,
             star_clip_hotkey: "Alt+Shift+F".into(),
             star_clip_seconds: 30,
@@ -450,6 +458,7 @@ impl Settings {
             || self.game_audio != other.game_audio
             || self.game_audio_own_track != other.game_audio_own_track
             || self.test_pattern != other.test_pattern
+            || self.game_profiles.iter().any(|profile| profile.capture_privacy) != other.game_profiles.iter().any(|profile| profile.capture_privacy)
             || self.camera_box() != other.camera_box()
             || (self.camera_box().is_some() && self.camera_device != other.camera_device)
     }
@@ -529,7 +538,7 @@ mod tests {
         s.camera_device = "cam".into();
         assert_eq!(s.camera_box(), Some((0, 0, 606, 340)), "the webcam goes across the top");
         assert!(sample().needs_engine_restart(&s));
-        let profile = GameProfile { exe: "game.exe".into(), name: "Game".into(), quality: None, frame_rate: None, buffer_seconds: None, game_audio: None, vertical: Some(true), auto_record: false };
+        let profile = GameProfile { exe: "game.exe".into(), name: "Game".into(), quality: None, frame_rate: None, buffer_seconds: None, game_audio: None, vertical: Some(true), auto_record: false, capture_privacy: false };
         assert_eq!(sample().with_profile(&profile, (1920, 1080, 60)).canvas(), (606, 1080));
     }
 

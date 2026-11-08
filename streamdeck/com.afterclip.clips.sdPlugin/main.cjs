@@ -34,6 +34,7 @@ const EDIT_LAST = 'com.afterclip.clips.edit-last';
 const COPY_LAST = 'com.afterclip.clips.copy-last';
 const SCREENSHOT = 'com.afterclip.clips.screenshot';
 const COMPRESS_LAST = 'com.afterclip.clips.compress-last';
+const SHARE_RECIPE = 'com.afterclip.clips.share-recipe';
 const VERTICAL_LAST = 'com.afterclip.clips.vertical-last';
 const STAR_LAST = 'com.afterclip.clips.star-last';
 // Saves a clip of its chosen length and stars it.
@@ -55,6 +56,7 @@ const SIMPLE_KEYS = {
   [SCREENSHOT]: { route: '/screenshot', symbol: 'camera', small: 'SHOT', confirm: 'SAVED' },
   // These run until the job is done, and show it on the key meanwhile.
   [COMPRESS_LAST]: { route: '/last-clip/compress', symbol: 'compress', small: 'COMPRESS', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
+  [SHARE_RECIPE]: { route: '/last-clip/recipe', symbol: 'compress', small: 'RECIPE', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
   [DISCORD_LAST]: { route: '/last-clip/discord', symbol: 'send', small: 'DISCORD', confirm: 'SENT', busy: 'SENDING', timeout: LONG_JOB_MS },
   [VERTICAL_LAST]: { route: '/last-clip/vertical', symbol: 'vertical', small: 'VERTICAL', confirm: 'READY', busy: 'WORKING', timeout: LONG_JOB_MS },
   // Starring again takes the star off, so the key says which happened.
@@ -343,7 +345,8 @@ async function press(context, action, settings) {
         key.playing = false;
         draw(context);
       }
-      await call('POST', simple.route, simple.timeout);
+      const route = action === SHARE_RECIPE ? simple.route + '?name=' + encodeURIComponent(String(settings?.recipe ?? '').trim()) : simple.route;
+      await call('POST', route, simple.timeout);
       finish = () => confirmed(context, simple.confirm);
     } else if (action === TALK) {
       if (key) key.holding = true;

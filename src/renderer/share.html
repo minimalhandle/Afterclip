@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src data:; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost">
+<title>Afterclip · Trim and share</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="share-window">
+  <header><strong>Trim and share</strong><div id="share-name" class="setting-desc"></div></header>
+  <div class="share-preview">
+    <div id="share-player" class="player">
+      <video id="share-video" controls preload="metadata" aria-label="Clip preview"></video>
+      <video id="angle-video" preload="metadata" aria-label="Second angle" hidden></video>
+      <canvas id="pin-selection" aria-label="Drag to select a region" hidden></canvas>
+    </div>
+    <canvas id="vertical-preview" width="225" height="400" aria-label="Vertical layout preview" hidden></canvas>
+  </div>
+  <section id="share-tools" class="share-tools" hidden>
+    <div id="trim" class="trim">
+      <div id="trim-strip" class="trim-strip"></div>
+      <div id="trim-before" class="trim-out"></div>
+      <div id="trim-after" class="trim-out"></div>
+      <div id="trim-keep" class="trim-keep"></div>
+      <div id="share-playhead" class="trim-play"></div>
+      <button id="trim-start" class="trim-handle" role="slider" aria-label="Start of the part to keep"></button>
+      <button id="trim-end" class="trim-handle" role="slider" aria-label="End of the part to keep"></button>
+    </div>
+    <div class="trim-times"><span id="trim-from"></span><span id="trim-length" class="trim-length"></span><span id="trim-to"></span></div>
+    <div id="share-tracks" class="share-tracks" hidden>
+      <div class="setting-name">Audio in copies</div>
+      <div id="share-track-list" class="share-track-list"></div>
+    </div>
+    <div class="share-actions">
+      <button id="share-trim" class="small primary">Save trimmed copy</button>
+      <button id="share-compress" class="small">Compress</button>
+      <button id="share-vertical" class="small">Vertical copy</button>
+      <div id="share-discord-row" class="row">
+        <select id="share-webhook" aria-label="Discord channel" hidden></select>
+        <button id="share-discord" class="small">Send to Discord</button>
+        <button id="share-vertical-discord" class="small">Send vertical to Discord</button>
+      </div>
+    </div>
+    <div class="share-actions">
+      <button id="show-recipes" class="small">Share recipes</button>
+      <button id="show-layout" class="small">Vertical layout</button>
+      <button id="show-speech" class="small">Transcript</button>
+      <button id="show-angles" class="small">Sync angles</button>
+      <button id="show-edits" class="small">Privacy edits</button>
+      <button id="show-captions" class="small">Captions</button>
+      <button id="show-bookmarks" class="small">Bookmarks</button>
+      <button id="show-phone" class="small">Send to phone</button>
+    </div>
+    <div id="recipes" class="share-option row wrap" hidden>
+      <select id="recipe-list" aria-label="Saved share recipe"></select>
+      <button id="recipe-run" class="small primary">Run recipe</button>
+      <button id="recipe-delete" class="small">Remove</button>
+      <input id="recipe-name" placeholder="Recipe name" maxlength="48" aria-label="Recipe name">
+      <select id="recipe-action" aria-label="Recipe output">
+        <option value="compress">Compressed file</option><option value="vertical">Vertical file</option>
+        <option value="discord">Discord</option><option value="vertical-discord">Vertical to Discord</option>
+      </select>
+      <input id="recipe-size" type="number" min="1" max="250" placeholder="MB limit" aria-label="File size limit in MB">
+      <label><input id="recipe-even" type="checkbox"> Even volume</label>
+      <button id="recipe-save" class="small">Save recipe</button>
+    </div>
+    <div id="layout" class="share-option row wrap" hidden>
+      <label>Crop position <input id="layout-crop" type="range" min="0" max="100" value="50"></label>
+      <button id="layout-pin" class="small">Pin a region</button>
+      <button id="layout-reset" class="small">Reset layout</button>
+      <button id="layout-save" class="small">Save for this game</button>
+    </div>
+    <div id="speech" class="share-option" hidden>
+      <button id="speech-run" class="small">Transcribe selected audio locally</button>
+      <div id="speech-lines" class="speech-lines"></div>
+    </div>
+    <div id="angles" class="share-option row wrap" hidden>
+      <button id="angle-pick" class="small">Choose second clip</button>
+      <button id="angle-sync" class="small">Match audio</button>
+      <label>Angle 2 offset (s) <input id="angle-offset" type="number" value="0" step="0.02" aria-label="Second angle offset in seconds"></label>
+      <button id="angle-switch" class="small">Switch angle</button>
+      <button id="angle-play" class="small">Play / pause</button>
+      <select id="angle-cut-choice" aria-label="Angle for next cut"><option value="1">Angle 1</option><option value="2">Angle 2</option></select>
+      <button id="angle-cut" class="small">Add cut at playhead</button>
+      <label><input id="angle-audio" type="checkbox" checked> Keep angle 1 audio</label>
+      <label><input id="angle-follow" type="checkbox"> Preview cuts</label>
+      <button id="angle-export" class="small primary">Export angle edit</button>
+      <div id="angle-cuts" class="row wrap"></div>
+    </div>
+    <div id="edits" class="share-option row wrap" hidden>
+      <button id="redact-region" class="small">Draw blur region</button>
+      <button id="redact-clear" class="small">Clear region</button>
+      <label>Audio <select id="redact-audio"><option value="">Keep audio</option><option value="mute">Mute</option><option value="bleep">Bleep</option></select></label>
+      <select id="redact-track" aria-label="Audio track to redact"></select>
+      <label>From <input id="redact-from" type="number" min="0" step="0.1"></label>
+      <button id="redact-mark-from" class="small">Set from playhead</button>
+      <label>To <input id="redact-to" type="number" min="0" step="0.1"></label>
+      <button id="redact-mark-to" class="small">Set to playhead</button>
+      <button id="redact-export" class="small primary">Save redacted copy</button>
+      <p class="note">If a voice is also in the main mix, choose All audio tracks to remove it there too.</p>
+    </div>
+    <div id="captions" class="share-option" hidden>
+      <div class="row wrap">
+        <button id="caption-generate" class="small">Use transcript</button>
+        <button id="caption-save" class="small">Save SRT</button>
+        <button id="caption-burn" class="small primary">Burn into video</button>
+        <label><input id="caption-vertical" type="checkbox" checked> Vertical 9:16</label>
+      </div>
+      <textarea id="caption-text" rows="4" aria-label="Editable SRT captions" placeholder="Transcribe audio first, then select Use transcript."></textarea>
+    </div>
+    <div id="bookmarks" class="share-option" hidden>
+      <div class="row wrap">
+        <label>Before <input id="bookmark-before" type="number" min="0" max="120" value="10"> s</label>
+        <label>After <input id="bookmark-after" type="number" min="0" max="120" value="10"> s</label>
+        <button id="bookmark-load" class="small">Load bookmarks</button>
+      </div>
+      <div id="bookmark-results" class="speech-lines"></div>
+    </div>
+    <div id="phone" class="share-option row wrap" hidden>
+      <button id="phone-start" class="small primary">Create phone link</button>
+      <button id="phone-stop" class="small">Stop sharing</button>
+      <img id="phone-qr" alt="Scan this code on your phone" hidden>
+      <p id="phone-link" class="note">Connect both devices to the same Wi-Fi.</p>
+    </div>
+  </section>
+  <p id="share-note" class="note" role="status">Loading clip…</p>
+</main>
+<script src="bridge.js"></script>
+<script src="share.js"></script>
+<script src="share-tools.js"></script>
+<script src="qrcode.js"></script>
+<script src="share-extras.js"></script>
+</body>
+</html>

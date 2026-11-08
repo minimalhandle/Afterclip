@@ -19,7 +19,7 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 
 - **It's always ready.** A rolling buffer keeps your recent gameplay in RAM, so you can save a clip after the moment happens.
 - **It stays out of the way.** It lives in the tray, opens no window at startup, and frees the panel's memory 20 seconds after you close it.
-- **It's small.** The installer is about 18 MB, and you don't need OBS installed. Capture runs on OBS's libobs libraries in a small windowless engine.
+- **Capture runs in a small windowless engine.** The installer includes the capture libraries and offline editing tools.
 - **Saves are lossless.** Clips are cut from the buffer without re-encoding, so they keep their full quality.
 
 ## Features

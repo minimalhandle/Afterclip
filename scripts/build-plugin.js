@@ -33,7 +33,7 @@ const dial = (name, title, tooltip, triggers) => action(name, title, tooltip, {
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.11.0.0';
+manifest.Version = '0.12.0.0';
 // Every key's settings show the address it connects to, so a Stream Deck can control Afterclip on another PC.
 manifest.PropertyInspectorPath = 'ui/connection.html';
 manifest.Actions = [
@@ -50,6 +50,7 @@ manifest.Actions = [
   action('copy-last', 'Copy Last Clip', 'Copy your newest clip, ready to paste into a chat or another app.'),
   action('screenshot', 'Take Screenshot', 'Save a picture of what Afterclip is capturing.'),
   action('compress-last', 'Compress Last Clip', 'Make a smaller copy of your newest clip, ready to share.'),
+  action('share-recipe', 'Share Recipe', 'Run a saved Afterclip share recipe on your newest clip.', { PropertyInspectorPath: 'ui/recipe.html' }),
   action('discord-last', 'Send Last Clip to Discord', 'Send your newest clip to the Discord channel set in Afterclip.'),
   action('vertical-last', 'Vertical Copy of Last Clip', 'Make a 9:16 copy of your newest clip for phones, with your webcam on top if it has one.'),
   action('save-star', 'Save and Star', "Save a clip of the length you choose in the key's settings, and add it to your favourites.", { PropertyInspectorPath: 'ui/clip.html' }),
@@ -79,6 +80,7 @@ for (const [name, list, face] of [
   ['copy-last', 'P', { symbol: 'copy', small: 'COPY LAST' }],
   ['screenshot', 'S', { symbol: 'camera', small: 'SHOT' }],
   ['compress-last', 'Z', { symbol: 'compress', small: 'COMPRESS' }],
+  ['share-recipe', 'Z', { symbol: 'compress', small: 'RECIPE' }],
   ['discord-last', 'D', { symbol: 'send', small: 'DISCORD' }],
   ['vertical-last', 'Y', { symbol: 'vertical', small: 'VERTICAL' }],
   ['save-star', 'B', { big: '30', small: 'SEC STAR' }],

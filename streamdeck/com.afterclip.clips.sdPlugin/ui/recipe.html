@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="inspector.css">
+</head>
+<body>
+<label>Recipe name <input id="recipe" maxlength="48" placeholder="Friends Discord"></label>
+<p>Use the exact name saved in Afterclip → Trim and share → Share recipes.</p>
+<hr>
+<div id="connection"></div>
+<script src="connection.js"></script>
+<script>
+  function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
+    const ws = new WebSocket('ws://127.0.0.1:' + port);
+    const input = document.getElementById('recipe');
+    input.value = JSON.parse(actionInfo).payload.settings.recipe ?? '';
+    ws.addEventListener('open', () => ws.send(JSON.stringify({ event: registerEvent, uuid })), { once: true });
+    afterclipConnection(ws, uuid);
+    input.onchange = () => ws.send(JSON.stringify({ event: 'setSettings', context: uuid, payload: { recipe: input.value.trim() } }));
+  }
+</script>
+</body>
+</html>

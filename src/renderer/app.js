@@ -51,9 +51,12 @@ function renderStatus() {
     detecting: `Connecting to ${capture.app ?? 'game'}`,
     game: capture.app ?? 'Game',
     fallback: capture.app ?? 'Fullscreen app',
+    private: capture.app ?? 'Protected game',
   };
   let title = labels[capture.mode] ?? 'Recording';
   let detail = capture.mode === 'game' ? 'Game capture' : capture.mode === 'fallback' ? 'Recording its monitor' : capture.mode === 'detecting' ? 'Recording its monitor for now' : 'Waiting for a game';
+  if (capture.mode === 'private') detail = 'Video hidden by Capture privacy';
+  else if (capture.mode !== 'game' && settings?.gameProfiles.some((game) => game.capturePrivacy)) detail = 'Monitor capture disabled by Capture privacy';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }
   else if (status.waitingForGame) { title = 'Waiting for a game'; detail = 'The buffer starts when a game opens'; }
   else if (!ready) { title = 'Starting capture'; detail = ''; }
@@ -348,6 +351,7 @@ function setLibrary(open) {
   $('view-all').hidden = open;
   $('open-editor').hidden = !open;
   $('library-tools').hidden = !open;
+  searchSpeech();
   renderMedia();
 }
 
@@ -602,156 +606,42 @@ const webhooks = () => (settings?.discordWebhooks ?? [])
   .filter((h) => h.url.trim());
 
 /** What each audio track of a clip holds, going by the current settings, or plain numbers if they've changed since. */
-function trackNames(count) {
-  const names = ['Main mix'];
-  for (const s of settings.audioSources) if (s.ownTrack) names.push(s.label);
-  if (settings.gameAudioOwnTrack) names.push('Game audio');
-  return names.length === count ? names : Array.from({ length: count }, (_, i) => (i === 0 ? 'Main mix' : `Track ${i + 1}`));
+function openShare(m, at = 0) {
+  return api.invoke('open-share', { file: m.file, game: gameOf(m), at }).catch((e) => showBanner(errorText(e), 'bad'));
 }
 
-const MIN_KEEP_SECONDS = 0.5;
-const SHARE_NOTE = $('share-note').textContent;
-const share = { m: null, duration: 0, start: 0, end: 0 };
-const trimmed = () => share.start > 0.05 || share.end < share.duration - 0.05;
-
-function renderTrim() {
-  const { duration, start, end } = share;
-  const at = (seconds) => `${duration > 0 ? (seconds / duration) * 100 : 0}%`;
-  $('trim-start').style.left = at(start);
-  $('trim-end').style.left = at(end);
-  $('trim-keep').style.left = at(start);
-  $('trim-keep').style.width = `calc(${at(end)} - ${at(start)})`;
-  $('trim-before').style.width = at(start);
-  $('trim-after').style.width = `calc(100% - ${at(end)})`;
-  $('trim-from').textContent = clockLabel(start);
-  $('trim-to').textContent = clockLabel(end);
-  $('trim-length').textContent = trimmed() ? `Keeping ${clockLabel(end - start)} of ${clockLabel(duration)}` : `Whole clip · ${clockLabel(duration)}`;
-  for (const [id, value] of [['trim-start', start], ['trim-end', end]]) {
-    $(id).setAttribute('aria-valuemin', '0');
-    $(id).setAttribute('aria-valuemax', String(Math.round(duration)));
-    $(id).setAttribute('aria-valuenow', String(Math.round(value)));
-    $(id).setAttribute('aria-valuetext', clockLabel(value));
-  }
-  $('share-trim').disabled = !trimmed();
-}
-
-function moveHandle(which, seconds) {
-  if (which === 'start') share.start = Math.max(0, Math.min(seconds, share.end - MIN_KEEP_SECONDS));
-  else share.end = Math.min(share.duration, Math.max(seconds, share.start + MIN_KEEP_SECONDS));
-  renderTrim();
-}
-
-async function openShare(m) {
-  share.m = m;
-  $('share-name').textContent = parseName(m.name).game === m.name ? m.name : `${parseName(m.name).game} · ${m.name}`;
-  $('share-name').title = m.name;
-  $('trim-strip').style.backgroundImage = '';
-  const known = info.get(`${m.file}|${m.mtime}`) ?? await api.invoke('thumbnail', m.file).catch(() => null);
-  share.duration = known?.duration ?? 0;
-  if (!(share.duration > MIN_KEEP_SECONDS)) {
-    showBanner("Couldn't read this clip's length, so it can't be trimmed.", 'bad');
+let speechSearchTimer;
+let speechSearchGeneration = 0;
+function searchSpeech() {
+  clearTimeout(speechSearchTimer);
+  const generation = ++speechSearchGeneration;
+  const output = $('speech-results');
+  output.replaceChildren();
+  output.hidden = !libraryOpen || !$('library-speech').checked;
+  if (output.hidden) return;
+  const query = $('library-search').value.trim();
+  if (query.length < 2) {
+    output.textContent = 'Transcribe clips in Trim and share, then search for a phrase.';
     return;
   }
-  share.start = 0;
-  share.end = share.duration;
-  renderTrim();
-
-  const hooks = webhooks();
-  $('share-webhook').replaceChildren(...hooks.map((h) => new Option(h.name, String(h.index))));
-  $('share-webhook').hidden = hooks.length < 2;
-  $('share-discord').textContent = hooks.length > 1 ? 'Send' : 'Send to Discord';
-  $('share-discord-row').hidden = hooks.length === 0;
-  $('share-tracks').hidden = true;
-  $('share-track-list').replaceChildren();
-  $('share-note').textContent = SHARE_NOTE;
-  $('share-note').classList.remove('warn');
-  $('share').hidden = false;
-  $('trim-end').focus();
-
-  // The film strip and the track list take a moment, so the sheet opens without waiting for them.
-  const strip = strips.get(`${m.file}|${m.mtime}`);
-  Promise.resolve(strip && !(strip instanceof Promise) ? strip : api.invoke('preview-strip', m.file)).then((s) => {
-    if (share.m === m && s?.url) $('trim-strip').style.backgroundImage = `url("${s.url}")`;
-  }, () => undefined);
-  const count = await api.invoke('clip-tracks', m.file).catch(() => 1);
-  if (share.m !== m || count < 2) return;
-  $('share-track-list').replaceChildren(...trackNames(count).map((name, i) => {
-    const label = document.createElement('label');
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.value = String(i);
-    box.checked = i === 0;
-    label.append(box, name);
-    return label;
-  }));
-  $('share-tracks').hidden = false;
+  output.textContent = 'Searching transcripts…';
+  speechSearchTimer = setTimeout(async () => {
+    try {
+      const results = await api.invoke('search-speech', query);
+      if (generation !== speechSearchGeneration) return;
+      output.replaceChildren(...results.map((result) => {
+        const button = document.createElement('button');
+        button.className = 'small';
+        button.textContent = result.name + ' · ' + clockLabel(result.at) + ' · ' + result.text;
+        button.onclick = () => openShare(result, result.at);
+        return button;
+      }));
+      if (!results.length) output.textContent = 'No matching speech in transcribed clips.';
+    } catch (error) {
+      if (generation === speechSearchGeneration) output.textContent = errorText(error);
+    }
+  }, 200);
 }
-
-function closeShare() {
-  $('share').hidden = true;
-  share.m = null;
-}
-
-/** Starts a job from the sheet. Results come back as feedback events, because the panel can close first. */
-function runShare(action, message) {
-  const m = share.m;
-  if (!m) return;
-  const tracks = [...$('share-track-list').querySelectorAll('input:checked')].map((b) => Number(b.value));
-  if (!$('share-tracks').hidden && tracks.length === 0) {
-    $('share-note').textContent = 'Tick at least one audio track.';
-    $('share-note').classList.add('warn');
-    return;
-  }
-  const payload = { file: m.file, action, tracks: $('share-tracks').hidden ? [] : tracks, webhook: Number($('share-webhook').value || 0) };
-  if (trimmed()) Object.assign(payload, { start: share.start, end: share.end });
-  closeShare();
-  showBanner(message);
-  api.invoke('share-clip', payload).catch(() => undefined).finally(() => refresh());
-}
-
-function wireTrim() {
-  const bar = $('trim');
-  const secondsAt = (x) => {
-    const box = bar.getBoundingClientRect();
-    return Math.min(1, Math.max(0, (x - box.left) / box.width)) * share.duration;
-  };
-  let dragging = null;
-  bar.addEventListener('pointerdown', (e) => {
-    const t = secondsAt(e.clientX);
-    // A press on the bar takes the nearer end there.
-    dragging = e.target.id === 'trim-start' ? 'start' : e.target.id === 'trim-end' ? 'end' : Math.abs(t - share.start) < Math.abs(t - share.end) ? 'start' : 'end';
-    bar.setPointerCapture(e.pointerId);
-    moveHandle(dragging, t);
-    $(`trim-${dragging}`).focus();
-    e.preventDefault();
-  });
-  bar.addEventListener('pointermove', (e) => { if (dragging) moveHandle(dragging, secondsAt(e.clientX)); });
-  const stop = () => { dragging = null; };
-  bar.addEventListener('pointerup', stop);
-  bar.addEventListener('pointercancel', stop);
-  for (const which of ['start', 'end']) {
-    $(`trim-${which}`).addEventListener('keydown', (e) => {
-      const step = e.shiftKey ? 5 : 0.5;
-      const now = which === 'start' ? share.start : share.end;
-      const to = { ArrowLeft: now - step, ArrowDown: now - step, ArrowRight: now + step, ArrowUp: now + step, Home: 0, End: share.duration }[e.key];
-      if (to === undefined) return;
-      e.preventDefault();
-      e.stopPropagation();
-      moveHandle(which, to);
-    });
-  }
-  $('share-close').onclick = closeShare;
-  $('share').addEventListener('click', (e) => { if (e.target.id === 'share') closeShare(); });
-  $('share').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeShare(); } });
-  $('share-trim').onclick = () => runShare('trim', 'Saving the part you kept.');
-  $('share-compress').onclick = () => runShare('compress', 'Making a smaller copy. A long clip can take a while, and you can keep playing.');
-  $('share-vertical').onclick = () => runShare('vertical', 'Making a vertical copy for phones. A long clip can take a while, and you can keep playing.');
-  $('share-discord').onclick = () => {
-    const hook = webhooks().find((h) => h.index === Number($('share-webhook').value));
-    runShare('discord', `Sending to ${webhooks().length > 1 ? hook?.name : 'Discord'}. A long clip is made smaller first, and you can keep playing.`);
-  };
-}
-wireTrim();
 
 async function refresh() {
   const state = await api.invoke('state');
@@ -1488,9 +1378,13 @@ function renderProfiles() {
     record.append(recordText, toggle);
 
     const optional = (text) => text || undefined;
+    const privacy = profileSelect('Capture privacy', p.capturePrivacy ? 'on' : 'off',
+      [['off', 'Off'], ['on', 'Only while focused and hooked']], (value) => { p.capturePrivacy = value === 'on'; });
+    privacy.title = 'Desktop and monitor fallback are disabled while any game has Capture privacy on.';
     card.append(
       head,
       record,
+      privacy,
       profileSelect('Quality', p.quality, [USE_DEFAULT, ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['full', 'Full quality']], (v) => { p.quality = optional(v); }),
       profileSelect('Frame rate', p.frameRate, [USE_DEFAULT, ['60', '60 fps'], ['120', '120 fps'], ['native', 'Native']], (v) => { p.frameRate = optional(v); }),
       profileSelect('Buffer', p.bufferSeconds, [USE_DEFAULT, ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes'], ['600', '10 minutes'], ['1800', '30 minutes']], (v) => { p.bufferSeconds = v ? Number(v) : undefined; }),
@@ -1785,7 +1679,8 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => addAudio(b.dataset.add); });
 $('open-settings').onclick = () => showView('settings');
-$('library-search').oninput = () => renderMedia();
+$('library-search').oninput = () => { renderMedia(); searchSpeech(); };
+$('library-speech').onchange = searchSpeech;
 $('library-game').onchange = () => renderMedia();
 $('library-tag').onchange = () => renderMedia();
 $('library-sort').onchange = () => renderMedia();
@@ -1877,6 +1772,9 @@ $('merge-selected').onclick = () => {
 };
 $('delete-selected').onclick = deleteSelected;
 $('clear-selected').onclick = () => { selected.clear(); renderMedia(); };
+$('open-studio').onclick = () => api.invoke('open-studio').catch((error) => showBanner(errorText(error), 'bad'));
+$('batch-selected').onclick = () => api.invoke('open-studio', [...selected]).catch((error) => showBanner(errorText(error), 'bad'));
+api.on('studio-import', () => refresh());
 $('restart-admin').onclick = () => api.invoke('restart-admin').catch((e) => showBanner(errorText(e), 'bad'));
 $('add-preset').onclick = () => { settings.presets.push({ seconds: 45, hotkey: '' }); renderPresets(); scheduleSave(); };
 $('pick-folder').onclick = async () => { const dir = await api.invoke('pick-folder'); if (dir) { $('outputDir').value = dir; scheduleSave(); } };

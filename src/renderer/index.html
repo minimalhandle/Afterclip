@@ -97,10 +97,13 @@
     <button class="tab" data-kind="recording" role="tab">Recordings</button>
     <button class="tab" data-kind="screenshot" role="tab">Screenshots</button>
     <button id="view-all" class="tab-action">View all</button>
+    <button id="open-studio" class="tab-action">Tools</button>
     <button id="open-editor" class="tab-action" hidden>Open editor</button>
   </div>
   <div id="library-tools" class="library-tools" hidden>
     <input id="library-search" type="search" placeholder="Search clips" aria-label="Search clips">
+    <label class="speech-search-toggle"><input id="library-speech" type="checkbox"> Search spoken words</label>
+    <div id="speech-results" class="speech-lines" hidden></div>
     <div class="row">
       <select id="library-game" aria-label="Filter by game"></select>
       <select id="library-tag" aria-label="Filter by tag"></select>
@@ -118,6 +121,7 @@
   <div id="selection" class="selection" hidden>
     <span id="selection-count"></span>
     <button id="merge-selected" class="small primary">Open in editor</button>
+    <button id="batch-selected" class="small">Batch export</button>
     <button id="delete-selected" class="small danger">Delete</button>
     <button id="clear-selected" class="small">Clear</button>
   </div>
@@ -523,39 +527,6 @@
   <div class="settings-foot"><p id="save-note" class="note">Changes save automatically.</p></div>
 </div>
 
-<div id="share" class="sheet" role="dialog" aria-modal="true" aria-labelledby="share-title" hidden>
-  <div class="sheet-card">
-    <div class="sheet-head">
-      <div class="sheet-text"><div id="share-title" class="sheet-title">Trim and share</div><div id="share-name" class="setting-desc"></div></div>
-      <button id="share-close" class="icon" aria-label="Close" title="Close">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </div>
-    <div id="trim" class="trim">
-      <div id="trim-strip" class="trim-strip"></div>
-      <div id="trim-before" class="trim-out"></div>
-      <div id="trim-after" class="trim-out"></div>
-      <div id="trim-keep" class="trim-keep"></div>
-      <button id="trim-start" class="trim-handle" role="slider" aria-label="Start of the part to keep"></button>
-      <button id="trim-end" class="trim-handle" role="slider" aria-label="End of the part to keep"></button>
-    </div>
-    <div class="trim-times"><span id="trim-from"></span><span id="trim-length" class="trim-length"></span><span id="trim-to"></span></div>
-    <div id="share-tracks" class="share-tracks" hidden>
-      <div class="setting-name">Audio in copies</div>
-      <div id="share-track-list" class="share-track-list"></div>
-    </div>
-    <div class="share-actions">
-      <button id="share-trim" class="small primary">Save trimmed copy</button>
-      <button id="share-compress" class="small">Compress</button>
-      <button id="share-vertical" class="small">Vertical copy</button>
-    </div>
-    <div id="share-discord-row" class="row">
-      <select id="share-webhook" aria-label="Discord channel" hidden></select>
-      <button id="share-discord" class="small">Send to Discord</button>
-    </div>
-    <p id="share-note" class="note">Drag the ends to keep part of the clip. Your original isn't changed.</p>
-  </div>
-</div>
 </div>
 <script src="bridge.js"></script>
 <script src="app.js"></script>

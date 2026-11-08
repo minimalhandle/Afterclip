@@ -49,7 +49,7 @@ impl CaptureManager {
         let me = Arc::clone(&manager);
         thread::spawn(move || {
             init_com_for_thread();
-            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0 };
+            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None };
             loop {
                 thread::sleep(POLL);
                 if engine.status().state == "ready" && enabled() {
@@ -81,6 +81,7 @@ impl CaptureManager {
             w.candidate = None;
             w.display_hidden = false;
             w.game_mix = None;
+            w.privacy = None;
             engine.set_game(None);
             self.publish(on_change, |s| {
                 s.mode = "desktop";
@@ -100,6 +101,7 @@ impl CaptureManager {
                 return;
             }
             w.current = Some(app.clone());
+            w.privacy = None;
             w.display_hidden = false;
             w.game_mix = None;
             w.audio_check_in = 0;
@@ -140,6 +142,10 @@ impl CaptureManager {
         }
 
         if let Some(current) = &w.current {
+            let private = engine.privacy_for(&current.exe);
+            if w.privacy != Some(private) && engine.set_game_privacy(current.pid, private).is_ok() {
+                w.privacy = Some(private);
+            }
             if engine.game_audio_enabled() {
                 if w.audio_check_in == 0 {
                     w.audio_check_in = AUDIO_CHECK_EVERY;
@@ -162,7 +168,9 @@ impl CaptureManager {
             }
             let blocked = current.blocked_by_elevation;
             self.publish(on_change, |s| {
-                s.mode = if hooked { "game" } else if late { "fallback" } else { "detecting" };
+                s.mode = if private && (!hooked || found.as_ref().is_none_or(|app| app.pid != current.pid)) {
+                    "private"
+                } else if hooked { "game" } else if late { "fallback" } else { "detecting" };
                 s.needs_admin = !hooked && blocked;
                 s.suggest_admin = !hooked && late && !s.elevated && !blocked;
             });
@@ -179,4 +187,5 @@ struct Watcher {
     deadline: Instant,
     display_hidden: bool,
     generation: u64,
+    privacy: Option<bool>,
 }

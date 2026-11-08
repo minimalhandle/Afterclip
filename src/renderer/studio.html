@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost">
+  <title>Afterclip · Tools</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="studio-window">
+  <header><h1>Tools</h1><p id="studio-note" class="note" role="status"></p></header>
+  <section class="studio-card">
+    <h2>Batch export</h2>
+    <p id="batch-selection" class="note"></p>
+    <div class="row wrap">
+      <select id="batch-recipe" aria-label="Recipe"></select>
+      <button id="batch-add" class="small primary">Queue selected clips</button>
+      <button id="batch-pause" class="small">Pause queue</button>
+      <label><input id="batch-game" type="checkbox"> Wait while gaming or recording</label>
+    </div>
+    <div id="batch-jobs" class="studio-list"></div>
+  </section>
+  <section class="studio-card">
+    <h2>Replay recovery</h2>
+    <p class="note">Save a recoverable copy about every 30 seconds while the buffer runs. Uses disk space in Afterclip’s data folder.</p>
+    <div class="row wrap">
+      <label>Keep <select id="recovery-seconds"><option value="0">Off</option><option value="60">1 minute</option><option value="120">2 minutes</option><option value="180">3 minutes</option><option value="300">5 minutes</option></select></label>
+      <label>Disk cap <input id="recovery-size" type="number" min="100" max="5000" step="50" value="500"> MB</label>
+      <button id="recovery-save" class="small">Apply</button>
+      <button id="recovery-now" class="small">Checkpoint now</button>
+      <button id="recovery-restore" class="small primary">Restore latest</button>
+    </div>
+    <p id="recovery-latest" class="note"></p>
+  </section>
+  <section class="studio-card">
+    <h2>Import clips</h2>
+    <p class="note">Copy MP4, MKV and MOV files into Afterclip. A watched folder imports new clips once they finish writing.</p>
+    <div class="row wrap">
+      <button id="import-clips" class="small primary">Choose files</button>
+      <button id="watch-folder" class="small">Choose watched folder</button>
+      <button id="watch-stop" class="small">Stop watching</button>
+    </div>
+    <p id="watch-path" class="note"></p>
+  </section>
+  <section class="studio-card">
+    <h2>Automatic bookmarks</h2>
+    <p class="note">Minecraft Java advancements and deaths are marked in an active recording. Choose the game’s logs/latest.log file.</p>
+    <div class="row wrap">
+      <input id="bookmark-player" placeholder="Minecraft player name" aria-label="Minecraft player name">
+      <button id="bookmark-log" class="small primary">Choose log</button>
+      <button id="bookmark-off" class="small">Turn off</button>
+    </div>
+    <p id="bookmark-path" class="note"></p>
+    <p class="note">For Counter-Strike 2, save the integration file in the game’s game/csgo/cfg folder, then restart the game. Kills and round wins are marked while you record.</p>
+    <div class="row wrap">
+      <button id="cs2-setup" class="small">Save CS2 integration file</button>
+      <button id="cs2-off" class="small">Turn off CS2 bookmarks</button>
+    </div>
+  </section>
+  <section class="studio-card">
+    <h2>Audio setup check</h2>
+    <p class="note">Map sources already configured in Audio settings. Voicemeeter channels use the names shown in Sleekmeeter.</p>
+    <button id="audio-load" class="small">Read sources and mixer</button>
+    <p id="mixer-labels" class="note"></p>
+    <div id="audio-roles" class="row wrap" hidden>
+      <label>Game <select id="audio-game"></select></label>
+      <label>Mic <select id="audio-mic"></select></label>
+      <label>Chat <select id="audio-chat"></select></label>
+      <button id="audio-apply" class="small">Save separate tracks</button>
+    </div>
+    <button id="audio-test" class="small primary">Test four seconds of audio</button>
+    <div id="audio-results" class="studio-list"></div>
+  </section>
+</main>
+<script src="bridge.js"></script>
+<script src="studio.js"></script>
+</body>
+</html>

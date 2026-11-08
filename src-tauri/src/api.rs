@@ -54,6 +54,7 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn send_last_clip(&self) -> Result<Value, String>;
     fn vertical_last_clip(&self) -> Result<Value, String>;
     fn star_last_clip(&self) -> Result<Value, String>;
+    fn recipe_last_clip(&self, name: &str) -> Result<Value, String>;
     fn toggle_camera(&self) -> Result<Value, String>;
     /// The Stream Deck's Hold to Talk key going down or up.
     fn deck_talk(&self, held: bool) -> Result<Value, String>;
@@ -163,6 +164,14 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
         (Method::Post, "/last-clip/discord") => handlers.send_last_clip(),
         (Method::Post, "/last-clip/vertical") => handlers.vertical_last_clip(),
         (Method::Post, "/last-clip/star") => handlers.star_last_clip(),
+        (Method::Post, path) if path.starts_with("/last-clip/recipe?") => {
+            let name = reqwest::Url::parse(&format!("http://localhost{path}")).ok()
+                .and_then(|url| url.query_pairs().find(|(key, _)| key == "name").map(|(_, name)| name.into_owned()));
+            match name {
+                Some(name) if !name.is_empty() => handlers.recipe_last_clip(&name),
+                _ => Err("Set the recipe name in the Stream Deck key settings.".into()),
+            }
+        }
         (Method::Post, "/camera/toggle") => handlers.toggle_camera(),
         (Method::Post, "/talk/on") => handlers.deck_talk(true),
         (Method::Post, "/talk/off") => handlers.deck_talk(false),

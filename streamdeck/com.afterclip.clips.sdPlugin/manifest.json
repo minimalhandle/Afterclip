@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.11.0.0",
+  "Version": "0.12.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -419,6 +419,25 @@
           "ShowTitle": false
         }
       ]
+    },
+    {
+      "UUID": "com.afterclip.clips.share-recipe",
+      "Name": "Share Recipe",
+      "Tooltip": "Run a saved Afterclip share recipe on your newest clip.",
+      "Icon": "imgs/action-share-recipe",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/share-recipe",
+          "ShowTitle": false
+        }
+      ],
+      "PropertyInspectorPath": "ui/recipe.html"
     },
     {
       "UUID": "com.afterclip.clips.discord-last",

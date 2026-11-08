@@ -110,6 +110,154 @@ async function main() {
     check('panel is docked flush into the taskbar corner', edge.x + edge.w === area.r && edge.y + edge.h === area.b, `panel ends ${edge.x + edge.w},${edge.y + edge.h}, work area ends ${area.r},${area.b}, size ${edge.w}x${edge.h}`);
 
     panel = await Page.open(PANEL_URL);
+    const studioSmoke = process.argv.includes('--studio-only');
+    if (studioSmoke || process.argv.includes('--share-only')) {
+      const clip = path.join(output, 'Clips', 'Share smoke.mp4');
+      fs.mkdirSync(path.dirname(clip), { recursive: true });
+      execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=8',
+        '-f', 'lavfi', '-i', 'sine=440:d=8', '-c:v', 'libx264', '-c:a', 'aac', clip], { windowsHide: true });
+      await panel.eval('refresh()');
+      await waitFor(() => panel.eval("!!document.querySelector('#media .item .more')"), 10000, 'the clip card');
+      await panel.eval("document.querySelector('#media .item .more').click(); [...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Trim and share').click()");
+      const sharePage = await Page.open(/share\.html/);
+      try {
+        await waitFor(() => sharePage.eval("!document.getElementById('share-tools').hidden && document.getElementById('share-video').readyState >= 2"), 15000, 'the share window to load and decode video');
+        check('Trim and share opens with a playable clip and a wide timeline', await sharePage.eval("innerWidth >= 1000 && document.getElementById('trim').getBoundingClientRect().width >= 900"));
+        await sharePage.eval("document.getElementById('trim-start').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true })); document.getElementById('share-trim').click()");
+        await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved ')"), 15000, 'a trimmed copy');
+        check('the trim button writes a separate clip', fs.readdirSync(path.dirname(clip)).some((name) => name.endsWith('_trim.mp4')));
+        await sharePage.eval("document.getElementById('show-layout').click(); const crop = document.getElementById('layout-crop'); crop.value = '80'; crop.oninput(); document.getElementById('layout-pin').click()");
+        const pin = await sharePage.eval("const rect = document.getElementById('pin-selection').getBoundingClientRect(); ({ x: rect.x + rect.width * 0.3, y: rect.y + rect.height * 0.35 })");
+        await sharePage.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...pin, button: 'left', buttons: 1, clickCount: 1 });
+        await sharePage.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pin.x + 70, y: pin.y + 50, button: 'left', buttons: 1 });
+        await sharePage.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pin.x + 70, y: pin.y + 50, button: 'left', buttons: 0, clickCount: 1 });
+        await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Region pinned')"), 5000, 'a pinned region');
+        await sharePage.eval("document.getElementById('layout-save').click()");
+        await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved vertical layout')"), 10000, 'a saved vertical layout');
+        await sharePage.eval("document.getElementById('share-vertical').click()");
+        await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved Share smoke_vertical')"), 20000, 'a vertical export');
+        await sharePage.eval("document.getElementById('show-recipes').click(); document.getElementById('recipe-name').value = 'Smoke recipe'; document.getElementById('recipe-size').value = '3'; document.getElementById('recipe-save').click()");
+        await waitFor(() => sharePage.eval("document.getElementById('recipe-list').value === 'Smoke recipe'"), 10000, 'a saved recipe');
+        await sharePage.eval("document.getElementById('recipe-run').click()");
+        await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Recipe finished.')"), 20000, 'a finished recipe');
+        check('saved recipes apply the file size target', fs.readdirSync(path.dirname(clip)).some((name) => name.endsWith('_3MB.mp4')));
+        const recipeResponse = await api.call('/last-clip/recipe?name=Smoke%20recipe', 'POST');
+        check('the Stream Deck API runs a saved recipe by name', recipeResponse.ok && /_3MB\.mp4$/.test((await recipeResponse.json()).file));
+        if (process.env.AFTERCLIP_SPEECH_FIXTURE) {
+          const speech = path.join(path.dirname(clip), 'Speech smoke.mp4');
+          fs.copyFileSync(process.env.AFTERCLIP_SPEECH_FIXTURE, speech);
+          await panel.eval(`window.afterclip.invoke('open-share', ${JSON.stringify({ file: speech, game: 'Speech smoke' })})`);
+          await waitFor(() => sharePage.eval("document.getElementById('share-name').textContent === 'Speech smoke.mp4' && !document.getElementById('share-tools').hidden"), 15000, 'the speech fixture');
+          await sharePage.eval("document.getElementById('show-speech').click(); document.getElementById('speech-run').click()");
+          await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Transcript saved.')"), 20000, 'offline transcription');
+          const matches = await panel.eval("window.afterclip.invoke('search-speech', 'country')");
+          check('spoken words are indexed with a playable timestamp', matches.some((match) => match.file === speech && match.at >= 0 && /country/i.test(match.text)));
+          const angle = path.join(path.dirname(clip), 'Second angle.mp4');
+          execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', speech, '-vf', 'negate', '-c:v', 'libx264', '-af', 'adelay=700:all=1,volume=0.5',
+            '-c:a', 'aac', angle], { windowsHide: true });
+          const match = await sharePage.eval(`window.afterclip.invoke('pick-angle', ${JSON.stringify(angle)}).then(() => window.afterclip.invoke('sync-angle', ${JSON.stringify(speech)}))`);
+          check('audio matching finds the second angle despite a volume change', Math.abs(match.offset - 0.7) < 0.08, JSON.stringify(match));
+          if (studioSmoke) {
+            const replay = await sharePage.eval(`window.afterclip.invoke('export-angles', ${JSON.stringify({
+              file: speech, start: 0, end: 5, offset: match.offset, cuts: [{ time: 2, angle: 2 }, { time: 4, angle: 1 }], continuousAudio: true,
+            })})`);
+            check('angle edits export with continuous audio', fs.existsSync(replay) && /_angles_/.test(replay));
+            const color = (time) => execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', replay,
+              '-vf', 'scale=1:1,format=rgb24', '-frames:v', '1', '-f', 'rawvideo', '-'], { windowsHide: true });
+            const first = color(1);
+            const second = color(3);
+            check('the rendered replay changes picture at an angle cut', Math.abs(first[0] - second[0]) > 100);
+          }
+        }
+        if (studioSmoke) {
+          const invoke = (name, payload) => sharePage.eval(`window.afterclip.invoke(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
+          const redacted = await invoke('render-clip', { file: clip, start: 0, end: 4, vertical: false,
+            blur: { rect: [0.15, 0.15, 0.4, 0.4], from: 1, to: 3 }, audio: { track: 0, bleep: true, from: 1, to: 3 } });
+          check('a timed blur and bleep export together', fs.existsSync(redacted));
+          const frequency = (time) => {
+            const pcm = execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', redacted,
+              '-t', '0.25', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], { windowsHide: true });
+            let crossings = 0;
+            for (let i = 2; i < pcm.length; i += 2) {
+              if (pcm.readInt16LE(i - 2) < 0 && pcm.readInt16LE(i) >= 0) crossings++;
+            }
+            return crossings * 4;
+          };
+          const cleanFrequency = frequency(0.25);
+          const beepFrequency = frequency(1.5);
+          check('the bleep replaces audio only inside its interval', Math.abs(cleanFrequency - 440) < 25 && Math.abs(beepFrequency - 950) < 25, cleanFrequency + '/' + beepFrequency + ' Hz');
+          const captions = '1\n00:00:00,500 --> 00:00:02,000\nAfterclip test caption\n';
+          const captioned = await invoke('render-clip', { file: clip, start: 0, end: 4, vertical: true, captions });
+          execFileSync(ffmpeg, ['-hide_banner', '-i', captioned, '-frames:v', '1', '-f', 'null', '-'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+          check('captions burn into a playable vertical export', fs.existsSync(captioned) && /_captioned_/.test(captioned));
+          await invoke('control-batch', [true, false, null]);
+          await invoke('enqueue-batch', { files: [clip], recipe: 'Smoke recipe' });
+          check('the batch queue waits while paused', (await invoke('studio-state')).jobs[0].status === 'waiting');
+          await invoke('control-batch', [false, false, null]);
+          await waitFor(async () => (await invoke('studio-state')).jobs[0].status === 'done', 20000, 'the batch export');
+          check('the batch queue finishes a saved recipe', true);
+          const phone = await invoke('phone-share', clip);
+          const response = await fetch(phone + '/video', { headers: { Range: 'bytes=0-63' } });
+          check('the temporary phone link supports partial video playback', response.status === 206 && Buffer.from(await response.arrayBuffer()).equals(fs.readFileSync(clip).subarray(0, 64)));
+          check('the phone landing page has a download link', /Download clip/.test(await (await fetch(phone)).text()));
+          await invoke('stop-phone-share');
+          await invoke('configure-recovery', [60, 500]);
+          await invoke('checkpoint-now');
+          await api.call('/test/engine/crash', 'POST');
+          await waitFor(async () => (await invoke('studio-state')).previousReplay, 10000, 'the checkpoint to survive the engine crash');
+          check('a checkpoint survives an engine crash and restores into the library', fs.existsSync(await invoke('restore-replay')));
+          await invoke('configure-recovery', [0, 500]);
+          await waitFor(async () => (await api.status()).buffering, 20000, 'capture to recover from the engine crash');
+          const folder = path.join(session.home, 'incoming');
+          fs.mkdirSync(folder);
+          const imported = path.join(folder, 'From another recorder.mp4');
+          fs.copyFileSync(clip, imported);
+          check('import copies an external clip into the library', (await invoke('import-clips', [imported])).count === 1 && fs.existsSync(path.join(path.dirname(clip), path.basename(imported))));
+          await invoke('set-watch-folder', [true, folder]);
+          await sleep(2500);
+          const incoming = 'Watched example.mp4';
+          fs.copyFileSync(clip, path.join(folder, incoming));
+          await waitFor(() => fs.existsSync(path.join(path.dirname(clip), incoming)), 15000, 'watch folder import');
+          check('a watched folder imports a finished clip', true);
+          const log = path.join(session.home, 'latest.log');
+          fs.writeFileSync(log, '');
+          await invoke('configure-bookmarks', [true, 'PlayerOne', log]);
+          await api.toggleRecord();
+          await waitFor(async () => (await api.status()).recording, 10000, 'the bookmark recording');
+          await sleep(2500);
+          fs.appendFileSync(log, '[12:00:00] [Render thread/INFO]: [CHAT] PlayerOne has made the advancement [Stone Age]\n');
+          const recordingFolder = path.join(output, 'Recordings');
+          await waitFor(() => fs.readdirSync(recordingFolder).some((file) => file.endsWith('.afterclip-bookmarks.json')), 10000, 'the automatic bookmark');
+          await api.toggleRecord();
+          const recording = fs.readdirSync(recordingFolder).find((file) => file.endsWith('.mp4'));
+          const bookmarks = await invoke('clip-bookmarks', path.join(recordingFolder, recording));
+          check('Minecraft Java events are saved as recording bookmarks', bookmarks.some((bookmark) => bookmark.time > 0 && /Stone Age/.test(bookmark.title)));
+          const audio = await invoke('test-audio-tracks');
+          check('the audio setup test reads actual replay tracks', audio.length > 0 && audio.some((track) => 'db' in track));
+          await panel.eval("document.getElementById('open-studio').click()");
+          const studioPage = await Page.open(/studio\.html/);
+          try {
+            await waitFor(() => studioPage.eval("document.getElementById('recovery-latest').textContent.length > 0"), 10000, 'the Tools window');
+            check('Tools opens through the main panel', await studioPage.eval("document.getElementById('watch-path').textContent.includes('incoming')"));
+          } finally {
+            studioPage.close();
+          }
+          const before = (await api.status()).bufferingSince;
+          await panel.eval("window.afterclip.invoke('state').then((state) => window.afterclip.invoke('save-settings', { ...state.settings, testPattern: false, gameProfiles: [{ exe: 'guarded-test.exe', name: 'Guarded test', capturePrivacy: true }] }))");
+          await waitFor(async () => { const status = await api.status(); return status.buffering && status.bufferingSince !== before; }, 20000, 'privacy capture restart');
+          const shot = await (await api.call('/screenshot', 'POST')).json();
+          const pixels = execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', shot.file, '-vf', 'scale=32:18,format=rgb24', '-frames:v', '1', '-f', 'rawvideo', '-'], { windowsHide: true });
+          check('capture privacy blocks the desktop from entering the video', pixels.length === 32 * 18 * 3 && pixels.every((value) => value < 10), 'brightest sample ' + Math.max(...pixels));
+        }
+      } finally {
+        sharePage.close();
+      }
+      panel.close();
+      panel = null;
+      await session.stop();
+      finish();
+      return;
+    }
     await waitFor(() => panel.eval("document.getElementById('capture-title').textContent.includes('primary') || document.getElementById('capture-title').textContent.length > 0"), 5000, 'status');
     await waitFor(() => panel.eval("!document.getElementById('save-clip').disabled"), 15000, 'save button');
     const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).version;

@@ -140,6 +140,14 @@ async function main() {
     await waitFor(() => received.some((m) => m.context === 'starsave' && m.event === 'setImage' && svgOf(m).includes('>STARRED<')), 3000, 'STARRED');
     check('Save and Star says STARRED', true);
 
+    const recipe = { recipe: 'Friends & Shorts' };
+    event('willAppear', ACTION('share-recipe'), 'recipe', recipe);
+    await waitFor(() => lastImage('recipe'), 3000, 'share recipe image');
+    routes.length = 0;
+    event('keyDown', ACTION('share-recipe'), 'recipe', recipe);
+    await waitFor(() => results('recipe', 'showOk') === 1, 3000, 'share recipe ok');
+    check('Share Recipe sends the saved name as one query parameter', routes.join() === 'POST /last-clip/recipe?name=Friends%20%26%20Shorts', routes.join());
+
     state.clipDelay = 600;
     routes.length = 0;
     event('keyDown', ACTION('save-1-min'), 'one');

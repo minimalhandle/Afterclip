@@ -65,6 +65,22 @@ obs_source_t *g_gameAudio = nullptr; // Also in g_audioSources, which owns it.
 uint32_t g_gameAudioTrackBit = 0;
 std::string g_gameAudioWindow;
 obs_sceneitem_t *g_displayItem = nullptr, *g_gameItem = nullptr, *g_cardItem = nullptr, *g_cameraItem = nullptr;
+obs_source_t *g_privacyCard = nullptr;
+obs_sceneitem_t *g_privacyItem = nullptr;
+std::atomic<DWORD> g_privatePid{0};
+bool g_noMonitorFallback = false;
+
+void privacyTick(void *, float)
+{
+	const DWORD target = g_privatePid.load();
+	DWORD foreground = 0;
+	if (target)
+		GetWindowThreadProcessId(GetForegroundWindow(), &foreground);
+	const bool hooked = g_game && obs_sceneitem_visible(g_gameItem) && obs_source_get_width(g_game) > 0;
+	const bool block = !hooked || (target && foreground != target);
+	if (obs_sceneitem_visible(g_privacyItem) != block)
+		obs_sceneitem_set_visible(g_privacyItem, block);
+}
 // Vertical mode: a 9:16 picture, with the game filling it from the middle, below the webcam when that's on.
 bool g_vertical = false;
 uint32_t g_canvasWidth = 0, g_canvasHeight = 0;
@@ -590,6 +606,7 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	}
 
 	g_scene = obs_scene_create(SCENE_NAME);
+	g_noMonitorFallback = obs_data_get_bool(c, "noMonitorFallback");
 	obs_set_output_source(0, obs_scene_get_source(g_scene));
 	if (testPattern) {
 		obs_data_t *s = obs_data_create();
@@ -603,6 +620,7 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		// Order matters: the game layer sits over the display, and is empty until it hooks.
 		g_display = createSource("monitor_capture", "Display");
 		g_displayItem = obs_scene_add(g_scene, g_display);
+		obs_sceneitem_set_visible(g_displayItem, !g_noMonitorFallback);
 		fitToCanvas(g_displayItem, width, height);
 		if (!aimDisplay(false, 0, 0, error))
 			return false;
@@ -624,6 +642,18 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		obs_data_release(camera);
 	}
 	layoutGame(cameraOn);
+	if (g_noMonitorFallback && !testPattern) {
+		obs_data_t *black = obs_data_create();
+		obs_data_set_int(black, "color", 0xff000000);
+		obs_data_set_int(black, "width", width);
+		obs_data_set_int(black, "height", height);
+		g_privacyCard = createSource("color_source_v3", "Privacy screen", black);
+		obs_data_release(black);
+		if (!g_privacyCard) { error = "Could not create privacy screen"; return false; }
+		g_privacyItem = obs_scene_add(g_scene, g_privacyCard);
+		obs_sceneitem_set_visible(g_privacyItem, true);
+		obs_add_tick_callback(privacyTick, nullptr);
+	}
 
 
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
@@ -713,6 +743,11 @@ bool cmdRecordStart(obs_data_t *c, std::string &error)
 
 void shutdownAll()
 {
+	if (g_privacyItem) {
+		obs_remove_tick_callback(privacyTick, nullptr);
+		obs_sceneitem_remove(g_privacyItem);
+		obs_source_release(g_privacyCard);
+	}
 	setMeters(false);
 	// Filters come off before anything is released, or shutdown destroys them twice.
 	for (size_t i = 0; i < g_cleanFilters.size(); i++) {
@@ -874,8 +909,11 @@ bool handle(const std::string &line)
 		ok = !g_display || aimDisplay(hasOrigin, (int)obs_data_get_int(c, "x"), (int)obs_data_get_int(c, "y"), error);
 	} else if (cmd == "displayVisible") {
 		if (g_displayItem)
-			obs_sceneitem_set_visible(g_displayItem, obs_data_get_bool(c, "visible"));
+			obs_sceneitem_set_visible(g_displayItem, !g_noMonitorFallback && obs_data_get_bool(c, "visible"));
+	} else if (cmd == "gamePrivacy") {
+		g_privatePid.store(obs_data_get_bool(c, "privacy") ? (DWORD)obs_data_get_int(c, "pid") : 0);
 	} else if (cmd == "game") {
+		g_privatePid.store(obs_data_get_bool(c, "privacy") ? (DWORD)obs_data_get_int(c, "pid") : 0);
 		if (g_game) {
 			obs_data_t *s = obs_data_create();
 			obs_data_set_string(s, "capture_mode", "window");
@@ -952,6 +990,7 @@ bool handle(const std::string &line)
 			obs_source_set_audio_mixers(g_gameAudio, window.empty() ? 0u : (mix | g_gameAudioTrackBit));
 		}
 	} else if (cmd == "gameOff") {
+		g_privatePid.store(0);
 		if (g_gameItem)
 			obs_sceneitem_set_visible(g_gameItem, false);
 	} else if (cmd == "hooked") {

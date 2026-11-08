@@ -362,6 +362,7 @@ impl Engine {
             "gameAudioVolume": s.game_audio_volume,
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
+            "noMonitorFallback": s.game_profiles.iter().any(|profile| profile.capture_privacy),
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
@@ -486,8 +487,12 @@ impl Engine {
 
     /// Makes a smaller copy that fits `megabytes`, beside the original. In the background, so it can't compete with a game.
     pub fn shrink(&self, file: &Path, megabytes: u64, audio: &ShareAudio) -> Result<PathBuf, String> {
-        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_{megabytes}MB.mp4")));
+        self.shrink_as(file, file, megabytes, audio)
+    }
+
+    pub fn shrink_as(&self, file: &Path, named: &Path, megabytes: u64, audio: &ShareAudio) -> Result<PathBuf, String> {
+        let stem = named.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&beside(named, &self.clips_dir()).join(format!("{stem}_{megabytes}MB.mp4")));
         let bytes = (megabytes * 1000 * 1000).to_string();
         self.copy_job(vec!["shrink".into(), file.into(), output.clone().into(), bytes.into()], audio, &output)?;
         Ok(output)
@@ -507,12 +512,29 @@ impl Engine {
     /// With a webcam's place given, as fractions of the picture, the webcam goes above the game. The copy is named
     /// after `named`, which is the original when `file` is a trimmed part of it.
     pub fn make_vertical(&self, file: &Path, named: &Path, camera: Option<[f64; 4]>, audio: &ShareAudio) -> Result<PathBuf, String> {
+        self.make_vertical_layout(file, named, camera, audio, None)
+    }
+
+    pub fn make_vertical_layout(&self, file: &Path, named: &Path, camera: Option<[f64; 4]>, audio: &ShareAudio, layout: Option<&crate::advanced::Layout>) -> Result<PathBuf, String> {
         let stem = named.file_stem().unwrap_or_default().to_string_lossy();
         let output = unique_path(&beside(named, &self.clips_dir()).join(format!("{stem}_vertical.mp4")));
         let mut args: Vec<std::ffi::OsString> = vec!["vertical".into(), file.into(), output.clone().into()];
-        args.extend(camera.iter().flatten().map(|f| f.to_string().into()));
+        if let Some(layout) = layout {
+            args.push(format!("--crop={}", layout.crop).into());
+            for [x, y, w, h] in &layout.pins {
+                args.push(format!("--pin={x},{y},{w},{h}").into());
+            }
+        } else {
+            args.extend(camera.iter().flatten().map(|f| f.to_string().into()));
+        }
         self.copy_job(args, audio, &output)?;
         Ok(output)
+    }
+
+    pub fn wave(&self, file: &Path, output: &Path, tracks: &[usize]) -> Result<(), String> {
+        let tracks = tracks.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
+        let option = format!("--tracks={tracks}");
+        self.media(&["wave".as_ref(), file.as_os_str(), output.as_os_str(), option.as_ref()], true).map(|_| ())
     }
 
     /// Copies part of a clip losslessly, from `start` to `end` seconds. The start snaps back to a keyframe.
@@ -678,6 +700,15 @@ impl Engine {
         result
     }
 
+    pub fn checkpoint_replay(&self, output: &Path, seconds: u64) -> Result<(), String> {
+        let _saving = self.clip_lock.try_lock().map_err(|_| "A clip is being saved.")?;
+        if !self.status().buffering { return Err("Replay buffer is not running.".into()); }
+        let replay = PathBuf::from(self.save_replay()?);
+        let result = self.media(&["trim".as_ref(), replay.as_os_str(), output.as_os_str(), seconds.to_string().as_ref()], true);
+        let _ = fs::remove_file(replay);
+        result.map(|_| ())
+    }
+
     pub fn duration(&self, file: &Path) -> Result<f64, String> {
         let out = self.media(&["duration".as_ref(), file.as_os_str()], false)?;
         out.trim().parse().map_err(|_| format!("Could not read duration of {}", file.display()))
@@ -794,7 +825,15 @@ impl Engine {
     pub fn capture_app(&self, app: &FullscreenApp) -> Result<(), String> {
         self.rpc("display", json!({ "hasOrigin": true, "x": app.monitor_left, "y": app.monitor_top }))?;
         self.set_display_visible(true)?;
-        self.rpc("game", json!({ "window": window_match(app) })).map(|_| ())
+        self.rpc("game", json!({ "window": window_match(app), "pid": app.pid, "privacy": self.privacy_for(&app.exe) })).map(|_| ())
+    }
+
+    pub fn privacy_for(&self, exe: &str) -> bool {
+        self.current_settings().game_profiles.iter().any(|profile| profile.capture_privacy && profile.exe.eq_ignore_ascii_case(exe))
+    }
+
+    pub fn set_game_privacy(&self, pid: u32, enabled: bool) -> Result<(), String> {
+        self.rpc("gamePrivacy", json!({ "pid": pid, "privacy": enabled })).map(|_| ())
     }
 
     /// Display capture is the costliest source, so it stays off while a hooked game covers it.

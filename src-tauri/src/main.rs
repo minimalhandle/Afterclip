@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
 mod api;
+mod advanced;
+mod audio_check;
 mod capture;
 mod controller;
 mod data_move;
@@ -9,7 +11,9 @@ mod discord;
 mod elevated_task;
 mod engine;
 mod library;
+mod render;
 mod settings;
+mod studio;
 mod updater;
 mod win32;
 
@@ -46,6 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const PANEL: &str = "panel";
 const EDITOR: &str = "editor";
+const SHARE: &str = "share";
 const BACKGROUND: Color = Color(14, 12, 31, 255);
 // The panel keeps its window this long after hiding, so reopening is instant, and then frees the memory.
 const PANEL_KEEP_ALIVE: Duration = Duration::from_secs(20);
@@ -84,6 +89,10 @@ struct Core {
     panel_hide_count: AtomicU64,
     tray_anchor: Mutex<Option<(i32, i32)>>,
     pending_editor_files: Mutex<Vec<String>>,
+    share_file: Mutex<Option<ShareSource>>,
+    angle_file: Mutex<Option<PathBuf>>,
+    analysis_lock: Mutex<()>,
+    studio: studio::Studio,
     ready_windows: Mutex<Vec<String>>,
     library: Mutex<LibraryData>,
     library_file: PathBuf,
@@ -550,6 +559,13 @@ impl Core {
 struct Api(Shared);
 
 impl ApiHandlers for Api {
+    fn recipe_last_clip(&self, name: &str) -> Result<Value, String> {
+        let payload = ShareArgs {
+            file: last_clip(&self.0)?, action: "recipe".into(), start: None, end: None,
+            tracks: Vec::new(), webhook: 0, even: None, max_mb: None, layout: None, recipe: Some(name.into()),
+        };
+        run_share(&self.0, payload).map(|output| json!({ "file": output }))
+    }
     fn clip(&self, seconds: i64) -> Result<Value, String> {
         self.0.clip(seconds).map(|r| json!(r))
     }
@@ -942,6 +958,8 @@ fn remove_media(core: &Core, path: &Path) -> Result<(), String> {
         thread::sleep(Duration::from_millis(500));
         trash::delete(path).map_err(|e| format!("Couldn't delete this file. It may be open in another app. ({e})"))?;
     }
+    let bookmarks = studio::bookmark_file(path);
+    if bookmarks.is_file() { let _ = trash::delete(bookmarks); }
     // A game folder goes once it's empty. Removing a folder with anything in it fails, which is what's wanted.
     if let Some(folder) = path.parent().filter(|f| in_media_folders(core, f.parent())) {
         let _ = fs::remove_dir(folder);
@@ -1481,6 +1499,7 @@ fn rename_clip(core: tauri::State<Shared>, payload: RenameArgs) -> Result<String
         return Err(format!("You already have a clip called {stem}"));
     }
     fs::rename(&path, &target).map_err(|e| format!("Could not rename this clip: {e}"))?;
+    let _ = fs::rename(studio::bookmark_file(&path), studio::bookmark_file(&target));
     forget_thumbnails(&core, &old_name);
     let mut library = core.library.lock().unwrap();
     library.rename(&old_name, &new_name, payload.game);
@@ -1551,15 +1570,53 @@ struct ShareArgs {
     /// Which webhook, by its place in the list, for discord.
     #[serde(default)]
     webhook: usize,
+    #[serde(default)]
+    even: Option<bool>,
+    #[serde(default)]
+    max_mb: Option<u64>,
+    #[serde(default)]
+    layout: Option<advanced::Layout>,
+    #[serde(default)]
+    recipe: Option<String>,
 }
 
 /// Trims a clip, or makes a copy to share from part of it, from the clip's menu. The original is never changed.
 /// Results are reported as events too, like Compress, because a long job can outlast the panel.
 #[tauri::command(async)]
 fn share_clip(core: tauri::State<Shared>, payload: ShareArgs) -> Result<Option<String>, String> {
-    let core: Shared = Arc::clone(&core);
+    run_share(&core, payload)
+}
+
+fn run_share(core: &Shared, mut payload: ShareArgs) -> Result<Option<String>, String> {
     let path = own_media(&core, &payload.file)?;
-    let audio = core.share_audio(&payload.tracks);
+    if let Some(name) = &payload.recipe {
+        let settings = core.settings.lock().unwrap();
+        let recipe = settings.share_recipes.iter().find(|r| r.name == *name && r.valid()).ok_or("That share recipe is unavailable.")?;
+        payload.action = recipe.action.clone();
+        payload.tracks = recipe.tracks.clone();
+        payload.even = Some(recipe.even);
+        payload.max_mb = recipe.max_mb;
+        payload.layout = recipe.layout.clone();
+        if payload.action.ends_with("discord") {
+            let mut matches = settings.discord_webhooks.iter().enumerate()
+                .filter(|(_, h)| Some(&h.name) == recipe.channel.as_ref() && !h.url.is_empty());
+            payload.webhook = matches.next().map(|(index, _)| index).ok_or("The recipe's Discord channel was removed or renamed.")?;
+            if matches.next().is_some() {
+                return Err("Give each Discord channel a unique name before using this recipe.".into());
+            }
+        }
+    }
+    if payload.layout.as_ref().is_some_and(|layout| !layout.valid()) || payload.max_mb.is_some_and(|mb| !(1..=250).contains(&mb)) {
+        return Err("Invalid crop or file size target.".into());
+    }
+    if payload.action != "trim" && !payload.tracks.is_empty() {
+        let count = core.engine.track_count(&path)? as usize;
+        if payload.tracks.iter().any(|track| *track >= count) {
+            return Err("A selected audio track is missing from this clip. Choose tracks that are available.".into());
+        }
+    }
+    let mut audio = core.share_audio(&payload.tracks);
+    if let Some(even) = payload.even { audio.even = even; }
     let range = match (payload.start, payload.end) {
         (None, None) => None,
         (start, end) => {
@@ -1588,14 +1645,61 @@ fn share_clip(core: tauri::State<Shared>, payload: ShareArgs) -> Result<Option<S
     };
     let source = part.as_deref().unwrap_or(&path);
     let result = match payload.action.as_str() {
+        "compress" if payload.max_mb.is_some() => core.engine.shrink_as(source, &path, payload.max_mb.unwrap(), &audio).map(|p| Some(p.to_string_lossy().into_owned())),
         "compress" => core.compress(source, &path, &audio).map(|p| Some(p.to_string_lossy().into_owned())),
+        "vertical" if payload.layout.is_some() || payload.max_mb.is_some() => (|| {
+            let vertical = core.engine.make_vertical_layout(source, &path, None, &audio, payload.layout.as_ref())?;
+            let Some(mb) = payload.max_mb else { return Ok(Some(vertical.to_string_lossy().into_owned())) };
+            let output = fit_vertical(core, &vertical, mb);
+            output.map(|p| Some(p.to_string_lossy().into_owned()))
+        })(),
         "vertical" => core.make_vertical(source, &path, &audio).map(|p| Some(p.to_string_lossy().into_owned())),
+        "discord" if payload.max_mb.is_some() => send_sized(core, source, payload.webhook, payload.max_mb.unwrap(), &audio).map(|_| None),
         "discord" => core.send_to_discord(source, payload.webhook, &audio).map(|_| None),
+        "vertical-discord" => (|| {
+            let scratch = core.engine.scratch_file("share.mp4")?;
+            let face_cam = core.settings.lock().unwrap().vertical_face_cam;
+            let camera = core.camera_of(&path).filter(|_| face_cam);
+            let vertical = match core.engine.make_vertical_layout(source, &scratch, camera, &audio, payload.layout.as_ref()) {
+                Ok(file) => file,
+                Err(error) if error == "This clip is already vertical." => {
+                    return send_sized(core, source, payload.webhook, payload.max_mb.unwrap_or(10), &audio).map(|_| None);
+                }
+                Err(error) => return Err(error),
+            };
+            // The vertical pass has already applied the selected tracks and volume.
+            let upload = send_sized(core, &vertical, payload.webhook, payload.max_mb.unwrap_or(10), &ShareAudio { tracks: vec![], even: false });
+            let _ = fs::remove_file(vertical);
+            upload.map(|_| None)
+        })(),
         other => Err(format!("Unknown action {other}")),
     };
     if let Some(part) = part {
         let _ = fs::remove_file(part);
     }
+    if matches!(&result, Ok(Some(_))) && (payload.layout.is_some() || payload.max_mb.is_some()) {
+        enforce_storage_rules(core);
+    }
+    result
+}
+
+fn fit_vertical(core: &Core, vertical: &Path, mb: u64) -> Result<PathBuf, String> {
+    if fs::metadata(vertical).is_ok_and(|meta| meta.len() <= mb * 1_000_000) {
+        return Ok(vertical.to_path_buf());
+    }
+    let sized = core.engine.shrink(vertical, mb, &ShareAudio { tracks: vec![], even: false });
+    let _ = fs::remove_file(vertical);
+    sized
+}
+
+fn send_sized(core: &Core, source: &Path, webhook: usize, mb: u64, audio: &ShareAudio) -> Result<(), String> {
+    if mb >= 10 {
+        return core.send_to_discord(source, webhook, audio);
+    }
+    let named = core.engine.scratch_file("discord.mp4")?;
+    let copy = core.engine.shrink_as(source, &named, mb, audio)?;
+    let result = core.send_to_discord(&copy, webhook, &ShareAudio { tracks: vec![], even: false });
+    let _ = fs::remove_file(copy);
     result
 }
 
@@ -1805,6 +1909,8 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     let core: Shared = Arc::clone(core);
     let mut clean = payload.resolved_for(win32::primary_display_mode()).sanitized();
     let current = core.settings.lock().unwrap().clone();
+    clean.share_recipes = current.share_recipes.clone();
+    clean.vertical_layouts = current.vertical_layouts.clone();
     // The form can hold an older value, because the mic key changes this at any time.
     clean.mic_muted = current.mic_muted;
     clean.clean_mic = current.clean_mic;
@@ -1942,6 +2048,174 @@ fn open_editor(core: tauri::State<Shared>, payload: Vec<String>) {
 #[tauri::command]
 fn editor_files(core: tauri::State<Shared>) -> Vec<String> {
     std::mem::take(&mut *core.pending_editor_files.lock().unwrap())
+}
+
+#[derive(Clone, Deserialize)]
+struct ShareSource {
+    file: String,
+    #[serde(default)]
+    game: String,
+    #[serde(default)]
+    at: f64,
+}
+
+#[tauri::command(async)]
+fn open_share(core: tauri::State<Shared>, payload: ShareSource) -> Result<(), String> {
+    own_media(&core, &payload.file)?;
+    *core.share_file.lock().unwrap() = Some(payload);
+    if let Some(window) = core.app.get_webview_window(SHARE) {
+        let _ = window.emit("share-source", ());
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let window = build_window(&core.app, SHARE, "share.html")
+        .title("Afterclip · Trim and share")
+        .inner_size(1120.0, 740.0)
+        .min_inner_size(760.0, 540.0)
+        .build()
+        .map_err(|error| format!("Couldn't open Trim and share: {error}"))?;
+    recover_from_browser_crash(&core, &window);
+    watch_startup(&core, SHARE);
+    Ok(())
+}
+
+#[tauri::command]
+fn share_source(core: tauri::State<Shared>) -> Result<Value, String> {
+    let source = core.share_file.lock().unwrap().clone().ok_or("Open a clip first.")?;
+    let path = Path::new(&source.file);
+    let transcript = advanced::transcript_path(&speech_dir(), path).ok()
+        .map(|index| advanced::read_transcript(&index)).unwrap_or_default();
+    let settings = core.settings.lock().unwrap();
+    let channels: Vec<_> = settings.discord_webhooks.iter().enumerate()
+        .filter(|(_, channel)| !channel.url.is_empty())
+        .map(|(index, channel)| json!({ "index": index, "name": channel.name }))
+        .collect();
+    Ok(json!({
+        "file": path, "name": path.file_name().unwrap_or_default().to_string_lossy(), "channels": channels,
+        "game": source.game, "at": source.at, "even": settings.even_audio,
+        "recipes": settings.share_recipes, "layout": settings.vertical_layouts.get(&source.game),
+        "transcript": transcript
+    }))
+}
+
+#[tauri::command(async)]
+fn share_duration(core: tauri::State<Shared>, payload: String) -> Result<f64, String> {
+    core.engine.duration(&own_media(&core, &payload)?)
+}
+
+#[tauri::command(async)]
+fn save_share_recipe(core: tauri::State<Shared>, payload: advanced::Recipe) -> Result<(), String> {
+    if !payload.valid() { return Err("Check the recipe name, tracks and size target.".into()); }
+    let mut settings = core.settings.lock().unwrap();
+    let mut updated = settings.clone();
+    updated.share_recipes.retain(|recipe| recipe.name != payload.name);
+    if updated.share_recipes.len() >= 30 { return Err("Remove a share recipe before adding another.".into()); }
+    updated.share_recipes.push(payload);
+    updated.save(&core.settings_file).map_err(|e| e.to_string())?;
+    *settings = updated;
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn delete_share_recipe(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
+    let mut settings = core.settings.lock().unwrap();
+    let mut updated = settings.clone();
+    updated.share_recipes.retain(|recipe| recipe.name != payload);
+    updated.save(&core.settings_file).map_err(|e| e.to_string())?;
+    *settings = updated;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct GameLayout { game: String, layout: advanced::Layout }
+
+#[tauri::command(async)]
+fn save_game_layout(core: tauri::State<Shared>, payload: GameLayout) -> Result<(), String> {
+    if !payload.layout.valid() || payload.game.trim().is_empty() || payload.game.chars().count() > 128 {
+        return Err("Choose a game and a valid crop.".into());
+    }
+    let mut settings = core.settings.lock().unwrap();
+    let mut updated = settings.clone();
+    updated.vertical_layouts.insert(payload.game, payload.layout);
+    updated.save(&core.settings_file).map_err(|e| e.to_string())?;
+    *settings = updated;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct SpeechRequest { file: String, tracks: Vec<usize> }
+
+fn speech_dir() -> PathBuf { home_dir().join("transcripts") }
+
+#[tauri::command(async)]
+fn transcribe_clip(core: tauri::State<Shared>, payload: SpeechRequest) -> Result<Vec<advanced::SpeechLine>, String> {
+    let _job = core.analysis_lock.try_lock().map_err(|_| "Another audio analysis is running.")?;
+    let path = own_media(&core, &payload.file)?;
+    let count = core.engine.track_count(&path)? as usize;
+    if count == 0 || payload.tracks.iter().any(|track| *track >= count) {
+        return Err("Choose an audio track from this clip.".into());
+    }
+    if core.engine.duration(&path)? > 600.0 {
+        return Err("Trim this recording to ten minutes or less before transcribing.".into());
+    }
+    let folder = speech_dir();
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let index = advanced::transcript_path(&folder, &path)?;
+    let wav = core.engine.scratch_file("speech.wav")?;
+    let local = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../vendor/speech/runtime");
+    let runtime = core.app.path().resource_dir().ok().map(|dir| strip_verbatim(dir).join("speech"))
+        .filter(|dir| dir.join("whisper-cli.exe").is_file()).unwrap_or(local);
+    let result = core.engine.wave(&path, &wav, &payload.tracks).and_then(|()| advanced::transcribe(&runtime, &wav));
+    let _ = fs::remove_file(&wav);
+    let lines = result?;
+    fs::write(index, serde_json::to_vec(&lines).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(lines)
+}
+
+#[tauri::command(async)]
+fn search_speech(core: tauri::State<Shared>, payload: String) -> Vec<Value> {
+    let query = payload.trim().to_lowercase();
+    if query.len() < 2 { return Vec::new(); }
+    let folder = speech_dir();
+    list_media(&core).into_iter().flat_map(|clip| {
+        let index = advanced::transcript_path(&folder, Path::new(&clip.file)).ok();
+        index.map(|p| advanced::read_transcript(&p)).unwrap_or_default().into_iter()
+            .filter(|line| line.text.to_lowercase().contains(&query))
+            .map(|line| json!({ "file": clip.file, "name": clip.name, "game": clip.game, "at": line.start, "text": line.text }))
+            .collect::<Vec<_>>()
+    }).take(50).collect()
+}
+
+#[tauri::command(async)]
+fn pick_angle(window: WebviewWindow, core: tauri::State<Shared>, payload: Option<String>) -> Result<Option<String>, String> {
+    if window.label() != SHARE { return Err("Open Trim and share first.".into()); }
+    let path = match payload.filter(|_| api::is_test_instance()) {
+        Some(file) => own_media(&core, &file)?,
+        None => {
+            let Some(path) = core.app.dialog().file().add_filter("Video", &["mp4", "mkv", "mov"]).blocking_pick_file()
+                .and_then(|p| p.into_path().ok()) else { return Ok(None) };
+            path
+        }
+    };
+    let path = strip_verbatim(path);
+    core.app.asset_protocol_scope().allow_file(&path).map_err(|e| e.to_string())?;
+    *core.angle_file.lock().unwrap() = Some(path.clone());
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command(async)]
+fn sync_angle(core: tauri::State<Shared>, payload: String) -> Result<Value, String> {
+    let _job = core.analysis_lock.try_lock().map_err(|_| "Another audio analysis is running.")?;
+    let source = own_media(&core, &payload)?;
+    let angle = core.angle_file.lock().unwrap().clone().ok_or("Choose a second clip first.")?;
+    let a = core.engine.scratch_file("angle-a.wav")?;
+    let b = core.engine.scratch_file("angle-b.wav")?;
+    let result = core.engine.wave(&source, &a, &[]).and_then(|()| core.engine.wave(&angle, &b, &[]))
+        .and_then(|()| advanced::sync_audio(&a, &b));
+    let _ = fs::remove_file(a);
+    let _ = fs::remove_file(b);
+    result.map(|(offset, confidence)| json!({ "offset": offset, "confidence": confidence }))
 }
 
 #[tauri::command(async)]
@@ -2384,7 +2658,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             state, estimate, clip, clip_and_star, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
  import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
-            save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
+            save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit,
+            open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
+            save_game_layout, transcribe_clip, search_speech, pick_angle, sync_angle,
+            studio::open_studio, studio::studio_state, studio::configure_recovery, studio::checkpoint_now, studio::restore_replay,
+            studio::import_clips, studio::set_watch_folder, studio::configure_bookmarks, studio::configure_cs2, studio::clip_bookmarks,
+            studio::phone_share, studio::stop_phone_share, studio::enqueue_batch, studio::control_batch,
+            audio_check::audio_setup, audio_check::apply_audio_roles, audio_check::test_audio_tracks,
+            render::render_clip, render::save_captions, render::export_angles, quit_app
         ])
         .on_window_event(|window, event| {
             if window.label() == PANEL {
@@ -2478,6 +2759,10 @@ fn main() {
                 panel_hide_count: AtomicU64::new(0),
                 tray_anchor: Mutex::new(None),
                 pending_editor_files: Mutex::new(Vec::new()),
+                share_file: Mutex::new(None),
+                angle_file: Mutex::new(None),
+                analysis_lock: Mutex::new(()),
+                studio: studio::Studio::load(),
                 ready_windows: Mutex::new(Vec::new()),
                 library: Mutex::new(LibraryData::load(&user_data.join("library.json"))),
                 library_file: user_data.join("library.json"),
@@ -2544,6 +2829,12 @@ fn main() {
             updater::start(Arc::clone(&core));
             let watcher = Arc::clone(&core);
             thread::spawn(move || watch_games(watcher));
+            let tools = Arc::clone(&core);
+            thread::spawn(move || studio::watch_tools(tools));
+            let cs2 = Arc::clone(&core);
+            thread::spawn(move || studio::watch_cs2(cs2));
+            let queue = Arc::clone(&core);
+            thread::spawn(move || studio::watch_queue(queue));
             let healer = Arc::clone(&core);
             thread::spawn(move || watch_engine(healer));
             let talker = Arc::clone(&core);

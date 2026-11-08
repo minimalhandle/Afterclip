@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Afterclip's panel and editor",
-  "windows": ["panel", "editor"],
+  "windows": ["panel", "editor", "share", "studio"],
   "permissions": ["core:default"]
 }

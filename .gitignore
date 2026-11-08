@@ -4,3 +4,4 @@ src-tauri/target/
 src-tauri/gen/
 streamdeck/dist/
 *.log
+src/renderer/qrcode.js

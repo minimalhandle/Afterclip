@@ -34,6 +34,7 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,9 @@ struct ShareAudio {
 	bool even = false;
 };
 static ShareAudio g_share;
+struct Pin { double x, y, w, h; };
+static std::vector<Pin> g_pins;
+static double g_crop = 0.5;
 
 static std::string toUtf8(const wchar_t *s)
 {
@@ -946,6 +950,7 @@ struct Mixer {
 	AVStream *to = nullptr;
 	int64_t nextPts = 0;
 	LoudnessMeter *meter = nullptr;
+	std::function<void(float **, int)> samples;
 };
 
 // What a copy is evened out to. Loud enough for Discord and phones, with room left for gunshots and shouts.
@@ -1061,6 +1066,8 @@ static int emitMixed(Mixer &mix, int samples, AVFormatContext *out, AVPacket *pk
 		planes[c] = mix.mixed[c].data();
 	if (mix.meter)
 		mix.meter->add(planes.data(), samples);
+	if (mix.samples)
+		mix.samples(planes.data(), samples);
 	if (!mix.enc)
 		return 0;
 	AVFrame *frame = av_frame_alloc();
@@ -1241,6 +1248,75 @@ static double evenLevel(double loudness)
 		return 1.0;
 	const double db = FFMIN(EVEN_MOST_BOOST_DB, FFMAX(EVEN_MOST_CUT_DB, EVEN_TARGET_LUFS - loudness));
 	return pow(10.0, db / 20.0);
+}
+
+/** Exports 16 kHz mono PCM from the selected tracks, with timestamps relative to the video. */
+static int cmdWave(const std::string &input, const std::string &output)
+{
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+	const AVStream *v = video >= 0 ? in->streams[video] : nullptr;
+	const int64_t origin = v && v->start_time != AV_NOPTS_VALUE ? av_rescale_q(v->start_time, v->time_base, {1, AV_TIME_BASE}) : 0;
+	Mixer mix;
+	AVIOContext *wav = nullptr;
+	int err = openMixer(mix, in, g_share.tracks, origin) > 0 ? avio_open(&wav, output.c_str(), AVIO_FLAG_WRITE) : AVERROR_STREAM_NOT_FOUND;
+	if (err >= 0) {
+		constexpr int rate = 16000;
+		avio_write(wav, (const unsigned char *)"RIFF", 4);
+		avio_wl32(wav, 0);
+		avio_write(wav, (const unsigned char *)"WAVEfmt ", 8);
+		avio_wl32(wav, 16);
+		avio_wl16(wav, 1);
+		avio_wl16(wav, 1);
+		avio_wl32(wav, rate);
+		avio_wl32(wav, rate * 2);
+		avio_wl16(wav, 2);
+		avio_wl16(wav, 16);
+		avio_write(wav, (const unsigned char *)"data", 4);
+		avio_wl32(wav, 0);
+		int phase = 0, count = 0, written = 0;
+		double sum = 0.0;
+		mix.chunk = 4096;
+		mix.samples = [&](float **planes, int samples) {
+			for (int i = 0; i < samples && written < rate * 600; i++) {
+				for (int c = 0; c < mix.channels; c++)
+					sum += planes[c][i];
+				count++;
+				phase += rate;
+				if (phase < mix.rate)
+					continue;
+				while (phase >= mix.rate && written < rate * 600) {
+					const auto pcm = (int16_t)std::lround(std::clamp(sum / (count * mix.channels), -1.0, 1.0) * 32767);
+					avio_wl16(wav, (uint16_t)pcm);
+					written++;
+					phase -= mix.rate;
+				}
+				sum = 0.0;
+				count = 0;
+			}
+		};
+		AVPacket *packet = av_packet_alloc();
+		while (err >= 0 && written < rate * 600 && av_read_frame(in, packet) >= 0) {
+			if (mix.inputOf[packet->stream_index] >= 0)
+				err = feedMixer(mix, packet->stream_index, packet, nullptr, nullptr);
+			av_packet_unref(packet);
+		}
+		if (err >= 0 && written < rate * 600)
+			err = finishMixer(mix, nullptr, nullptr);
+		av_packet_free(&packet);
+		avio_seek(wav, 4, SEEK_SET);
+		avio_wl32(wav, 36 + written * 2);
+		avio_seek(wav, 40, SEEK_SET);
+		avio_wl32(wav, written * 2);
+		const int closed = avio_closep(&wav);
+		if (err >= 0)
+			err = written ? closed : AVERROR_INVALIDDATA;
+	}
+	freeMixer(mix);
+	avformat_close_input(&in);
+	return err < 0 ? fail("Could not extract the selected audio", err) : 0;
 }
 
 static int openMp4(AVFormatContext *&out, const std::string &output)
@@ -1431,6 +1507,31 @@ static int drawFaceCam(const AVFrame *frame, const double *camera, AVFrame *out,
 	return result;
 }
 
+static int drawPins(const AVFrame *source, AVFrame *out, SwsContext **contexts)
+{
+	for (size_t i = 0; i < g_pins.size(); i++) {
+		const Pin &pin = g_pins[i];
+		AVFrame *part = cropped(source, (int)(pin.x * source->width), (int)(pin.y * source->height),
+					(int)(pin.w * source->width), (int)(pin.h * source->height));
+		if (!part)
+			return AVERROR(ENOMEM);
+		const int w = FFMAX(2, (out->width * 42 / 100) & ~1);
+		const int h = FFMAX(2, FFMIN(out->height / 4, w * part->height / part->width) & ~1);
+		const int x = (out->width * (i == 0 ? 4 : 54) / 100) & ~1;
+		const int y = (out->height * 4 / 100) & ~1;
+		contexts[i] = sws_getCachedContext(contexts[i], part->width, part->height, (AVPixelFormat)part->format,
+			w, h, (AVPixelFormat)out->format, SWS_BICUBIC, nullptr, nullptr, nullptr);
+		uint8_t *dst[4] = {out->data[0] + y * out->linesize[0] + x,
+			out->data[1] + y / 2 * out->linesize[1] + x / 2,
+			out->data[2] + y / 2 * out->linesize[2] + x / 2, nullptr};
+		const int result = contexts[i] ? sws_scale(contexts[i], part->data, part->linesize, 0, part->height, dst, out->linesize) : AVERROR(EINVAL);
+		av_frame_free(&part);
+		if (result < 0)
+			return result;
+	}
+	return 0;
+}
+
 static int encodeShrunk(const std::string &input, const std::string &output, int videoKbps, int audioKbps, int height, int fps, bool vertical = false,
 			const double *camera = nullptr)
 {
@@ -1485,6 +1586,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	AVPacket *read = av_packet_alloc();
 	AVPacket *written = av_packet_alloc();
 	SwsContext *sws = nullptr, *camSws = nullptr;
+	SwsContext *pinSws[2] = {};
 	int64_t lastIndex = -1;
 
 	const auto drainDecoder = [&]() -> int {
@@ -1502,20 +1604,35 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 				    (result = drainEncoder(enc, out, videoOut, written)) < 0)
 					return result;
 			} else if (micro >= 0 && index > lastIndex) {
+				AVFrame *uncropped = vertical && !g_pins.empty() ? av_frame_clone(frame) : nullptr;
+				if (vertical && !g_pins.empty() && !uncropped)
+					return AVERROR(ENOMEM);
 				if (vertical) {
 					const int kept = FFMIN(frame->width, verticalWidth(frame->height));
-					frame->crop_left = (frame->width - kept) / 2 / 2 * 2;
+					frame->crop_left = (int)((frame->width - kept) * g_crop) & ~1;
 					frame->crop_right = frame->width - kept - frame->crop_left;
-					if ((result = av_frame_apply_cropping(frame, AV_FRAME_CROP_UNALIGNED)) < 0)
+					if ((result = av_frame_apply_cropping(frame, AV_FRAME_CROP_UNALIGNED)) < 0) {
+						av_frame_free(&uncropped);
 						return result;
+					}
 				}
 				sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, width, height,
 							   enc->pix_fmt, SWS_BICUBIC, nullptr, nullptr, nullptr);
-				if (!sws)
+				if (!sws) {
+					av_frame_free(&uncropped);
 					return AVERROR(EINVAL);
-				if ((result = av_frame_make_writable(scaled)) < 0)
+				}
+				if ((result = av_frame_make_writable(scaled)) < 0) {
+					av_frame_free(&uncropped);
 					return result;
+				}
 				sws_scale(sws, frame->data, frame->linesize, 0, frame->height, scaled->data, scaled->linesize);
+				if (uncropped) {
+					result = drawPins(uncropped, scaled, pinSws);
+					av_frame_free(&uncropped);
+					if (result < 0)
+						return result;
+				}
 				scaled->pts = index;
 				lastIndex = index;
 				if ((result = avcodec_send_frame(enc, scaled)) < 0 ||
@@ -1547,6 +1664,8 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 
 	sws_freeContext(sws);
 	sws_freeContext(camSws);
+	for (auto *context : pinSws)
+		sws_freeContext(context);
 	av_frame_free(&scaled);
 	av_frame_free(&frame);
 	av_packet_free(&read);
@@ -1784,6 +1903,15 @@ static std::vector<wchar_t *> readOptions(int count, wchar_t **all)
 		const std::wstring arg = all[i];
 		if (arg == L"--even") {
 			g_share.even = true;
+		} else if (arg.rfind(L"--crop=", 0) == 0) {
+			const double x = _wtof(arg.c_str() + 7);
+			if (std::isfinite(x))
+				g_crop = std::clamp(x, 0.0, 1.0);
+		} else if (arg.rfind(L"--pin=", 0) == 0) {
+			Pin pin{};
+			if (g_pins.size() < 2 && swscanf(arg.c_str() + 6, L"%lf,%lf,%lf,%lf", &pin.x, &pin.y, &pin.w, &pin.h) == 4 &&
+			    pin.x >= 0 && pin.y >= 0 && pin.w >= 0.01 && pin.h >= 0.01 && pin.x + pin.w <= 1.000001 && pin.y + pin.h <= 1.000001)
+				g_pins.push_back(pin);
 		} else if (arg.rfind(L"--tracks=", 0) == 0) {
 			const std::string list = toUtf8(arg.c_str() + 9);
 			size_t at = 0;
@@ -1816,6 +1944,8 @@ int main()
 		const std::string in = toUtf8(argv[2]);
 		if (cmd == L"duration")
 			return cmdDuration(in);
+		if (cmd == L"wave" && argc >= 4)
+			return cmdWave(in, toUtf8(argv[3]));
 		if (cmd == L"trim" && argc >= 5)
 			return cmdTrim(in, toUtf8(argv[3]), _wtof(argv[4]));
 		if (cmd == L"retag" && argc >= 4)
