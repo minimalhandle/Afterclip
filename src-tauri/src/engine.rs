@@ -477,43 +477,71 @@ impl Engine {
         out.trim().parse().map_err(|_| "Could not read the audio tracks".to_string())
     }
 
+    /// Runs a job that writes `output`, which is removed again if the job fails. The audio choices go on the end.
+    fn copy_job(&self, mut args: Vec<std::ffi::OsString>, audio: &ShareAudio, output: &Path) -> Result<(), String> {
+        args.extend(audio.args().into_iter().map(Into::into));
+        let refs: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
+        self.media(&refs, true).map(|_| ()).inspect_err(|_| { let _ = fs::remove_file(output); })
+    }
+
     /// Makes a smaller copy that fits `megabytes`, beside the original. In the background, so it can't compete with a game.
-    pub fn shrink(&self, file: &Path, megabytes: u64) -> Result<PathBuf, String> {
+    pub fn shrink(&self, file: &Path, megabytes: u64, audio: &ShareAudio) -> Result<PathBuf, String> {
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
         let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_{megabytes}MB.mp4")));
         let bytes = (megabytes * 1000 * 1000).to_string();
-        if let Err(e) = self.media(&["shrink".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
-            let _ = fs::remove_file(&output);
-            return Err(e);
-        }
+        self.copy_job(vec!["shrink".into(), file.into(), output.clone().into(), bytes.into()], audio, &output)?;
         Ok(output)
     }
 
     /// Makes a smaller copy at up to 1080p60. A long clip stops at a good quality instead of reaching the target, so it can end up bigger.
-    pub fn compress(&self, file: &Path) -> Result<PathBuf, String> {
-        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_small.mp4")));
+    /// Compresses `file`, naming the copy after `named`, which is the original when `file` is a trimmed copy of it.
+    pub fn compress_as(&self, file: &Path, named: &Path, audio: &ShareAudio) -> Result<PathBuf, String> {
+        let stem = named.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&beside(named, &self.clips_dir()).join(format!("{stem}_small.mp4")));
         let bytes = COMPRESS_TARGET_BYTES.to_string();
-        if let Err(e) = self.media(&["compress".as_ref(), file.as_os_str(), output.as_os_str(), bytes.as_ref()], true) {
+        self.copy_job(vec!["compress".into(), file.into(), output.clone().into(), bytes.into()], audio, &output)?;
+        Ok(output)
+    }
+
+    /// Makes a 9:16 copy for phones, beside the original. In the background, so it can't compete with a game.
+    /// With a webcam's place given, as fractions of the picture, the webcam goes above the game. The copy is named
+    /// after `named`, which is the original when `file` is a trimmed part of it.
+    pub fn make_vertical(&self, file: &Path, named: &Path, camera: Option<[f64; 4]>, audio: &ShareAudio) -> Result<PathBuf, String> {
+        let stem = named.file_stem().unwrap_or_default().to_string_lossy();
+        let output = unique_path(&beside(named, &self.clips_dir()).join(format!("{stem}_vertical.mp4")));
+        let mut args: Vec<std::ffi::OsString> = vec!["vertical".into(), file.into(), output.clone().into()];
+        args.extend(camera.iter().flatten().map(|f| f.to_string().into()));
+        self.copy_job(args, audio, &output)?;
+        Ok(output)
+    }
+
+    /// Copies part of a clip losslessly, from `start` to `end` seconds. The start snaps back to a keyframe.
+    /// With no `output`, the copy goes beside the original, named after it.
+    pub fn trim_copy(&self, file: &Path, start: f64, end: f64, output: Option<PathBuf>) -> Result<PathBuf, String> {
+        let output = match output {
+            Some(path) => path,
+            None => {
+                let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+                unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_trim.mp4")))
+            }
+        };
+        let (start, end) = (start.max(0.0).to_string(), end.to_string());
+        let args: Vec<&std::ffi::OsStr> = vec!["join".as_ref(), output.as_os_str(), file.as_os_str(), start.as_ref(), end.as_ref()];
+        if let Err(e) = self.media(&args, false) {
             let _ = fs::remove_file(&output);
             return Err(e);
         }
         Ok(output)
     }
 
-    /// Makes a 9:16 copy for phones, beside the original. In the background, so it can't compete with a game.
-    /// With a webcam's place given, as fractions of the picture, the webcam goes above the game.
-    pub fn make_vertical(&self, file: &Path, camera: Option<[f64; 4]>) -> Result<PathBuf, String> {
-        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        let output = unique_path(&beside(file, &self.clips_dir()).join(format!("{stem}_vertical.mp4")));
-        let place: Vec<String> = camera.iter().flatten().map(|f| f.to_string()).collect();
-        let mut args: Vec<&std::ffi::OsStr> = vec!["vertical".as_ref(), file.as_os_str(), output.as_os_str()];
-        args.extend(place.iter().map(|v| std::ffi::OsStr::new(v.as_str())));
-        if let Err(e) = self.media(&args, true) {
-            let _ = fs::remove_file(&output);
-            return Err(e);
-        }
-        Ok(output)
+    /// A place for a file that's only needed for a moment, such as a trimmed clip on its way to Discord. It's in
+    /// the hidden staging folder, so the library never lists it, and keeps the name it's given, which Discord shows.
+    pub fn scratch_file(&self, name: &str) -> Result<PathBuf, String> {
+        let folder = self.staging_dir();
+        fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
+        Ok(unique_path(&folder.join(format!("{}-{id}-{name}", std::process::id()))))
     }
 
     /// Saves what's being captured right now as a PNG. The engine hands over a raw frame, and converting it runs in the background.
@@ -783,6 +811,28 @@ impl Engine {
 fn window_match(app: &FullscreenApp) -> String {
     let encode = |s: &str| s.replace('#', "#22").replace(':', "#3A");
     format!("{}:{}:{}", encode(&app.title), encode(&app.window_class), encode(&app.exe))
+}
+
+/// What a shared copy's audio is made of.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShareAudio {
+    /// Audio tracks to mix, counted from 0, which is the main mix. Empty means the main mix alone.
+    pub tracks: Vec<usize>,
+    /// Evens out the volume, so a quiet clip comes out as loud as others.
+    pub even: bool,
+}
+
+impl ShareAudio {
+    fn args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if !self.tracks.is_empty() {
+            args.push(format!("--tracks={}", self.tracks.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
+        }
+        if self.even {
+            args.push("--even".into());
+        }
+        args
+    }
 }
 
 /// The folder a file is in, for copies made from it.

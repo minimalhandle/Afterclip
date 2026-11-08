@@ -167,6 +167,64 @@ try {
   const mixedDecode = spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', mixed, '-f', 'null', '-'], { encoding: 'utf8' });
   check('retrack decodes cleanly', mixedDecode.status === 0 && !mixedDecode.stderr.trim(), mixedDecode.stderr.trim().slice(0, 200));
 
+  // Shared copies: chosen tracks are mixed into one, and --even brings quiet and loud clips to the same loudness.
+  const loudness = (file) => Number([...spawnSync(ffmpeg, ['-hide_banner', '-nostats', '-i', file, '-map', '0:a:0', '-af', 'ebur128=framelog=quiet', '-f', 'null', '-'], { encoding: 'utf8' }).stderr.matchAll(/I:\s+(-?[\d.]+) LUFS/g)].pop()?.[1]);
+  const peak = (file) => Number(/max_volume: (-?[\d.]+)/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', file, '-map', '0:a:0', '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)?.[1]);
+  const toneClip = (name, amplitude) => {
+    const file = f(name);
+    execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=10', '-f', 'lavfi', '-i', `sine=f=440:d=10,volume=${amplitude}`, '-c:v', 'libx264', '-b:v', '4M', '-c:a', 'aac', '-b:a', '192k', file]);
+    return file;
+  };
+  // A sine is -18 dBFS, so these are about -28 and -8 LUFS.
+  const quiet = toneClip('quiet.mp4', 0.4);
+  const loud = toneClip('loud.mp4', 7);
+  const evened = {};
+  for (const [name, file] of [['quiet', quiet], ['loud', loud]]) {
+    const out = f(`${name}-even.mp4`);
+    const r = run('shrink', file, out, '3000000', '--even');
+    check(`--even on a ${name} clip runs`, r.status === 0, r.stderr.trim());
+    evened[name] = loudness(out);
+    check(`--even brings a ${name} clip to about -16 LUFS`, Math.abs(evened[name] + 16) < 1.5, `${loudness(file)} to ${evened[name]} LUFS`);
+    check(`--even on a ${name} clip doesn't clip`, peak(out) <= -0.5, `${peak(out)} dB peak`);
+    check(`--even on a ${name} clip decodes cleanly`, decodes(out));
+  }
+  const plain = f('quiet-plain.mp4');
+  run('shrink', quiet, plain, '3000000');
+  check('without --even the volume is left alone', Math.abs(loudness(plain) - loudness(quiet)) < 1, `${loudness(quiet)} to ${loudness(plain)} LUFS`);
+  // A quiet clip with one sudden loud moment, like a gunshot: turning it up mustn't make that moment clip.
+  const burst = toneClip('burst.mp4', "0.3,volume=enable='between(t,5,5.1)':volume=8");
+  const burstEven = f('burst-even.mp4');
+  run('shrink', burst, burstEven, '3000000', '--even');
+  check('--even keeps a sudden loud moment under 0 dB', peak(burstEven) <= -0.3 && loudness(burstEven) > loudness(burst) + 6, `${peak(burst)} to ${peak(burstEven)} dB peak, ${loudness(burst)} to ${loudness(burstEven)} LUFS`);
+  check('--even with a loud moment decodes cleanly', decodes(burstEven));
+  const whisper = toneClip('whisper.mp4', 0.02);
+  const whisperEven = f('whisper-even.mp4');
+  run('shrink', whisper, whisperEven, '3000000', '--even');
+  const boost = loudness(whisperEven) - loudness(whisper);
+  check('--even turns a near-silent clip up by no more than 18 dB', boost > 16.5 && boost < 19, `${boost.toFixed(1)} dB`);
+  const silence = f('silence.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=5', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo:d=5', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', silence]);
+  const silenceEven = f('silence-even.mp4');
+  check('--even leaves silence silent', run('shrink', silence, silenceEven, '3000000', '--even').status === 0 && !(peak(silenceEven) > -60), `${peak(silenceEven)} dB peak`);
+
+  // Like OBS's tracks: the same format, with the second starting a little after the first.
+  const twoTracks = f('two-tracks.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=10', '-f', 'lavfi', '-i', 'anoisesrc=d=10:a=0.2:r=48000',
+    '-f', 'lavfi', '-i', 'sine=f=880:d=10:r=48000,adelay=300', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-b:v', '4M', '-c:a', 'aac', twoTracks]);
+  const bothTracks = f('both-tracks.mp4');
+  const both = run('shrink', twoTracks, bothTracks, '25000000', '--tracks=0,1');
+  check('--tracks mixes two tracks', both.status === 0 && audioCount(bothTracks) === 1, both.stderr.trim());
+  check('the mix has both tracks in it', volume(bothTracks, 0) > volume(twoTracks, 0) + 0.5 && volume(bothTracks, 0) > volume(twoTracks, 1) + 0.5, `${volume(twoTracks, 0)} and ${volume(twoTracks, 1)} to ${volume(bothTracks, 0)} dB`);
+  check('the mix keeps its length', Math.abs(seconds(bothTracks) - 10) < 0.6, `${seconds(bothTracks)}s`);
+  check('the mix doesn\'t clip', peak(bothTracks) <= -0.5, `${peak(bothTracks)} dB peak`);
+  check('the mix decodes cleanly', decodes(bothTracks));
+  const secondOnly = f('second-track.mp4');
+  check('--tracks can pick one other track', run('shrink', twoTracks, secondOnly, '25000000', '--tracks=1').status === 0 && Math.abs(volume(secondOnly, 0) - volume(twoTracks, 1)) < 1, `${volume(twoTracks, 1)} to ${volume(secondOnly, 0)} dB`);
+  const missingTrack = f('missing-track.mp4');
+  check('a track that isn\'t there falls back to the main mix', run('shrink', twoTracks, missingTrack, '25000000', '--tracks=7').status === 0 && Math.abs(volume(missingTrack, 0) - volume(twoTracks, 0)) < 1);
+  const verticalEven = f('vertical-even.mp4');
+  check('vertical copies take --even and --tracks too', run('vertical', noisy, verticalEven, '--even', '--tracks=0,1').status === 0 && Math.abs(loudness(verticalEven) + 16) < 1.5, `${loudness(verticalEven)} LUFS`);
+
   const thumb = f('t.jpg');
   const t = run('thumb', input, thumb);
   check('thumbnail runs', t.status === 0, t.stderr.trim());

@@ -33,7 +33,7 @@ const dial = (name, title, tooltip, triggers) => action(name, title, tooltip, {
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.10.0.0';
+manifest.Version = '0.11.0.0';
 // Every key's settings show the address it connects to, so a Stream Deck can control Afterclip on another PC.
 manifest.PropertyInspectorPath = 'ui/connection.html';
 manifest.Actions = [
@@ -52,6 +52,7 @@ manifest.Actions = [
   action('compress-last', 'Compress Last Clip', 'Make a smaller copy of your newest clip, ready to share.'),
   action('discord-last', 'Send Last Clip to Discord', 'Send your newest clip to the Discord channel set in Afterclip.'),
   action('vertical-last', 'Vertical Copy of Last Clip', 'Make a 9:16 copy of your newest clip for phones, with your webcam on top if it has one.'),
+  action('save-star', 'Save and Star', "Save a clip of the length you choose in the key's settings, and add it to your favourites.", { PropertyInspectorPath: 'ui/clip.html' }),
   action('star-last', 'Star Last Clip', 'Add your newest clip to your favourites, so clean-up never removes it. Press again to take the star off.'),
   action('webcam', 'Show Your Webcam', 'Turn your webcam in clips on or off, without restarting capture. Choose the webcam in Afterclip first.'),
   action('talk', 'Hold to Talk', 'Hold to put your mic in clips, with Push to talk turned on in Afterclip.', { SupportedInMultiActions: false }),
@@ -80,6 +81,7 @@ for (const [name, list, face] of [
   ['compress-last', 'Z', { symbol: 'compress', small: 'COMPRESS' }],
   ['discord-last', 'D', { symbol: 'send', small: 'DISCORD' }],
   ['vertical-last', 'Y', { symbol: 'vertical', small: 'VERTICAL' }],
+  ['save-star', 'B', { big: '30', small: 'SEC STAR' }],
   ['star-last', 'A', { symbol: 'star', small: 'STAR LAST' }],
   ['webcam', 'W', { symbol: 'webcamOff', small: 'CAM OFF' }],
   ['talk', 'H', { symbol: 'mic', small: 'HOLD' }],

@@ -14,6 +14,10 @@
 //                                            The video is copied losslessly.
 //   afterclip-media retag <in> <out>          copies a clip with HEVC tagged hev1 to <out> tagged hvc1, so Apple devices play it.
 //                                            Prints "retagged", or "unchanged" without writing <out> when it needs nothing.
+// shrink, compress and vertical also take these, anywhere after the command:
+//   --tracks=0,2                             mixes these audio tracks, counted from 0, instead of only the main mix
+//   --even                                   evens out the volume, so a quiet clip comes out as loud as a loud one
+#define _USE_MATH_DEFINES
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -26,6 +30,8 @@ extern "C" {
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -33,6 +39,13 @@ extern "C" {
 
 static const int THUMB_WIDTH = 320;
 static const int THUMB_SEEK_SECONDS = 1;
+
+/** The audio a shared copy gets, from --tracks and --even. */
+struct ShareAudio {
+	std::vector<int> tracks; // Audio tracks to mix, counted from 0. Empty means the main mix.
+	bool even = false;
+};
+static ShareAudio g_share;
 
 static std::string toUtf8(const wchar_t *s)
 {
@@ -812,6 +825,424 @@ static void freeAudio(AudioTrack &track)
 	av_frame_free(&track.decoded);
 }
 
+/**
+ * How loud a mix sounds, as ITU-R BS.1770 measures it: K-weighted, in 400 ms blocks every 100 ms, ignoring
+ * silence and the quiet stretches between loud ones. The answer is in LUFS.
+ */
+struct LoudnessMeter {
+	struct Biquad {
+		double b0, b1, b2, a1, a2;
+	};
+	Biquad shelf{}, highpass{};
+	std::vector<double> state; // Four values a channel: two for each filter.
+	int channels = 0;
+	int hop = 0;
+	int filled = 0;
+	double hopSum = 0;
+	std::vector<double> hops; // The weighted power of each 100 ms.
+
+	void open(int rate, int channelCount)
+	{
+		// The filters from the standard, worked out for this sample rate as libebur128 does.
+		double K = tan(M_PI * 1681.974450955533 / rate);
+		const double Q = 0.7071752369554196;
+		const double Vh = pow(10.0, 3.999843853973347 / 20.0);
+		const double Vb = pow(Vh, 0.4996667741545416);
+		double a0 = 1.0 + K / Q + K * K;
+		shelf = {(Vh + Vb * K / Q + K * K) / a0, 2.0 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0, 2.0 * (K * K - 1.0) / a0,
+			 (1.0 - K / Q + K * K) / a0};
+		K = tan(M_PI * 38.13547087602444 / rate);
+		const double Qh = 0.5003270373238773;
+		a0 = 1.0 + K / Qh + K * K;
+		highpass = {1.0, -2.0, 1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Qh + K * K) / a0};
+		channels = channelCount;
+		hop = FFMAX(1, rate / 10);
+		state.assign((size_t)channels * 4, 0.0);
+	}
+
+	void add(float *const *planes, int count)
+	{
+		for (int i = 0; i < count; i++) {
+			for (int c = 0; c < channels; c++) {
+				double *s = &state[(size_t)c * 4];
+				const double x = planes[c][i];
+				const double y = shelf.b0 * x + s[0];
+				s[0] = shelf.b1 * x - shelf.a1 * y + s[1];
+				s[1] = shelf.b2 * x - shelf.a2 * y;
+				const double z = highpass.b0 * y + s[2];
+				s[2] = highpass.b1 * y - highpass.a1 * z + s[3];
+				s[3] = highpass.b2 * y - highpass.a2 * z;
+				hopSum += z * z;
+			}
+			if (++filled == hop) {
+				hops.push_back(hopSum / hop);
+				hopSum = 0;
+				filled = 0;
+			}
+		}
+	}
+
+	/** The integrated loudness, or -infinity for silence. */
+	double integrated() const
+	{
+		std::vector<double> blocks;
+		for (size_t i = 3; i < hops.size(); i++)
+			blocks.push_back((hops[i - 3] + hops[i - 2] + hops[i - 1] + hops[i]) / 4.0);
+		// Under 400 ms there's no whole block, so what there is counts as one.
+		if (blocks.empty() && !hops.empty()) {
+			double sum = 0;
+			for (double h : hops)
+				sum += h;
+			blocks.push_back(sum / hops.size());
+		}
+		const auto lufs = [](double power) { return -0.691 + 10.0 * log10(power); };
+		const auto gatedMean = [&](double gate) {
+			double sum = 0;
+			int count = 0;
+			for (double power : blocks) {
+				if (power > 0 && lufs(power) > gate) {
+					sum += power;
+					count++;
+				}
+			}
+			return count ? sum / count : 0.0;
+		};
+		const double absolute = gatedMean(-70.0);
+		if (absolute <= 0)
+			return -INFINITY;
+		const double relative = gatedMean(lufs(absolute) - 10.0);
+		return relative > 0 ? lufs(relative) : -INFINITY;
+	}
+};
+
+/** One audio track going into a mix. */
+struct MixInput {
+	AVStream *from = nullptr;
+	AVCodecContext *dec = nullptr;
+	AVAudioFifo *fifo = nullptr;
+	bool started = false;
+	bool silent = false; // Gave no sound long after the others started, so it counts as silence from then on.
+};
+
+/**
+ * Mixes chosen audio tracks into one, optionally evened out, and hands it to an AAC encoder or a loudness meter.
+ * Each track is lined up by its own start time, because OBS starts every track together but not always exactly.
+ */
+struct Mixer {
+	std::vector<MixInput> inputs;
+	std::vector<int> inputOf; // For each stream in the file, its input, or -1.
+	int rate = 0;
+	int channels = 0;
+	AVChannelLayout layout{};
+	int64_t originMicro = 0;
+	double level = 1.0;     // From --even. 1 leaves the volume alone.
+	bool limit = false;     // Keeps peaks under the ceiling, needed when tracks add up or the level goes up.
+	double reduction = 1.0; // The limiter's gain right now.
+	double release = 0.0;
+	int chunk = 1024;
+	AVFrame *decoded = nullptr;
+	std::vector<std::vector<float>> mixed, scratch;
+	AVCodecContext *enc = nullptr;
+	AVStream *to = nullptr;
+	int64_t nextPts = 0;
+	LoudnessMeter *meter = nullptr;
+};
+
+// What a copy is evened out to. Loud enough for Discord and phones, with room left for gunshots and shouts.
+static const double EVEN_TARGET_LUFS = -16.0;
+static const double EVEN_MOST_BOOST_DB = 18.0; // A near-silent clip would be all hiss turned this far up.
+static const double EVEN_MOST_CUT_DB = -12.0;
+static const double LIMIT_CEILING = 0.891; // -1 dBFS
+static const double LIMIT_RELEASE_SECONDS = 0.15;
+// A track still silent this long after another started has no sound to give.
+static const int SILENT_AFTER_SECONDS = 5;
+
+/** The audio streams of a file, in order, so track 0 is the main mix. */
+static std::vector<int> audioStreams(const AVFormatContext *in)
+{
+	std::vector<int> found;
+	for (unsigned i = 0; i < in->nb_streams; i++) {
+		if (in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+			found.push_back((int)i);
+	}
+	return found;
+}
+
+/** Sets up decoders for the chosen tracks. Tracks that don't match the first one's format are left out. Returns how many are mixed. */
+static int openMixer(Mixer &mix, AVFormatContext *in, const std::vector<int> &picks, int64_t originMicro)
+{
+	const std::vector<int> streams = audioStreams(in);
+	std::vector<int> wanted;
+	for (int pick : picks) {
+		if (pick >= 0 && pick < (int)streams.size() && std::find(wanted.begin(), wanted.end(), streams[pick]) == wanted.end())
+			wanted.push_back(streams[pick]);
+	}
+	if (wanted.empty() && !streams.empty())
+		wanted.push_back(streams[0]);
+	mix.inputOf.assign(in->nb_streams, -1);
+	mix.originMicro = originMicro;
+	for (int index : wanted) {
+		AVStream *from = in->streams[index];
+		const AVCodec *decoder = avcodec_find_decoder(from->codecpar->codec_id);
+		if (!decoder)
+			continue;
+		if (mix.inputs.empty()) {
+			mix.rate = from->codecpar->sample_rate;
+			mix.channels = from->codecpar->ch_layout.nb_channels;
+			if (av_channel_layout_copy(&mix.layout, &from->codecpar->ch_layout) < 0)
+				return 0;
+		} else if (from->codecpar->sample_rate != mix.rate || from->codecpar->ch_layout.nb_channels != mix.channels) {
+			fprintf(stderr, "Left out audio track %d, which is in a different format\n", index);
+			continue;
+		}
+		MixInput input;
+		input.from = from;
+		input.dec = avcodec_alloc_context3(decoder);
+		if (avcodec_parameters_to_context(input.dec, from->codecpar) < 0 || avcodec_open2(input.dec, decoder, nullptr) < 0) {
+			avcodec_free_context(&input.dec);
+			continue;
+		}
+		input.fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP, mix.channels, mix.rate);
+		if (!input.fifo) {
+			avcodec_free_context(&input.dec);
+			continue;
+		}
+		mix.inputOf[index] = (int)mix.inputs.size();
+		mix.inputs.push_back(input);
+	}
+	mix.decoded = av_frame_alloc();
+	mix.release = exp(-1.0 / (LIMIT_RELEASE_SECONDS * FFMAX(1, mix.rate)));
+	return (int)mix.inputs.size();
+}
+
+static int openMixEncoder(Mixer &mix, AVFormatContext *out, int bitrate)
+{
+	const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_AAC);
+	if (!encoder)
+		return AVERROR_ENCODER_NOT_FOUND;
+	mix.enc = avcodec_alloc_context3(encoder);
+	mix.enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+	mix.enc->sample_rate = mix.rate;
+	mix.enc->bit_rate = bitrate;
+	mix.enc->time_base = {1, mix.rate};
+	int err = av_channel_layout_copy(&mix.enc->ch_layout, &mix.layout);
+	if (err < 0)
+		return err;
+	if (out->oformat->flags & AVFMT_GLOBALHEADER)
+		mix.enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	if ((err = avcodec_open2(mix.enc, encoder, nullptr)) < 0)
+		return err;
+	mix.to = avformat_new_stream(out, nullptr);
+	if (!mix.to)
+		return AVERROR(ENOMEM);
+	if ((err = avcodec_parameters_from_context(mix.to->codecpar, mix.enc)) < 0)
+		return err;
+	mix.to->time_base = mix.enc->time_base;
+	mix.chunk = mix.enc->frame_size > 0 ? mix.enc->frame_size : 1024;
+	return 0;
+}
+
+static void writeSilence(AVAudioFifo *fifo, int channels, int64_t samples)
+{
+	static const std::vector<float> zeros(4096, 0.0f);
+	std::vector<void *> planes((size_t)channels, (void *)zeros.data());
+	while (samples > 0) {
+		const int now = (int)FFMIN(samples, (int64_t)zeros.size());
+		av_audio_fifo_write(fifo, planes.data(), now);
+		samples -= now;
+	}
+}
+
+/** Sends a mixed chunk on: to the encoder, or to the meter. */
+static int emitMixed(Mixer &mix, int samples, AVFormatContext *out, AVPacket *pkt)
+{
+	std::vector<float *> planes((size_t)mix.channels);
+	for (int c = 0; c < mix.channels; c++)
+		planes[c] = mix.mixed[c].data();
+	if (mix.meter)
+		mix.meter->add(planes.data(), samples);
+	if (!mix.enc)
+		return 0;
+	AVFrame *frame = av_frame_alloc();
+	frame->nb_samples = samples;
+	frame->format = mix.enc->sample_fmt;
+	frame->sample_rate = mix.enc->sample_rate;
+	int err = av_channel_layout_copy(&frame->ch_layout, &mix.enc->ch_layout);
+	if (err >= 0)
+		err = av_frame_get_buffer(frame, 0);
+	if (err < 0) {
+		av_frame_free(&frame);
+		return err;
+	}
+	for (int c = 0; c < mix.channels; c++)
+		memcpy(frame->extended_data[c], planes[c], sizeof(float) * samples);
+	frame->pts = mix.nextPts;
+	mix.nextPts += samples;
+	err = avcodec_send_frame(mix.enc, frame);
+	av_frame_free(&frame);
+	return err < 0 ? err : drainEncoder(mix.enc, out, mix.to, pkt);
+}
+
+/** Mixes whatever every track has ready. At the end, shorter tracks are padded with silence. */
+static int drainMixer(Mixer &mix, bool finishing, AVFormatContext *out, AVPacket *pkt)
+{
+	if (mix.inputs.empty())
+		return 0;
+	if (mix.mixed.size() != (size_t)mix.channels) {
+		mix.mixed.assign(mix.channels, std::vector<float>(mix.chunk));
+		mix.scratch.assign(mix.channels, std::vector<float>(mix.chunk));
+	}
+	for (;;) {
+		int most = 0;
+		for (const MixInput &input : mix.inputs)
+			most = FFMAX(most, av_audio_fifo_size(input.fifo));
+		for (MixInput &input : mix.inputs) {
+			if (!input.started && most > (int64_t)mix.rate * SILENT_AFTER_SECONDS) {
+				input.started = true;
+				input.silent = true;
+			}
+			if (input.silent || finishing)
+				writeSilence(input.fifo, mix.channels, most - av_audio_fifo_size(input.fifo));
+		}
+		int ready = most;
+		for (const MixInput &input : mix.inputs)
+			ready = FFMIN(ready, av_audio_fifo_size(input.fifo));
+		if (ready <= 0 || (ready < mix.chunk && !finishing))
+			return 0;
+		const int samples = FFMIN(ready, mix.chunk);
+		for (int c = 0; c < mix.channels; c++)
+			std::fill(mix.mixed[c].begin(), mix.mixed[c].begin() + samples, 0.0f);
+		std::vector<void *> into((size_t)mix.channels);
+		for (int c = 0; c < mix.channels; c++)
+			into[c] = mix.scratch[c].data();
+		for (MixInput &input : mix.inputs) {
+			av_audio_fifo_read(input.fifo, into.data(), samples);
+			for (int c = 0; c < mix.channels; c++) {
+				for (int i = 0; i < samples; i++)
+					mix.mixed[c][i] += mix.scratch[c][i];
+			}
+		}
+		for (int i = 0; i < samples; i++) {
+			double peak = 0;
+			for (int c = 0; c < mix.channels; c++) {
+				mix.mixed[c][i] = (float)(mix.mixed[c][i] * mix.level);
+				peak = FFMAX(peak, fabs(mix.mixed[c][i]));
+			}
+			if (!mix.limit)
+				continue;
+			// Turns down at once for a peak, then comes back up smoothly, so it doesn't pump or crackle.
+			const double wanted = peak > LIMIT_CEILING ? LIMIT_CEILING / peak : 1.0;
+			mix.reduction = wanted < mix.reduction ? wanted : wanted - (wanted - mix.reduction) * mix.release;
+			for (int c = 0; c < mix.channels; c++)
+				mix.mixed[c][i] = (float)FFMIN(1.0, FFMAX(-1.0, mix.mixed[c][i] * mix.reduction));
+		}
+		const int err = emitMixed(mix, samples, out, pkt);
+		if (err < 0)
+			return err;
+	}
+}
+
+/** Takes a packet from one of the mixed tracks, or nullptr for the end of that track. */
+static int feedMixer(Mixer &mix, int streamIndex, const AVPacket *packet, AVFormatContext *out, AVPacket *pkt)
+{
+	MixInput &input = mix.inputs[mix.inputOf[streamIndex]];
+	if (input.silent)
+		return 0;
+	int err = avcodec_send_packet(input.dec, packet);
+	if (err < 0 && err != AVERROR_EOF && err != AVERROR_INVALIDDATA)
+		return err;
+	while ((err = avcodec_receive_frame(input.dec, mix.decoded)) >= 0) {
+		AVFrame *frame = mix.decoded;
+		if (frame->format != AV_SAMPLE_FMT_FLTP || frame->ch_layout.nb_channels != mix.channels) {
+			av_frame_unref(frame);
+			return AVERROR(EINVAL);
+		}
+		const int64_t micro = frame->pts == AV_NOPTS_VALUE ? mix.originMicro : av_rescale_q(frame->pts, input.from->time_base, {1, AV_TIME_BASE});
+		if (micro < mix.originMicro) {
+			av_frame_unref(frame);
+			continue;
+		}
+		if (!input.started) {
+			input.started = true;
+			writeSilence(input.fifo, mix.channels, av_rescale(micro - mix.originMicro, mix.rate, AV_TIME_BASE));
+		}
+		av_audio_fifo_write(input.fifo, (void **)frame->extended_data, frame->nb_samples);
+		av_frame_unref(frame);
+	}
+	if (err != AVERROR(EAGAIN) && err != AVERROR_EOF)
+		return err;
+	return drainMixer(mix, false, out, pkt);
+}
+
+static int finishMixer(Mixer &mix, AVFormatContext *out, AVPacket *pkt)
+{
+	for (MixInput &input : mix.inputs) {
+		int err = avcodec_send_packet(input.dec, nullptr);
+		while (err >= 0 && (err = avcodec_receive_frame(input.dec, mix.decoded)) >= 0) {
+			if (!input.silent && mix.decoded->format == AV_SAMPLE_FMT_FLTP && mix.decoded->ch_layout.nb_channels == mix.channels)
+				av_audio_fifo_write(input.fifo, (void **)mix.decoded->extended_data, mix.decoded->nb_samples);
+			av_frame_unref(mix.decoded);
+		}
+	}
+	int err = drainMixer(mix, true, out, pkt);
+	if (err < 0 || !mix.enc)
+		return err;
+	if ((err = avcodec_send_frame(mix.enc, nullptr)) < 0)
+		return err;
+	return drainEncoder(mix.enc, out, mix.to, pkt);
+}
+
+static void freeMixer(Mixer &mix)
+{
+	for (MixInput &input : mix.inputs) {
+		avcodec_free_context(&input.dec);
+		if (input.fifo)
+			av_audio_fifo_free(input.fifo);
+	}
+	mix.inputs.clear();
+	avcodec_free_context(&mix.enc);
+	av_frame_free(&mix.decoded);
+	av_channel_layout_uninit(&mix.layout);
+}
+
+/** How loud the chosen tracks are together, in LUFS, from a quick pass over just the audio. */
+static double measureLoudness(const std::string &input, int64_t originMicro)
+{
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return -INFINITY;
+	Mixer mix;
+	LoudnessMeter meter;
+	double loudness = -INFINITY;
+	if (openMixer(mix, in, g_share.tracks, originMicro) > 0) {
+		meter.open(mix.rate, mix.channels);
+		mix.meter = &meter;
+		mix.chunk = 4096;
+		AVPacket *read = av_packet_alloc();
+		bool ok = true;
+		while (ok && av_read_frame(in, read) >= 0) {
+			if (mix.inputOf[read->stream_index] >= 0)
+				ok = feedMixer(mix, read->stream_index, read, nullptr, nullptr) >= 0;
+			av_packet_unref(read);
+		}
+		if (ok && finishMixer(mix, nullptr, nullptr) >= 0)
+			loudness = meter.integrated();
+		av_packet_free(&read);
+	}
+	freeMixer(mix);
+	avformat_close_input(&in);
+	return loudness;
+}
+
+/** The gain that brings a mix this loud to the target, kept within limits, so silence isn't turned into hiss. */
+static double evenLevel(double loudness)
+{
+	if (!std::isfinite(loudness) || loudness < -60.0)
+		return 1.0;
+	const double db = FFMIN(EVEN_MOST_BOOST_DB, FFMAX(EVEN_MOST_CUT_DB, EVEN_TARGET_LUFS - loudness));
+	return pow(10.0, db / 20.0);
+}
+
 static int openMp4(AVFormatContext *&out, const std::string &output)
 {
 	return avformat_alloc_output_context2(&out, nullptr, "mp4", output.c_str());
@@ -1010,7 +1441,6 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	const int video = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
 	if (video < 0 || !decoder)
 		return fail("No decodable video stream");
-	const int audio = av_find_best_stream(in, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0); // The first track is the main mix.
 	AVStream *source = in->streams[video];
 	AVCodecContext *dec = avcodec_alloc_context3(decoder);
 	avcodec_parameters_to_context(dec, source->codecpar);
@@ -1032,9 +1462,16 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	videoOut->time_base = enc->time_base;
 
 	const int64_t startMicro = source->start_time == AV_NOPTS_VALUE ? 0 : av_rescale_q(source->start_time, source->time_base, {1, AV_TIME_BASE});
-	AudioTrack track;
-	if (audio >= 0 && (err = openAudioTrack(track, in->streams[audio], out, audioKbps * 1000, 1.0, startMicro)) < 0)
-		return fail("Could not set up audio", err);
+	Mixer mix;
+	const bool audio = audioKbps > 0 && openMixer(mix, in, g_share.tracks, startMicro) > 0;
+	if (audio) {
+		if ((err = openMixEncoder(mix, out, audioKbps * 1000)) < 0)
+			return fail("Could not set up audio", err);
+		if (g_share.even)
+			mix.level = evenLevel(measureLoudness(input, startMicro));
+		// Tracks added together, or turned up, can go over the top.
+		mix.limit = mix.inputs.size() > 1 || mix.level > 1.0;
+	}
 	if ((err = beginMp4(out, output)) < 0)
 		return fail("Could not write header", err);
 
@@ -1094,8 +1531,8 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 		if (read->stream_index == video) {
 			if (avcodec_send_packet(dec, read) >= 0 && (err = drainDecoder()) < 0)
 				return fail("Could not encode the video", err);
-		} else if (read->stream_index == audio) {
-			if ((err = feedAudio(track, read, out, written)) < 0)
+		} else if (audio && mix.inputOf[read->stream_index] >= 0) {
+			if ((err = feedMixer(mix, read->stream_index, read, out, written)) < 0)
 				return fail("Could not encode the audio", err);
 		}
 		av_packet_unref(read);
@@ -1103,7 +1540,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	avcodec_send_packet(dec, nullptr);
 	if ((err = drainDecoder()) < 0 || (err = avcodec_send_frame(enc, nullptr)) < 0 || (err = drainEncoder(enc, out, videoOut, written)) < 0)
 		return fail("Could not finish the video", err);
-	if (audio >= 0 && (err = finishAudio(track, out, written)) < 0)
+	if (audio && (err = finishMixer(mix, out, written)) < 0)
 		return fail("Could not finish the audio", err);
 	if ((err = av_write_trailer(out)) < 0)
 		return fail("Could not finish file", err);
@@ -1114,8 +1551,7 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 	av_frame_free(&frame);
 	av_packet_free(&read);
 	av_packet_free(&written);
-	if (audio >= 0)
-		freeAudio(track);
+	freeMixer(mix);
 	avcodec_free_context(&enc);
 	avcodec_free_context(&dec);
 	avio_closep(&out->pb);
@@ -1340,10 +1776,40 @@ static int cmdPng(const std::string &input, const std::string &output, int width
 	return written ? 0 : fail("Could not write the PNG");
 }
 
+/** Takes the --options out, wherever they are, and leaves the rest in order. */
+static std::vector<wchar_t *> readOptions(int count, wchar_t **all)
+{
+	std::vector<wchar_t *> rest;
+	for (int i = 0; i < count; i++) {
+		const std::wstring arg = all[i];
+		if (arg == L"--even") {
+			g_share.even = true;
+		} else if (arg.rfind(L"--tracks=", 0) == 0) {
+			const std::string list = toUtf8(arg.c_str() + 9);
+			size_t at = 0;
+			while (at <= list.size()) {
+				const size_t comma = list.find(',', at);
+				const std::string part = list.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+				if (!part.empty())
+					g_share.tracks.push_back(atoi(part.c_str()));
+				if (comma == std::string::npos)
+					break;
+				at = comma + 1;
+			}
+		} else {
+			rest.push_back(all[i]);
+		}
+	}
+	return rest;
+}
+
 int main()
 {
-	int argc = 0;
-	wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	int count = 0;
+	wchar_t **all = CommandLineToArgvW(GetCommandLineW(), &count);
+	std::vector<wchar_t *> kept = all ? readOptions(count, all) : std::vector<wchar_t *>();
+	const int argc = (int)kept.size();
+	wchar_t **argv = kept.data();
 	av_log_set_level(AV_LOG_ERROR);
 	if (argv && argc >= 3) {
 		const std::wstring cmd = argv[1];

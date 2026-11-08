@@ -3,6 +3,14 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.4.0
+
+- Trim a clip from its menu and save or share the selected range.
+- Even out audio levels and choose which recorded tracks go into share copies.
+- Add named Discord channels and pick a destination when sending.
+- Save and star a clip in one press with a hotkey or Stream Deck key.
+- Hover over a clip in View all to preview it. Keep recording after you save and the library size limit are already available in Settings.
+
 ## 1.3.1
 
 - HEVC clips now play on iPhones and Macs, including in Discord. They used to play on PCs only.

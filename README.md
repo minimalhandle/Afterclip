@@ -65,7 +65,7 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 
 Drag a clip straight into Discord or any other app, the same way you would from File Explorer. Or choose **Copy file** from its menu and paste it.
 
-From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. That posts to one channel through a webhook you add under **Settings > Clips and sharing**, and a clip over Discord's 10 MB limit is sent as a smaller copy.
+From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Trim and share** lets you pick a range and choose recorded audio tracks from the clip menu. **Even out volume** levels the audio in share copies.
 
 **Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
 
@@ -97,7 +97,7 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip**, **Send Last Clip to Discord**, **Vertical Copy of Last Clip**, **Star Last Clip**, **Show Your Webcam** and **Hold to Talk**, which puts your mic in clips while you hold it, with Push to talk on.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip**, **Send Last Clip to Discord**, **Vertical Copy of Last Clip**, **Star Last Clip**, **Save and Star**, **Show Your Webcam** and **Hold to Talk**, which puts your mic in clips while you hold it, with Push to talk on.
  They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
 
 On a Stream Deck +, the **Mic Volume** dial turns your mic up or down in clips, and pressing it mutes your mic in clips. The **Clip Length Dial** picks a length as you turn it, saves that length when you press it, and shows how full your buffer is.

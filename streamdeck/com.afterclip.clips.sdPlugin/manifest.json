@@ -3,7 +3,7 @@
   "Name": "Afterclip",
   "Description": "Save game clips and control recording in Afterclip.",
   "Author": "Afterclip",
-  "Version": "0.10.0.0",
+  "Version": "0.11.0.0",
   "UUID": "com.afterclip.clips",
   "SDKVersion": 2,
   "CodePath": "main.cjs",
@@ -455,6 +455,25 @@
           "ShowTitle": false
         }
       ]
+    },
+    {
+      "UUID": "com.afterclip.clips.save-star",
+      "Name": "Save and Star",
+      "Tooltip": "Save a clip of the length you choose in the key's settings, and add it to your favourites.",
+      "Icon": "imgs/action-save-star",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "States": [
+        {
+          "Image": "imgs/save-star",
+          "ShowTitle": false
+        }
+      ],
+      "PropertyInspectorPath": "ui/clip.html"
     },
     {
       "UUID": "com.afterclip.clips.star-last",

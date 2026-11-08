@@ -31,7 +31,7 @@ const svgOf = (message) => decodeURIComponent(message.payload.image);
 async function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'manifest.json'), 'utf8'));
   const names = manifest.Actions.map((a) => a.Name);
-  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot', 'Compress Last Clip', 'Send Last Clip to Discord', 'Mic Volume', 'Clip Length Dial', 'Vertical Copy of Last Clip', 'Star Last Clip', 'Show Your Webcam', 'Hold to Talk']) check(`has ${wanted} action`, names.includes(wanted));
+  for (const wanted of ['Save Last 15 Sec', 'Save Last 30 Sec', 'Save Last 1 Min', 'Save Last 2 Min', 'Save Last 3 Min', 'Save Last 5 Min', 'Save Last 10 Min', 'Save Last 15 Min', 'Save Last 20 Min', 'Save Last 30 Min', 'Save Full Buffer', 'Record', 'Mute Mic In Clips', 'Clean Mic', 'Add Marker', 'Save Custom Length', 'Open Afterclip', 'Open Clips Folder', 'Edit Last Clip', 'Copy Last Clip', 'Take Screenshot', 'Compress Last Clip', 'Send Last Clip to Discord', 'Mic Volume', 'Clip Length Dial', 'Vertical Copy of Last Clip', 'Star Last Clip', 'Save and Star', 'Show Your Webcam', 'Hold to Talk']) check(`has ${wanted} action`, names.includes(wanted));
   const dials = manifest.Actions.filter((a) => a.Controllers.includes('Encoder'));
   check('the dials are Stream Deck + encoders with a touch strip', dials.length === 2 && dials.every((a) => a.Encoder?.layout === '$B1' && !a.Controllers.includes('Keypad')));
   const missing = manifest.Actions.flatMap((a) => [a.Icon, a.States[0].Image])
@@ -129,6 +129,16 @@ async function main() {
     check('a save plays the animation in purple, ending on SAVED', savedFrames.length === 9 && savedFrames.every((svg) => svg.includes('#3a2bb8')));
     check('the animation avoids effects Stream Deck might not draw', !/filter|clip-path|<animate/.test(savedFrames.join()));
     check('the green tick is gone', !received.some((m) => m.event === 'showOk' || m.event === 'showAlert'));
+
+    event('willAppear', ACTION('save-star'), 'starsave', { seconds: 60 });
+    await waitFor(() => lastImage('starsave') && svgOf(lastImage('starsave')).includes('>MIN STAR<'), 3000, 'save and star image');
+    check('Save and Star shows its length, marked STAR', svgOf(lastImage('starsave')).includes('>1<'));
+    routes.length = 0;
+    event('keyDown', ACTION('save-star'), 'starsave', { seconds: 60 });
+    await waitFor(() => results('starsave', 'showOk') === 1, 3000, 'save and star ok');
+    check('Save and Star saves its length and stars it', routes.join() === 'POST /clip/60/star', routes.join());
+    await waitFor(() => received.some((m) => m.context === 'starsave' && m.event === 'setImage' && svgOf(m).includes('>STARRED<')), 3000, 'STARRED');
+    check('Save and Star says STARRED', true);
 
     state.clipDelay = 600;
     routes.length = 0;

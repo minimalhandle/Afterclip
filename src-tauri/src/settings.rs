@@ -36,6 +36,16 @@ fn full_volume() -> f64 {
     1.0
 }
 
+/// A Discord channel that Send to Discord can post to. The address is a secret, so it stays out of logs and messages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Webhook {
+    pub name: String,
+    pub url: String,
+}
+
+const MAX_WEBHOOKS: usize = 10;
+const MAX_WEBHOOK_NAME_CHARS: usize = 40;
+
 impl AudioSource {
     /// By default the key mutes inputs, but not virtual cables, which usually carry apps like Discord.
     pub fn muted_by_key(&self) -> bool {
@@ -110,8 +120,17 @@ pub struct Settings {
     pub record_split_seconds: i64,
     pub marker_hotkey: String,
     pub screenshot_hotkey: String,
-    /// Where Send to Discord posts. It's a secret, so it stays out of logs and messages.
+    /// The one webhook versions before 1.4.0 had. Only read, to move it into discord_webhooks.
+    #[serde(default, skip_serializing)]
     pub discord_webhook: String,
+    /// Where Send to Discord can post. The first is used by the Stream Deck key and the API.
+    pub discord_webhooks: Vec<Webhook>,
+    /// Compress, Send to Discord and vertical copies even out the volume, so quiet clips come out as loud as others.
+    pub even_audio: bool,
+    /// Saves a clip of star_clip_seconds and stars it, so clean-up never removes it.
+    pub star_clip_hotkey: String,
+    /// 0 means the whole buffer.
+    pub star_clip_seconds: i64,
     /// Relaunches through UAC at every start, which some games need for game capture.
     pub run_as_admin: bool,
     /// Moves the oldest clips and recordings to the Recycle Bin above this size. 0 keeps everything.
@@ -218,6 +237,10 @@ impl Settings {
             marker_hotkey: "Alt+Shift+K".into(),
             screenshot_hotkey: "Alt+Shift+S".into(),
             discord_webhook: String::new(),
+            discord_webhooks: Vec::new(),
+            even_audio: true,
+            star_clip_hotkey: "Alt+Shift+F".into(),
+            star_clip_seconds: 30,
             run_as_admin: false,
             storage_limit_gb: 0.0,
             delete_after_days: 0,
@@ -338,7 +361,20 @@ impl Settings {
     pub fn sanitized(mut self) -> Self {
         self.storage_limit_gb = self.storage_limit_gb.max(0.0);
         self.delete_after_days = self.delete_after_days.max(0);
-        self.discord_webhook = self.discord_webhook.trim().to_string();
+        // Moves a webhook from before 1.4.0 into the list.
+        let legacy = std::mem::take(&mut self.discord_webhook);
+        if !legacy.trim().is_empty() && !self.discord_webhooks.iter().any(|w| w.url.trim() == legacy.trim()) {
+            self.discord_webhooks.insert(0, Webhook { name: "Discord".into(), url: legacy });
+        }
+        self.discord_webhooks.truncate(MAX_WEBHOOKS);
+        for (i, hook) in self.discord_webhooks.iter_mut().enumerate() {
+            hook.url = hook.url.trim().to_string();
+            hook.name = hook.name.chars().filter(|c| !c.is_control()).take(MAX_WEBHOOK_NAME_CHARS).collect::<String>().trim().to_string();
+            if hook.name.is_empty() {
+                hook.name = format!("Channel {}", i + 1);
+            }
+        }
+        self.star_clip_seconds = self.star_clip_seconds.clamp(0, MAX_BUFFER_SECONDS);
         self.clip_after_seconds = self.clip_after_seconds.clamp(0, 30);
         self.camera_size = self.camera_size.clamp(CAMERA_SIZES.0, CAMERA_SIZES.1);
         self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
@@ -432,7 +468,7 @@ impl Settings {
             return Err("That isn't an Afterclip settings file.".into());
         }
         let mut settings = Settings::load(file, self.clone());
-        settings.discord_webhook = self.discord_webhook.clone();
+        settings.discord_webhooks = self.discord_webhooks.clone();
         settings.skipped_update = self.skipped_update.clone();
         settings.seen_version = self.seen_version.clone();
         settings.test_pattern = self.test_pattern;
@@ -447,11 +483,11 @@ impl Settings {
         Ok(settings)
     }
 
-    /// What Export settings writes. The webhook is a secret, so it's left out.
+    /// What Export settings writes. Webhooks are secret, so they're left out.
     pub fn exported(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         if let Some(map) = value.as_object_mut() {
-            for key in ["discordWebhook", "skippedUpdate", "seenVersion", "testPattern", "micMuted"] {
+            for key in ["discordWebhook", "discordWebhooks", "skippedUpdate", "seenVersion", "testPattern", "micMuted"] {
                 map.remove(key);
             }
         }
@@ -498,6 +534,28 @@ mod tests {
     }
 
     #[test]
+    fn the_webhook_from_before_1_4_moves_into_the_list() {
+        let dir = std::env::temp_dir().join(format!("afterclip-webhooks-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        fs::write(&file, r#"{"discordWebhook": " https://discord.com/api/webhooks/1/old ", "bufferSeconds": 120}"#).unwrap();
+        let loaded = Settings::load(&file, sample());
+        assert_eq!(loaded.discord_webhooks, vec![Webhook { name: "Discord".into(), url: "https://discord.com/api/webhooks/1/old".into() }]);
+        assert!(loaded.discord_webhook.is_empty());
+        loaded.save(&file).unwrap();
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(!saved.contains("\"discordWebhook\""), "the old field isn't written again");
+        assert_eq!(Settings::load(&file, sample()).discord_webhooks.len(), 1, "loading again doesn't add it twice");
+        let _ = fs::remove_dir_all(dir);
+
+        let mut tidy = sample();
+        tidy.discord_webhooks = vec![Webhook { name: "  ".into(), url: " https://discord.com/api/webhooks/2/x ".into() }];
+        let tidy = tidy.sanitized();
+        assert_eq!(tidy.discord_webhooks[0].name, "Channel 1");
+        assert_eq!(tidy.discord_webhooks[0].url, "https://discord.com/api/webhooks/2/x");
+    }
+
+    #[test]
     fn importing_keeps_the_webhook_and_a_save_location_that_exists() {
 
         let dir = std::env::temp_dir().join(format!("afterclip-import-{}", std::process::id()));
@@ -508,12 +566,13 @@ mod tests {
         other.output_dir = "Q:\\Nowhere\\Afterclip".into();
         fs::write(&file, other.exported().to_string()).unwrap();
         let mut current = sample();
-        current.discord_webhook = "https://discord.com/api/webhooks/1/secret".into();
+        current.discord_webhooks = vec![Webhook { name: "Clips".into(), url: "https://discord.com/api/webhooks/1/secret".into() }];
         let imported = current.imported(&file).unwrap();
         assert_eq!(imported.buffer_seconds, 300);
-        assert_eq!(imported.discord_webhook, current.discord_webhook);
+        assert_eq!(imported.discord_webhooks, current.discord_webhooks);
         assert_eq!(imported.output_dir, current.output_dir);
         assert!(!other.exported().to_string().contains("discordWebhook"));
+        assert!(!current.exported().to_string().contains("secret"));
         fs::write(&file, "{\"hello\": 1}").unwrap();
         assert!(current.imported(&file).is_err());
         let _ = fs::remove_dir_all(dir);

@@ -367,6 +367,17 @@
     <div class="card">
       <div class="card-title">Keyboard shortcuts</div>
       <div class="setting">
+        <div class="setting-text"><div class="setting-name">Save and star</div><div class="setting-desc">Save a clip and add it to your favourites, so clean-up never removes it.</div></div>
+        <input id="starClipHotkey" readonly aria-label="Save and star hotkey" class="key-field">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Save and star length</div></div>
+        <select id="starClipSeconds" aria-label="Save and star length">
+          <option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option>
+          <option value="300">5 minutes</option><option value="0">Whole buffer</option>
+        </select>
+      </div>
+      <div class="setting">
         <div class="setting-text"><div class="setting-name">Record</div><div class="setting-desc">Start or stop a full recording.</div></div>
         <input id="recordHotkey" readonly aria-label="Record hotkey" class="key-field">
       </div>
@@ -491,16 +502,59 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Discord</div>
-      <div class="setting wide">
-        <div class="setting-text"><div class="setting-name">Webhook address</div><div id="discord-note" class="setting-desc">Lets Send to Discord post to one channel. In Discord, open the channel's settings, then Integrations, then Webhooks, and copy the address here.</div></div>
-        <input id="discordWebhook" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…" aria-label="Discord webhook address">
+      <div class="card-title">Copies to share</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Even out volume</div><div class="setting-desc">Compress, Send to Discord and vertical copies come out at the same loudness, so a quiet clip doesn't need turning up. Loud moments are kept from clipping. Your originals aren't changed.</div></div>
+        <input id="evenAudio" class="switch" type="checkbox" aria-label="Even out volume">
       </div>
     </div>
-    <p class="note">Anyone with this address can post to that channel, so it's hidden here. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
+
+    <div class="card">
+      <div class="card-title">Discord</div>
+      <div class="setting wide">
+        <div class="setting-text"><div class="setting-name">Channels</div><div id="discord-note" class="setting-desc">Lets Send to Discord post to these channels. In Discord, open a channel's settings, then Integrations, then Webhooks, and copy the address here.</div></div>
+        <div id="webhook-list" class="webhook-list"></div>
+        <div class="row"><button id="add-webhook" class="small">Add channel</button></div>
+      </div>
+    </div>
+    <p class="note">Anyone with a webhook address can post to that channel, so they're hidden here. The first channel is the one the Stream Deck key uses. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
   </div>
 
   <div class="settings-foot"><p id="save-note" class="note">Changes save automatically.</p></div>
+</div>
+
+<div id="share" class="sheet" role="dialog" aria-modal="true" aria-labelledby="share-title" hidden>
+  <div class="sheet-card">
+    <div class="sheet-head">
+      <div class="sheet-text"><div id="share-title" class="sheet-title">Trim and share</div><div id="share-name" class="setting-desc"></div></div>
+      <button id="share-close" class="icon" aria-label="Close" title="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div id="trim" class="trim">
+      <div id="trim-strip" class="trim-strip"></div>
+      <div id="trim-before" class="trim-out"></div>
+      <div id="trim-after" class="trim-out"></div>
+      <div id="trim-keep" class="trim-keep"></div>
+      <button id="trim-start" class="trim-handle" role="slider" aria-label="Start of the part to keep"></button>
+      <button id="trim-end" class="trim-handle" role="slider" aria-label="End of the part to keep"></button>
+    </div>
+    <div class="trim-times"><span id="trim-from"></span><span id="trim-length" class="trim-length"></span><span id="trim-to"></span></div>
+    <div id="share-tracks" class="share-tracks" hidden>
+      <div class="setting-name">Audio in copies</div>
+      <div id="share-track-list" class="share-track-list"></div>
+    </div>
+    <div class="share-actions">
+      <button id="share-trim" class="small primary">Save trimmed copy</button>
+      <button id="share-compress" class="small">Compress</button>
+      <button id="share-vertical" class="small">Vertical copy</button>
+    </div>
+    <div id="share-discord-row" class="row">
+      <select id="share-webhook" aria-label="Discord channel" hidden></select>
+      <button id="share-discord" class="small">Send to Discord</button>
+    </div>
+    <p id="share-note" class="note">Drag the ends to keep part of the clip. Your original isn't changed.</p>
+  </div>
 </div>
 </div>
 <script src="bridge.js"></script>

@@ -305,3 +305,36 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 .segment-foot span { flex: 1; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .segment-foot button { width: 20px; height: 20px; border-radius: 6px; color: var(--muted); line-height: 1; }
 .segment-foot button:hover { background: var(--surface-3); color: var(--text); }
+
+/* Trim and share: a sheet over the panel, opened from a clip's menu. */
+.shell { position: relative; }
+.sheet { position: absolute; inset: 0; z-index: 8; display: flex; align-items: flex-end; padding: 10px; background: rgb(6 5 16 / .62); backdrop-filter: blur(3px); }
+.sheet-card { width: 100%; max-height: 100%; overflow-y: auto; padding: 12px 14px 14px; border-radius: 18px; background: linear-gradient(160deg, #241f4d, #17143a); box-shadow: var(--edge), var(--lift); display: grid; gap: 10px; }
+.sheet-head { display: flex; align-items: flex-start; gap: 8px; }
+.sheet-text { flex: 1; min-width: 0; }
+.sheet-title { font-weight: 700; font-size: 14px; }
+#share-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trim { position: relative; height: 46px; margin: 2px 9px 0; touch-action: none; cursor: pointer; }
+.trim-strip { position: absolute; inset: 0; border-radius: 8px; background: var(--bg) center / 100% 100% no-repeat; }
+.trim-out { position: absolute; top: 0; bottom: 0; background: rgb(6 5 16 / .7); }
+#trim-before { left: 0; border-radius: 8px 0 0 8px; }
+#trim-after { right: 0; border-radius: 0 8px 8px 0; }
+.trim-keep { position: absolute; top: -2px; bottom: -2px; border: 2px solid var(--accent-2); border-radius: 8px; pointer-events: none; }
+.trim-handle { position: absolute; top: -4px; bottom: -4px; width: 18px; margin-left: -9px; padding: 0; border-radius: 6px; background: var(--accent-2); cursor: ew-resize; box-shadow: 0 2px 8px rgb(0 0 0 / .4); }
+.trim-handle::after { content: ""; position: absolute; left: 7px; top: 14px; bottom: 14px; width: 4px; border-left: 1.5px solid rgb(255 255 255 / .8); border-right: 1.5px solid rgb(255 255 255 / .8); }
+.trim-handle:hover, .trim-handle:focus-visible { filter: brightness(1.15); }
+.trim-times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.trim-length { color: var(--text); font-weight: 600; }
+.share-tracks { display: grid; gap: 6px; }
+.share-track-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.share-track-list label { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.share-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#share-discord-row select { flex: 1; min-width: 0; }
+.sheet .note { margin: 0; }
+@media (prefers-reduced-motion: no-preference) { .sheet-card { animation: sheet-in .16s ease-out; } }
+@keyframes sheet-in { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Discord channels in Settings: a name and a hidden address for each. */
+.webhook-list { display: grid; gap: 6px; }
+.webhook-row { display: grid; grid-template-columns: 96px 1fr auto; gap: 6px; align-items: center; }
+.webhook-row .warn { grid-column: 1 / -1; color: var(--warn); font-size: 12px; }

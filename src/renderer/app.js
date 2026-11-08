@@ -194,7 +194,9 @@ const observer = new IntersectionObserver((entries) => {
 
 /** Moving across a video's thumbnail scrubs through it, from a strip of frames made the first time. */
 const SCRUB_DELAY_MS = 250;
-function wireScrub(thumb, m, key) {
+function wireScrub(thumb, m, key, autoplay) {
+  let preview = null;
+  let scrubbing = false;
   let timer = null;
   let over = false;
   let x = 0;
@@ -221,10 +223,28 @@ function wireScrub(thumb, m, key) {
         return strip;
       }, () => { strips.delete(key); }));
     }
-    Promise.resolve(strips.get(key)).then(show);
+    Promise.resolve(strips.get(key)).then((strip) => {
+      show(strip);
+      if (!over || scrubbing || !strip?.frames || !autoplay || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      let frame = 0;
+      preview = setInterval(() => {
+        if (!thumb.isConnected) {
+          clearInterval(preview);
+          return;
+        }
+        frame = (frame + 1) % strip.frames;
+        x = frame / strip.frames;
+        show(strip);
+      }, 250);
+    });
   };
-  thumb.addEventListener('mouseenter', () => { over = true; timer = setTimeout(load, SCRUB_DELAY_MS); });
+  thumb.addEventListener('mouseenter', () => { over = true; scrubbing = false; timer = setTimeout(load, SCRUB_DELAY_MS); });
   thumb.addEventListener('mousemove', (e) => {
+    if (preview !== null) {
+      clearInterval(preview);
+      preview = null;
+      scrubbing = true;
+    }
     const box = thumb.getBoundingClientRect();
     x = Math.min(0.999, Math.max(0, (e.clientX - box.left) / box.width));
     const known = strips.get(key);
@@ -233,6 +253,8 @@ function wireScrub(thumb, m, key) {
   thumb.addEventListener('mouseleave', () => {
     over = false;
     clearTimeout(timer);
+    clearInterval(preview);
+    preview = null;
     thumb.querySelector('.scrub')?.remove();
   });
 }
@@ -466,7 +488,7 @@ function renderMedia() {
     thumb.dataset.key = key;
     const known = info.get(key);
     if (known) applyInfo(thumb, known); else observer.observe(thumb);
-    if (m.kind !== 'screenshot') wireScrub(thumb, m, key);
+    if (m.kind !== 'screenshot') wireScrub(thumb, m, key, libraryOpen);
 
     const text = document.createElement('div');
     text.className = 'item-text';
@@ -538,17 +560,20 @@ function buildMenu(m) {
     return b;
   };
   const video = m.kind !== 'screenshot';
+  const hooks = webhooks();
+  // One item for each channel, named after it once there's more than one.
+  const sendItems = (hooks.length ? hooks : [null]).map((hook) => item(hooks.length > 1 ? `Send to ${hook.name}` : 'Send to Discord', () => {
+    if (!hook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
+    showBanner(`Sending to ${hooks.length > 1 ? hook.name : 'Discord'}. A long clip is made smaller first, and you can keep playing.`);
+    return api.invoke('share-clip', { file: m.file, action: 'discord', webhook: hook.index }).catch(() => undefined);
+  }));
   menu.append(
     item(video ? 'Play' : 'Open', () => api.invoke('open', m.file)),
-    ...(video ? [item('Edit', () => api.invoke('open-editor', [m.file]))] : []),
+    ...(video ? [item('Trim and share', () => openShare(m)), item('Edit', () => api.invoke('open-editor', [m.file]))] : []),
     item('Rename', () => { renaming = m.file; renderMedia(); }),
     item('Tags', () => { tagging = m.file; renderMedia(); }),
     item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
-    item('Send to Discord', () => {
-      if (!settings.discordWebhook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
-      showBanner('Sending to Discord. A long clip is made smaller first, and you can keep playing.');
-      return api.invoke('send-to-discord', m.file).catch(() => undefined);
-    }),
+    ...sendItems,
     ...(video ? [
       item('Compress', () => {
         showBanner('Making a smaller copy. A long clip can take a while, and you can keep playing.');
@@ -568,6 +593,165 @@ function buildMenu(m) {
   );
   return menu;
 }
+
+/* Trim and share */
+
+/** Discord channels that have an address, each with its place in the full list, which is how the backend finds it. */
+const webhooks = () => (settings?.discordWebhooks ?? [])
+  .map((h, index) => ({ name: h.name.trim() || `Channel ${index + 1}`, url: h.url, index }))
+  .filter((h) => h.url.trim());
+
+/** What each audio track of a clip holds, going by the current settings, or plain numbers if they've changed since. */
+function trackNames(count) {
+  const names = ['Main mix'];
+  for (const s of settings.audioSources) if (s.ownTrack) names.push(s.label);
+  if (settings.gameAudioOwnTrack) names.push('Game audio');
+  return names.length === count ? names : Array.from({ length: count }, (_, i) => (i === 0 ? 'Main mix' : `Track ${i + 1}`));
+}
+
+const MIN_KEEP_SECONDS = 0.5;
+const SHARE_NOTE = $('share-note').textContent;
+const share = { m: null, duration: 0, start: 0, end: 0 };
+const trimmed = () => share.start > 0.05 || share.end < share.duration - 0.05;
+
+function renderTrim() {
+  const { duration, start, end } = share;
+  const at = (seconds) => `${duration > 0 ? (seconds / duration) * 100 : 0}%`;
+  $('trim-start').style.left = at(start);
+  $('trim-end').style.left = at(end);
+  $('trim-keep').style.left = at(start);
+  $('trim-keep').style.width = `calc(${at(end)} - ${at(start)})`;
+  $('trim-before').style.width = at(start);
+  $('trim-after').style.width = `calc(100% - ${at(end)})`;
+  $('trim-from').textContent = clockLabel(start);
+  $('trim-to').textContent = clockLabel(end);
+  $('trim-length').textContent = trimmed() ? `Keeping ${clockLabel(end - start)} of ${clockLabel(duration)}` : `Whole clip · ${clockLabel(duration)}`;
+  for (const [id, value] of [['trim-start', start], ['trim-end', end]]) {
+    $(id).setAttribute('aria-valuemin', '0');
+    $(id).setAttribute('aria-valuemax', String(Math.round(duration)));
+    $(id).setAttribute('aria-valuenow', String(Math.round(value)));
+    $(id).setAttribute('aria-valuetext', clockLabel(value));
+  }
+  $('share-trim').disabled = !trimmed();
+}
+
+function moveHandle(which, seconds) {
+  if (which === 'start') share.start = Math.max(0, Math.min(seconds, share.end - MIN_KEEP_SECONDS));
+  else share.end = Math.min(share.duration, Math.max(seconds, share.start + MIN_KEEP_SECONDS));
+  renderTrim();
+}
+
+async function openShare(m) {
+  share.m = m;
+  $('share-name').textContent = parseName(m.name).game === m.name ? m.name : `${parseName(m.name).game} · ${m.name}`;
+  $('share-name').title = m.name;
+  $('trim-strip').style.backgroundImage = '';
+  const known = info.get(`${m.file}|${m.mtime}`) ?? await api.invoke('thumbnail', m.file).catch(() => null);
+  share.duration = known?.duration ?? 0;
+  if (!(share.duration > MIN_KEEP_SECONDS)) {
+    showBanner("Couldn't read this clip's length, so it can't be trimmed.", 'bad');
+    return;
+  }
+  share.start = 0;
+  share.end = share.duration;
+  renderTrim();
+
+  const hooks = webhooks();
+  $('share-webhook').replaceChildren(...hooks.map((h) => new Option(h.name, String(h.index))));
+  $('share-webhook').hidden = hooks.length < 2;
+  $('share-discord').textContent = hooks.length > 1 ? 'Send' : 'Send to Discord';
+  $('share-discord-row').hidden = hooks.length === 0;
+  $('share-tracks').hidden = true;
+  $('share-track-list').replaceChildren();
+  $('share-note').textContent = SHARE_NOTE;
+  $('share-note').classList.remove('warn');
+  $('share').hidden = false;
+  $('trim-end').focus();
+
+  // The film strip and the track list take a moment, so the sheet opens without waiting for them.
+  const strip = strips.get(`${m.file}|${m.mtime}`);
+  Promise.resolve(strip && !(strip instanceof Promise) ? strip : api.invoke('preview-strip', m.file)).then((s) => {
+    if (share.m === m && s?.url) $('trim-strip').style.backgroundImage = `url("${s.url}")`;
+  }, () => undefined);
+  const count = await api.invoke('clip-tracks', m.file).catch(() => 1);
+  if (share.m !== m || count < 2) return;
+  $('share-track-list').replaceChildren(...trackNames(count).map((name, i) => {
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = String(i);
+    box.checked = i === 0;
+    label.append(box, name);
+    return label;
+  }));
+  $('share-tracks').hidden = false;
+}
+
+function closeShare() {
+  $('share').hidden = true;
+  share.m = null;
+}
+
+/** Starts a job from the sheet. Results come back as feedback events, because the panel can close first. */
+function runShare(action, message) {
+  const m = share.m;
+  if (!m) return;
+  const tracks = [...$('share-track-list').querySelectorAll('input:checked')].map((b) => Number(b.value));
+  if (!$('share-tracks').hidden && tracks.length === 0) {
+    $('share-note').textContent = 'Tick at least one audio track.';
+    $('share-note').classList.add('warn');
+    return;
+  }
+  const payload = { file: m.file, action, tracks: $('share-tracks').hidden ? [] : tracks, webhook: Number($('share-webhook').value || 0) };
+  if (trimmed()) Object.assign(payload, { start: share.start, end: share.end });
+  closeShare();
+  showBanner(message);
+  api.invoke('share-clip', payload).catch(() => undefined).finally(() => refresh());
+}
+
+function wireTrim() {
+  const bar = $('trim');
+  const secondsAt = (x) => {
+    const box = bar.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (x - box.left) / box.width)) * share.duration;
+  };
+  let dragging = null;
+  bar.addEventListener('pointerdown', (e) => {
+    const t = secondsAt(e.clientX);
+    // A press on the bar takes the nearer end there.
+    dragging = e.target.id === 'trim-start' ? 'start' : e.target.id === 'trim-end' ? 'end' : Math.abs(t - share.start) < Math.abs(t - share.end) ? 'start' : 'end';
+    bar.setPointerCapture(e.pointerId);
+    moveHandle(dragging, t);
+    $(`trim-${dragging}`).focus();
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', (e) => { if (dragging) moveHandle(dragging, secondsAt(e.clientX)); });
+  const stop = () => { dragging = null; };
+  bar.addEventListener('pointerup', stop);
+  bar.addEventListener('pointercancel', stop);
+  for (const which of ['start', 'end']) {
+    $(`trim-${which}`).addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 5 : 0.5;
+      const now = which === 'start' ? share.start : share.end;
+      const to = { ArrowLeft: now - step, ArrowDown: now - step, ArrowRight: now + step, ArrowUp: now + step, Home: 0, End: share.duration }[e.key];
+      if (to === undefined) return;
+      e.preventDefault();
+      e.stopPropagation();
+      moveHandle(which, to);
+    });
+  }
+  $('share-close').onclick = closeShare;
+  $('share').addEventListener('click', (e) => { if (e.target.id === 'share') closeShare(); });
+  $('share').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeShare(); } });
+  $('share-trim').onclick = () => runShare('trim', 'Saving the part you kept.');
+  $('share-compress').onclick = () => runShare('compress', 'Making a smaller copy. A long clip can take a while, and you can keep playing.');
+  $('share-vertical').onclick = () => runShare('vertical', 'Making a vertical copy for phones. A long clip can take a while, and you can keep playing.');
+  $('share-discord').onclick = () => {
+    const hook = webhooks().find((h) => h.index === Number($('share-webhook').value));
+    runShare('discord', `Sending to ${webhooks().length > 1 ? hook?.name : 'Discord'}. A long clip is made smaller first, and you can keep playing.`);
+  };
+}
+wireTrim();
 
 async function refresh() {
   const state = await api.invoke('state');
@@ -1330,13 +1514,46 @@ function addProfile(exe, name) {
 }
 
 const DISCORD_WEBHOOK = /^https:\/\/((ptb|canary)\.)?discord(app)?\.com\/api\/webhooks\//;
-const DISCORD_HELP = $('discord-note').textContent;
+const MAX_WEBHOOKS = 10;
 
-function renderDiscordNote() {
-  const typed = $('discordWebhook').value.trim();
-  const wrong = typed && !DISCORD_WEBHOOK.test(typed);
-  $('discord-note').textContent = wrong ? 'That doesn\'t look like a Discord webhook address. It starts with https://discord.com/api/webhooks/' : DISCORD_HELP;
-  $('discord-note').classList.toggle('warn', !!wrong);
+/** One row for each Discord channel: a name to tell them apart, and the hidden address. */
+function renderWebhooks() {
+  const hooks = settings.discordWebhooks;
+  $('webhook-list').replaceChildren(...hooks.map((hook, index) => {
+    const row = document.createElement('div');
+    row.className = 'webhook-row';
+    const name = document.createElement('input');
+    name.value = hook.name;
+    name.placeholder = 'Name';
+    name.maxLength = 40;
+    name.setAttribute('aria-label', `Name of channel ${index + 1}`);
+    name.oninput = () => { hook.name = name.value; scheduleSave(TYPING_DELAY_MS); };
+    const url = document.createElement('input');
+    url.type = 'password';
+    url.autocomplete = 'off';
+    url.spellcheck = false;
+    url.value = hook.url;
+    url.placeholder = 'https://discord.com/api/webhooks/…';
+    url.setAttribute('aria-label', `Webhook address for ${hook.name || `channel ${index + 1}`}`);
+    const warning = document.createElement('div');
+    warning.className = 'warn';
+    const check = () => {
+      const typed = url.value.trim();
+      warning.textContent = typed && !DISCORD_WEBHOOK.test(typed) ? "That doesn't look like a Discord webhook address. It starts with https://discord.com/api/webhooks/" : '';
+      warning.hidden = !warning.textContent;
+    };
+    url.oninput = () => { hook.url = url.value.trim(); check(); scheduleSave(TYPING_DELAY_MS); };
+    check();
+    const remove = document.createElement('button');
+    remove.className = 'icon';
+    remove.title = 'Remove this channel';
+    remove.setAttribute('aria-label', `Remove ${hook.name || `channel ${index + 1}`}`);
+    remove.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    remove.onclick = () => { hooks.splice(index, 1); renderWebhooks(); scheduleSave(); };
+    row.append(name, url, remove, warning);
+    return row;
+  }));
+  $('add-webhook').disabled = hooks.length >= MAX_WEBHOOKS;
 }
 
 function fillForm() {
@@ -1345,8 +1562,9 @@ function fillForm() {
   $('storageLimitGb').value = settings.storageLimitGb;
   ensureOption($('deleteAfterDays'), settings.deleteAfterDays, `After ${settings.deleteAfterDays} days`);
   $('deleteAfterDays').value = settings.deleteAfterDays;
-  $('discordWebhook').value = settings.discordWebhook;
-  renderDiscordNote();
+  renderWebhooks();
+  ensureOption($('starClipSeconds'), settings.starClipSeconds, `${settings.starClipSeconds} seconds`);
+  $('starClipSeconds').value = settings.starClipSeconds;
   renderProfiles();
   renderStorageUsed();
   renderUpdate();
@@ -1364,6 +1582,7 @@ function fillForm() {
   bindTalkKey($('pushToTalkKey'));
   $('remotePort').value = settings.remotePort;
   renderCamera();
+  bindHotkey($('starClipHotkey'), () => settings.starClipHotkey, (v) => { settings.starClipHotkey = v; scheduleSave(); });
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
   bindHotkey($('markerHotkey'), () => settings.markerHotkey, (v) => { settings.markerHotkey = v; scheduleSave(); });
@@ -1374,7 +1593,7 @@ function fillForm() {
 }
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
-  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode'];
+  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode', 'evenAudio'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1427,7 +1646,7 @@ function readForm() {
   settings.recordSplitSeconds = Number($('recordSplit').value);
   settings.storageLimitGb = Number($('storageLimitGb').value);
   settings.deleteAfterDays = Number($('deleteAfterDays').value);
-  settings.discordWebhook = $('discordWebhook').value.trim();
+  settings.starClipSeconds = Number($('starClipSeconds').value);
   settings.bufferSeconds = Math.round(Number($('bufferMinutes').value) * 60);
   for (const k of SWITCHES) settings[k] = $(k).checked;
   for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder', 'cameraCorner']) settings[k] = $(k).value;
@@ -1525,7 +1744,12 @@ api.on('feedback', (f) => {
   } else if (f.kind === 'screenshot' && f.ok) {
     showBanner('Screenshot saved', 'good');
   } else if (f.kind === 'discord' && f.ok) {
-    showBanner('Sent to Discord', 'good');
+    showBanner(webhooks().length > 1 && f.name ? `Sent to ${f.name}` : 'Sent to Discord', 'good');
+  } else if (f.kind === 'trimmed' && f.ok) {
+    showBanner('Your trimmed copy is ready to drag into any app.', 'good');
+  } else if (f.kind === 'starred-clip' && f.ok) {
+    shineBuffer();
+    showBanner('Saved and starred', 'good');
   } else if (f.kind === 'storage') {
     showBanner(`Moved ${f.removed} old ${f.removed === 1 ? 'file' : 'files'} to the Recycle Bin, as your storage settings ask.`, 'good');
   } else if (f.kind === 'exported') {
@@ -1583,7 +1807,12 @@ $('whats-new-close').onclick = () => api.invoke('dismiss-patch-notes').then(() =
 $('autoUpdate').onchange = () => scheduleSave();
 $('storageLimitGb').onchange = () => scheduleSave();
 $('deleteAfterDays').onchange = () => scheduleSave();
-$('discordWebhook').oninput = () => { renderDiscordNote(); scheduleSave(TYPING_DELAY_MS); };
+$('add-webhook').onclick = () => {
+  settings.discordWebhooks.push({ name: settings.discordWebhooks.length ? '' : 'Discord', url: '' });
+  renderWebhooks();
+  $('webhook-list').lastElementChild?.querySelector('input[type=password]')?.focus();
+};
+$('starClipSeconds').onchange = () => scheduleSave();
 $('profile-browse').onclick = async () => { const exe = await api.invoke('pick-game'); if (exe) addProfile(exe); };
 $('view-all').onclick = () => setLibrary(true);
 $('library-back').onclick = () => setLibrary(false);
@@ -1601,7 +1830,7 @@ $('cleanMicSwitch').onchange = () => api.invoke('toggle-clean-mic').catch(() => 
 $('marker').onclick = () => api.invoke('add-marker').catch(() => undefined);
 $('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
 for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup',
-  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize', 'verticalMode']) $(id).onchange = () => scheduleSave();
+  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize', 'verticalMode', 'evenAudio']) $(id).onchange = () => scheduleSave();
 $('cameraEnabled').onchange = () => { renderCamera(); scheduleSave(); };
 $('verticalMode').addEventListener('change', () => { renderCamera(); renderSummary(); });
 $('remoteStreamDeck').onchange = () => { remote.on = $('remoteStreamDeck').checked; renderRemote(); scheduleSave(); };

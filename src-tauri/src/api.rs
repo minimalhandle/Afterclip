@@ -39,6 +39,8 @@ pub trait ApiHandlers: Send + Sync + 'static {
     /// Pretends the push-to-talk key is held or let go. Only reachable in a test instance.
     fn test_talk(&self, held: bool);
     fn clip(&self, seconds: i64) -> Result<Value, String>;
+    /// Saves a clip and stars it.
+    fn clip_and_star(&self, seconds: i64) -> Result<Value, String>;
     fn toggle_record(&self) -> Result<Value, String>;
     fn toggle_mic(&self) -> Result<Value, String>;
     fn toggle_clean_mic(&self) -> Result<Value, String>;
@@ -200,10 +202,19 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
             handlers.test_hold_panel(url.ends_with("/on"));
             Ok(json!({}))
         }
-        (Method::Post, _) => match url.strip_prefix("/clip/").and_then(|s| s.parse::<u32>().ok()) {
-            Some(seconds) => handlers.clip(seconds as i64),
-            None => return (404, json!({ "error": "not found" })),
-        },
+        (Method::Post, _) => {
+            // /clip/30 saves a clip, and /clip/30/star saves it and stars it.
+            let rest = url.strip_prefix("/clip/").unwrap_or("");
+            let (length, star) = match rest.strip_suffix("/star") {
+                Some(length) => (length, true),
+                None => (rest, false),
+            };
+            match length.parse::<u32>() {
+                Ok(seconds) if star => handlers.clip_and_star(seconds as i64),
+                Ok(seconds) => handlers.clip(seconds as i64),
+                Err(_) => return (404, json!({ "error": "not found" })),
+            }
+        }
         _ => return (404, json!({ "error": "not found" })),
     };
     match result {

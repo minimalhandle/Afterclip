@@ -36,6 +36,8 @@ const SCREENSHOT = 'com.afterclip.clips.screenshot';
 const COMPRESS_LAST = 'com.afterclip.clips.compress-last';
 const VERTICAL_LAST = 'com.afterclip.clips.vertical-last';
 const STAR_LAST = 'com.afterclip.clips.star-last';
+// Saves a clip of its chosen length and stars it.
+const SAVE_STAR = 'com.afterclip.clips.save-star';
 const WEBCAM = 'com.afterclip.clips.webcam';
 // Held rather than pressed: the mic is in clips while it's down.
 const TALK = 'com.afterclip.clips.talk';
@@ -167,7 +169,9 @@ function faceFor(key) {
     // Markers only exist inside a recording, so the key is dim until one is running.
     return status?.recording ? { symbol: 'marker', small: 'MARKER' } : { symbol: 'marker', small: status ? 'MARKER' : 'OFF', tone: 'off' };
   }
-  const face = lengthFace(key.seconds);
+  const length = lengthFace(key.seconds);
+  // Save and Star looks like a length key, marked so it can't be mistaken for one.
+  const face = key.action === SAVE_STAR ? { ...length, small: `${length.small} STAR` } : length;
   if (key.saving) return { ...face, small: 'SAVING', tone: 'active' };
   if (!status?.buffering) return { ...face, small: status ? face.small : 'OFF', tone: 'off' };
   return face;
@@ -367,8 +371,8 @@ async function press(context, action, settings) {
         key.playing = false;
         draw(context);
       }
-      await call('POST', `/clip/${secondsFor(action, settings)}`);
-      finish = () => confirmed(context, 'SAVED');
+      await call('POST', `/clip/${secondsFor(action, settings)}${action === SAVE_STAR ? '/star' : ''}`);
+      finish = () => confirmed(context, action === SAVE_STAR ? 'STARRED' : 'SAVED');
     }
   } catch (error) {
     if (key) key.holding = false;

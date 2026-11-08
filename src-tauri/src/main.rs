@@ -16,7 +16,7 @@ mod win32;
 use api::{start_api, ApiHandlers};
 use base64::Engine as _;
 use capture::CaptureManager;
-use engine::{ClipResult, Engine, EngineEvent};
+use engine::{ClipResult, Engine, EngineEvent, ShareAudio};
 use library::{clean_file_stem, older_than, over_limit, LibraryData, StoredClip};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -198,6 +198,10 @@ impl Core {
     }
 
     fn clip(&self, seconds: i64) -> Result<ClipResult, String> {
+        self.save_clip(seconds, false)
+    }
+
+    fn save_clip(&self, seconds: i64, star: bool) -> Result<ClipResult, String> {
         if self.paused.load(Ordering::SeqCst) {
             return Err(self.fail("clip", WAITING_FOR_GAME.into()));
         }
@@ -212,9 +216,18 @@ impl Core {
             seconds
         };
         let camera = self.camera_place();
+        // A concurrent clean-up must see the star before it can consider the new file.
+        let storage_guard = star.then(|| self.storage_lock.lock().unwrap());
         match self.engine.clip(seconds) {
             Ok(result) => {
                 self.remember_camera(Path::new(&result.file), camera);
+                if star {
+                    let name = Path::new(&result.file).file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    let mut library = self.library.lock().unwrap();
+                    library.favourites.insert(name);
+                    library.save(&self.library_file).map_err(|message| self.fail("favourite", message))?;
+                }
+                drop(storage_guard);
                 self.tone(&[880.0, 1320.0]);
                 if self.settings.lock().unwrap().toast_enabled {
                     let total = result.actual_seconds.round() as i64;
@@ -237,6 +250,13 @@ impl Core {
                 Err(message)
             }
         }
+    }
+
+    /// Saves a clip and stars it at once, so clean-up never removes it.
+    fn clip_and_star(&self, seconds: i64) -> Result<ClipResult, String> {
+        let result = self.save_clip(seconds, true)?;
+        let _ = self.app.emit("feedback", json!({ "kind": "starred-clip", "ok": true, "file": result.file }));
+        Ok(result)
     }
 
     fn toggle_record(&self) -> Result<bool, String> {
@@ -352,15 +372,32 @@ impl Core {
         }
     }
 
+    /// The audio for a copy to share: these tracks, evened out if that's on.
+    fn share_audio(&self, tracks: &[usize]) -> ShareAudio {
+        let mut tracks = tracks.to_vec();
+        tracks.sort_unstable();
+        tracks.dedup();
+        // Only the main mix is what a copy has anyway.
+        if tracks == [0] {
+            tracks.clear();
+        }
+        ShareAudio { tracks, even: self.settings.lock().unwrap().even_audio }
+    }
+
+    /// Where the webcam sat in a clip, if it had one.
+    fn camera_of(&self, path: &Path) -> Option<[f64; 4]> {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.library.lock().unwrap().cameras.get(&name).copied()
+    }
+
     /// Makes a smaller copy to share. The original is never changed. It's reported as an event too, because
-    /// the panel may have closed by the time a long clip finishes.
-    fn compress(&self, path: &Path) -> Result<PathBuf, String> {
+    /// the panel may have closed by the time a long clip finishes. `named` is the clip the copy is named after,
+    /// which is the original when `path` is a trimmed part of it.
+    fn compress(&self, path: &Path, named: &Path, audio: &ShareAudio) -> Result<PathBuf, String> {
         let toast = self.settings.lock().unwrap().toast_enabled;
-        match self.engine.compress(path) {
+        match self.engine.compress_as(path, named, audio) {
             Ok(output) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                let camera = self.library.lock().unwrap().cameras.get(&name).copied();
-                self.remember_camera(&output, camera);
+                self.remember_camera(&output, self.camera_of(named));
                 let bytes = fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
                 let megabytes = (bytes as f64 / 1_000_000.0 * 10.0).ceil() / 10.0;
                 if toast {
@@ -379,18 +416,28 @@ impl Core {
         }
     }
 
-    fn send_to_discord(&self, path: &Path) -> Result<(), String> {
-        let (webhook, toast) = {
+    /// The first webhook with an address, which the Stream Deck key and the plain Send to Discord use.
+    fn first_webhook(&self) -> usize {
+        self.settings.lock().unwrap().discord_webhooks.iter().position(|h| !h.url.is_empty()).unwrap_or(0)
+    }
+
+    /// Posts to one of the webhooks, by its place in the list.
+    fn send_to_discord(&self, path: &Path, webhook: usize, audio: &ShareAudio) -> Result<(), String> {
+        let (hook, toast) = {
             let settings = self.settings.lock().unwrap();
-            (settings.discord_webhook.clone(), settings.toast_enabled)
+            (settings.discord_webhooks.get(webhook).cloned(), settings.toast_enabled)
         };
-        let sent = upload_to_discord(self, &webhook, path);
+        let sent = match &hook {
+            Some(hook) => upload_to_discord(self, &hook.url, path, audio),
+            None => Err(NO_WEBHOOK.into()),
+        };
         match &sent {
             Ok(()) => {
+                let name = hook.map(|h| h.name).unwrap_or_default();
                 if toast {
-                    win32::show_toast("Sent to Discord");
+                    win32::show_toast(&format!("Sent to {name}"));
                 }
-                let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": true }));
+                let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": true, "name": name }));
             }
             Err(message) => { let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": false, "message": message })); }
         }
@@ -437,14 +484,14 @@ impl Core {
     }
 
     /// Makes a 9:16 copy for phones. The original is never changed. A clip with a webcam can have it above the game.
-    fn make_vertical(&self, path: &Path) -> Result<PathBuf, String> {
+    /// `named` is the clip the copy is named after, as for compress.
+    fn make_vertical(&self, path: &Path, named: &Path, audio: &ShareAudio) -> Result<PathBuf, String> {
         let (toast, face_cam) = {
             let settings = self.settings.lock().unwrap();
             (settings.toast_enabled, settings.vertical_face_cam)
         };
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let camera = self.library.lock().unwrap().cameras.get(&name).copied().filter(|_| face_cam);
-        match self.engine.make_vertical(path, camera) {
+        let camera = self.camera_of(named).filter(|_| face_cam);
+        match self.engine.make_vertical(path, named, camera, audio) {
             Ok(output) => {
                 if toast {
                     win32::show_toast("Vertical copy ready");
@@ -545,12 +592,12 @@ impl ApiHandlers for Api {
         Ok(json!({ "file": clip }))
     }
     fn compress_last_clip(&self) -> Result<Value, String> {
-        let clip = last_clip(&self.0)?;
-        self.0.compress(Path::new(&clip)).map(|file| json!({ "file": file }))
+        let clip = PathBuf::from(last_clip(&self.0)?);
+        self.0.compress(&clip, &clip, &self.0.share_audio(&[])).map(|file| json!({ "file": file }))
     }
     fn send_last_clip(&self) -> Result<Value, String> {
         let clip = last_clip(&self.0)?;
-        self.0.send_to_discord(Path::new(&clip)).map(|_| json!({ "file": clip }))
+        self.0.send_to_discord(Path::new(&clip), self.0.first_webhook(), &self.0.share_audio(&[])).map(|_| json!({ "file": clip }))
     }
     fn change_mic_volume(&self, percent: i64) -> Result<Value, String> {
         self.0.change_mic_volume(percent).map(|volume| json!({ "micVolume": volume }))
@@ -559,8 +606,11 @@ impl ApiHandlers for Api {
         *self.0.test_free_bytes.lock().unwrap() = bytes;
     }
     fn vertical_last_clip(&self) -> Result<Value, String> {
-        let clip = last_clip(&self.0)?;
-        self.0.make_vertical(Path::new(&clip)).map(|file| json!({ "file": file }))
+        let clip = PathBuf::from(last_clip(&self.0)?);
+        self.0.make_vertical(&clip, &clip, &self.0.share_audio(&[])).map(|file| json!({ "file": file }))
+    }
+    fn clip_and_star(&self, seconds: i64) -> Result<Value, String> {
+        self.0.clip_and_star(seconds).map(|r| json!(r))
     }
     fn star_last_clip(&self) -> Result<Value, String> {
         let clip = last_clip(&self.0)?;
@@ -662,6 +712,11 @@ fn register_hotkeys(core: &Shared) {
             thread::spawn(move || { let _ = core.clip(seconds); });
         }));
     }
+    let star_seconds = settings.star_clip_seconds;
+    register(&settings.star_clip_hotkey, Box::new(move |core| {
+        let core = Arc::clone(core);
+        thread::spawn(move || { let _ = core.clip_and_star(star_seconds); });
+    }));
     register(&settings.record_hotkey, Box::new(|core| {
         let core = Arc::clone(core);
         thread::spawn(move || { let _ = core.toggle_record(); });
@@ -1285,6 +1340,11 @@ fn clip(core: tauri::State<Shared>, payload: i64) -> Result<ClipResult, String> 
 }
 
 #[tauri::command(async)]
+fn clip_and_star(core: tauri::State<Shared>, payload: i64) -> Result<ClipResult, String> {
+    core.clip_and_star(payload)
+}
+
+#[tauri::command(async)]
 fn toggle_record(core: tauri::State<Shared>) -> Result<Value, String> {
     core.toggle_record().map(|recording| json!({ "recording": recording }))
 }
@@ -1431,7 +1491,7 @@ fn rename_clip(core: tauri::State<Shared>, payload: RenameArgs) -> Result<String
 #[tauri::command(async)]
 fn compress_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
     let path = own_media(&core, &payload)?;
-    core.compress(&path).map(|output| output.to_string_lossy().into_owned())
+    core.compress(&path, &path, &core.share_audio(&[])).map(|output| output.to_string_lossy().into_owned())
 }
 
 #[tauri::command(async)]
@@ -1442,32 +1502,101 @@ fn clip_tracks(core: tauri::State<Shared>, payload: String) -> Result<i64, Strin
 #[tauri::command(async)]
 fn vertical_clip(core: tauri::State<Shared>, payload: String) -> Result<String, String> {
     let path = own_media(&core, &payload)?;
-    core.make_vertical(&path).map(|output| output.to_string_lossy().into_owned())
+    core.make_vertical(&path, &path, &core.share_audio(&[])).map(|output| output.to_string_lossy().into_owned())
 }
 
-/// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept.
-fn upload_to_discord(core: &Core, webhook: &str, path: &Path) -> Result<(), String> {
+const NO_WEBHOOK: &str = "Add your Discord webhook in Settings, under Clips and sharing.";
+
+/// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept. Choosing
+/// tracks other than the main mix always makes a copy, because Discord only plays a video's first track.
+fn upload_to_discord(core: &Core, webhook: &str, path: &Path, audio: &ShareAudio) -> Result<(), String> {
     if !discord::is_webhook(webhook, api::is_test_instance()) {
-        return Err("Add your Discord webhook in Settings, under Clips and sharing.".into());
+        return Err(NO_WEBHOOK.into());
     }
     let size = fs::metadata(path).map_err(|e| format!("Couldn't read this file: {e}"))?.len();
-    if size <= discord::MAX_UPLOAD_BYTES {
+    let picture = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if size <= discord::MAX_UPLOAD_BYTES && (picture || (!audio.even && audio.tracks.is_empty())) {
         return discord::send(webhook, path);
     }
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+    if picture {
         return Err("This screenshot is too big for Discord.".into());
     }
-    let copy = core.engine.shrink(path, discord::MAX_UPLOAD_BYTES / 1024 / 1024).map_err(|_| "This is too long to fit Discord's 10 MB limit. Trim it first.".to_string())?;
+    let copy = core.engine.shrink(path, discord::MAX_UPLOAD_BYTES / 1024 / 1024, audio).map_err(|_| "This is too long to fit Discord's 10 MB limit. Trim it first.".to_string())?;
     let sent = discord::send(webhook, &copy);
     let _ = fs::remove_file(&copy);
     sent
 }
 
-/// Reported as an event, because the panel may have closed by the time a long clip finishes.
+/// Reported as an event, because the panel may have closed by the time a long clip finishes. Posts to the first webhook.
 #[tauri::command(async)]
 fn send_to_discord(core: tauri::State<Shared>, payload: String) -> Result<(), String> {
     let path = own_media(&core, &payload)?;
-    core.send_to_discord(&path)
+    core.send_to_discord(&path, core.first_webhook(), &core.share_audio(&[]))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareArgs {
+    file: String,
+    /// trim, compress, discord or vertical.
+    action: String,
+    /// The part to keep, in seconds. Both left out keeps the whole clip.
+    #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
+    end: Option<f64>,
+    /// Audio tracks for the copy, counted from 0, which is the main mix. Empty means the main mix.
+    #[serde(default)]
+    tracks: Vec<usize>,
+    /// Which webhook, by its place in the list, for discord.
+    #[serde(default)]
+    webhook: usize,
+}
+
+/// Trims a clip, or makes a copy to share from part of it, from the clip's menu. The original is never changed.
+/// Results are reported as events too, like Compress, because a long job can outlast the panel.
+#[tauri::command(async)]
+fn share_clip(core: tauri::State<Shared>, payload: ShareArgs) -> Result<Option<String>, String> {
+    let core: Shared = Arc::clone(&core);
+    let path = own_media(&core, &payload.file)?;
+    let audio = core.share_audio(&payload.tracks);
+    let range = match (payload.start, payload.end) {
+        (None, None) => None,
+        (start, end) => {
+            let (start, end) = (start.unwrap_or(0.0).max(0.0), end.unwrap_or(-1.0));
+            if end >= 0.0 && end - start < 0.5 {
+                return Err("Keep at least half a second.".into());
+            }
+            Some((start, end))
+        }
+    };
+    if payload.action == "trim" {
+        let Some((start, end)) = range else { return Err("Choose the part to keep first.".into()) };
+        let made = core.engine.trim_copy(&path, start, end, None).map_err(|message| core.fail("trimmed", message))?;
+        core.remember_camera(&made, core.camera_of(&path));
+        let _ = core.app.emit("feedback", json!({ "kind": "trimmed", "ok": true, "file": made }));
+        enforce_storage_rules(&core);
+        return Ok(Some(made.to_string_lossy().into_owned()));
+    }
+    // A copy of part of a clip is made from a lossless trim, which is thrown away afterwards.
+    let part = match range {
+        Some((start, end)) => {
+            let scratch = core.engine.scratch_file("part.mp4").map_err(|message| core.fail(&payload.action, message))?;
+            Some(core.engine.trim_copy(&path, start, end, Some(scratch)).map_err(|message| core.fail(&payload.action, message))?)
+        }
+        None => None,
+    };
+    let source = part.as_deref().unwrap_or(&path);
+    let result = match payload.action.as_str() {
+        "compress" => core.compress(source, &path, &audio).map(|p| Some(p.to_string_lossy().into_owned())),
+        "vertical" => core.make_vertical(source, &path, &audio).map(|p| Some(p.to_string_lossy().into_owned())),
+        "discord" => core.send_to_discord(source, payload.webhook, &audio).map(|_| None),
+        other => Err(format!("Unknown action {other}")),
+    };
+    if let Some(part) = part {
+        let _ = fs::remove_file(part);
+    }
+    result
 }
 
 #[tauri::command(async)]
@@ -2253,7 +2382,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
+            state, estimate, clip, clip_and_star, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, stats, close_panel, open, reveal, start_drag, copy_file, trash, set_favourite, set_tags, rename_clip, compress_clip, vertical_clip, send_to_discord, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, pick_folder, save_diagnostics, new_api_key, export_settings,
  import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit, quit_app
         ])
