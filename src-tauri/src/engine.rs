@@ -682,6 +682,22 @@ impl Engine {
         self.media(&["strip".as_ref(), input.as_os_str(), output.as_os_str(), frames.as_ref()], true).map(|_| ())
     }
 
+    /// Copies a clip whose HEVC is tagged hev1 into a file beside it tagged hvc1, so Apple devices play it.
+    /// Returns that copy, or None when the clip doesn't need it. In the background, so it can't compete with a game.
+    pub fn retag(&self, file: &Path) -> Result<Option<PathBuf>, String> {
+        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        // Not .mp4, so the library never lists a half-written copy.
+        let temporary = file.with_file_name(format!("{name}.retagging"));
+        let _ = fs::remove_file(&temporary);
+        match self.media(&["retag".as_ref(), file.as_os_str(), temporary.as_os_str()], true) {
+            Ok(out) if out.trim() == "retagged" => Ok(Some(temporary)),
+            result => {
+                let _ = fs::remove_file(&temporary);
+                result.map(|_| None)
+            }
+        }
+    }
+
     pub fn toggle_record(&self) -> Result<bool, String> {
         if self.status().recording {
             self.rpc("recordStop", json!({}))?;

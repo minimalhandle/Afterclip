@@ -260,6 +260,10 @@ obs_data_t *encoderSettings(const char *id, int bitrate, const std::string &pres
 	} else {
 		obs_data_set_string(s, "preset", X264_PRESETS[step]);
 	}
+	// The replay buffer's muxer reads the MP4 tag from here. Left alone, FFmpeg writes hev1, which iPhones won't play.
+	const char *codec = obs_get_encoder_codec(id);
+	if (codec && strcmp(codec, "hevc") == 0)
+		obs_data_set_int(s, "codec_type", ('h' << 24) | ('v' << 16) | ('c' << 8) | '1');
 	return s;
 }
 

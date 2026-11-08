@@ -3,6 +3,12 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.3.1
+
+- HEVC clips now play on iPhones and Macs, including in Discord. They used to play on PCs only.
+- Clips you saved with HEVC before this update are fixed too, in the background, without re-encoding. It waits while a game is open.
+- Settings > Video says which devices can play each codec.
+
 ## 1.3.0
 
 - Vertical mode: capture in 9:16 all the time, in Settings > Video or for one game. Clips, recordings and screenshots save vertical straight away, with no re-encoding.

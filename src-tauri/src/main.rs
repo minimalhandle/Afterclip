@@ -794,6 +794,86 @@ fn enforce_storage_rules(core: &Shared) {
     }
 }
 
+// Long enough after start that capture is up and the panel isn't waiting on the media tool.
+const RETAG_DELAY: Duration = Duration::from_secs(60);
+const RETAG_GAME_POLL: Duration = Duration::from_secs(30);
+// Room left on the drive beyond the copy, so this can never be what fills it.
+const RETAG_SPARE_BYTES: u64 = 5_000_000_000;
+
+/// HEVC clips saved before 1.3.1 were tagged hev1, which iPhones won't play. This fixes them once, in the background
+/// and never while a game is in front. Anything it couldn't do, such as a clip open in a player, is tried at the next start.
+fn retag_old_clips(core: &Shared) {
+    let done = core.settings_file.with_file_name("hvc1-retagged");
+    if done.exists() {
+        return;
+    }
+    thread::sleep(RETAG_DELAY);
+    let gaming = || {
+        let settings = core.settings.lock().unwrap().clone();
+        game_in_front(core, &settings)
+    };
+    let mut finished = true;
+    let (mut fixed, mut checked) = (0, 0);
+    for media in list_media(core) {
+        let path = PathBuf::from(&media.file);
+        // FFmpeg writes this copy as MP4, so only MP4 and MOV files are touched.
+        let mp4 = path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["mp4", "mov"].contains(&e.to_lowercase().as_str()));
+        if media.kind == "screenshot" || !mp4 {
+            continue;
+        }
+        while gaming() && !core.quitting.load(Ordering::SeqCst) {
+            thread::sleep(RETAG_GAME_POLL);
+        }
+        if core.quitting.load(Ordering::SeqCst) {
+            return;
+        }
+        let Ok(before) = fs::metadata(&path) else { continue };
+        if path.parent().and_then(win32::free_bytes).is_some_and(|free| free < before.len() + RETAG_SPARE_BYTES) {
+            core.log_ui(&format!("retag skipped {}: not enough free space", path.display()));
+            finished = false;
+            continue;
+        }
+        checked += 1;
+        match core.engine.retag(&path).and_then(|copy| copy.map_or(Ok(false), |copy| replace_keeping_dates(core, &path, &before, &copy).map(|_| true))) {
+            Ok(true) => fixed += 1,
+            Ok(false) => {}
+            Err(e) => {
+                core.log_ui(&format!("retag could not fix {}: {e}", path.display()));
+                finished = false;
+            }
+        }
+    }
+    core.log_ui(&format!("retag checked {checked} videos and fixed {fixed}"));
+    if finished {
+        let _ = fs::write(&done, "");
+    }
+}
+
+/// Puts a fixed copy in place of the original, with the original's dates, so the library order and
+/// cached thumbnails stay as they were. If the original changed or went meanwhile, the copy goes instead.
+fn replace_keeping_dates(core: &Core, original: &Path, before: &fs::Metadata, copy: &Path) -> Result<(), String> {
+    use std::os::windows::fs::FileTimesExt;
+    let replaced = (|| {
+        let mut times = fs::FileTimes::new().set_modified(before.modified().map_err(|e| e.to_string())?);
+        if let Ok(created) = before.created() {
+            times = times.set_created(created);
+        }
+        fs::OpenOptions::new().write(true).open(copy).and_then(|f| f.set_times(times)).map_err(|e| e.to_string())?;
+        // The same locks as deleting, in the same order, so a clip can't be deleted or read halfway through this.
+        let _no_thumbnail = core.thumbnail_lock.lock().unwrap();
+        let _no_preview = core.strip_lock.lock().unwrap();
+        let now = fs::metadata(original).map_err(|_| "it was deleted or renamed".to_string())?;
+        if now.len() != before.len() || now.modified().ok() != before.modified().ok() {
+            return Err("it changed while being fixed".to_string());
+        }
+        fs::rename(copy, original).map_err(|e| format!("it may be open in another app ({e})"))
+    })();
+    if replaced.is_err() {
+        let _ = fs::remove_file(copy);
+    }
+    replaced
+}
+
 /// Sends a clip to the Recycle Bin, and forgets what was known about it.
 fn remove_media(core: &Core, path: &Path) -> Result<(), String> {
     // A thumbnail or preview being made has the file open, which would stop it moving.
@@ -2339,6 +2419,8 @@ fn main() {
             thread::spawn(move || watch_engine(healer));
             let talker = Arc::clone(&core);
             thread::spawn(move || watch_push_to_talk(talker));
+            let retagger = Arc::clone(&core);
+            thread::spawn(move || retag_old_clips(&retagger));
             core.allow_media_folders();
             // With the buffer only running during games, it waits for one.
             let first = core.settings.lock().unwrap().clone();

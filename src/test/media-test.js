@@ -217,6 +217,39 @@ try {
   run('join', tracksOut, tracks, '1', '5');
   const trackCount = (spawnSync(ffmpeg, ['-hide_banner', '-i', tracksOut], { encoding: 'utf8' }).stderr.match(/Audio: aac/g) ?? []).length;
   check('editing keeps separate audio tracks', trackCount === 2, `${trackCount}`);
+
+  // HEVC tagged hev1, the way clips saved before 1.3.1 were, which iPhones won't play.
+  const tagOf = (file) => {
+    const bytes = fs.readFileSync(file);
+    return ['hvc1', 'hev1', 'avc1'].filter((t) => bytes.includes(t));
+  };
+  const chapters = f('chapters.txt');
+  fs.writeFileSync(chapters, ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=4000\ntitle=Marker 1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=4000\nEND=8000\ntitle=Marker 2\n');
+  const hev1 = f('hev1.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=60:d=8', '-f', 'lavfi', '-i', 'sine=f=440:d=8', '-f', 'lavfi', '-i', 'sine=f=880:d=8', '-i', chapters,
+    '-map', '0:v', '-map', '1:a', '-map', '2:a', '-map_metadata', '3', '-map_chapters', '3', '-c:v', 'libx265', '-x265-params', 'log-level=error:keyint=60:bframes=2', '-tag:v', 'hev1', '-c:a', 'aac', hev1]);
+  check('test clip starts as hev1', tagOf(hev1).join() === 'hev1', tagOf(hev1).join());
+  const retagged = f('hvc1.mp4');
+  const rt = run('retag', hev1, retagged);
+  check('retag runs', rt.status === 0 && rt.stdout.trim() === 'retagged', `${rt.stdout.trim()} ${rt.stderr.trim()}`);
+  check('retag makes it hvc1', tagOf(retagged).join() === 'hvc1', tagOf(retagged).join());
+  check('retag keeps its length', Math.abs(seconds(retagged) - seconds(hev1)) < 0.05, `${seconds(retagged)}s of ${seconds(hev1)}s`);
+  check('retag keeps both audio tracks', audioCount(retagged) === 2, `${audioCount(retagged)}`);
+  const retaggedInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', retagged], { encoding: 'utf8' }).stderr;
+  check('retag keeps chapters', /Marker 1/.test(retaggedInfo) && /Marker 2/.test(retaggedInfo));
+  check('retag decodes cleanly', decodes(retagged));
+  check('retag puts moov at the front', fs.readFileSync(retagged).subarray(0, 4096).includes('moov'));
+  const sameFrames = (a, b) => spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', a, '-map', '0:v', '-f', 'md5', '-'], { encoding: 'utf8' }).stdout
+    === spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', '-i', b, '-map', '0:v', '-f', 'md5', '-'], { encoding: 'utf8' }).stdout;
+  check('retag keeps the picture exactly', sameFrames(hev1, retagged));
+  for (const [what, file] of [['an hvc1 clip', retagged], ['an H.264 clip', input]]) {
+    const again = f('again.mp4');
+    const r = run('retag', file, again);
+    check(`retag leaves ${what} alone`, r.status === 0 && r.stdout.trim() === 'unchanged' && !fs.existsSync(again), `${r.stdout.trim()} ${r.stderr.trim()}`);
+  }
+  check('retag of a missing file fails cleanly', run('retag', f('none.mp4'), f('none-out.mp4')).status === 1);
+  const trimmedHevc = f('hevc-trim.mp4');
+  check('trimming HEVC makes hvc1', run('trim', hev1, trimmedHevc, '4').status === 0 && tagOf(trimmedHevc).join() === 'hvc1', tagOf(trimmedHevc).join());
 } catch (e) {
   check('no exceptions', false, e.message);
 } finally {

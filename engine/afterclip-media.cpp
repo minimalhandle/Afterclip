@@ -12,6 +12,8 @@
 //   afterclip-media retrack <in> <out> <gain> [<gain>...]
 //                                            sets each audio track's volume, 1 keeping it untouched and 0 removing it.
 //                                            The video is copied losslessly.
+//   afterclip-media retag <in> <out>          copies a clip with HEVC tagged hev1 to <out> tagged hvc1, so Apple devices play it.
+//                                            Prints "retagged", or "unchanged" without writing <out> when it needs nothing.
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -176,6 +178,98 @@ static int cmdTrim(const std::string &input, const std::string &output, double s
 	avio_closep(&out->pb);
 	avformat_free_context(out);
 	avformat_close_input(&in);
+	return 0;
+}
+
+/**
+ * Copies a clip whose HEVC is tagged hev1 into one tagged hvc1, so Apple devices play it. Everything is copied
+ * as it is. Prints "unchanged" and writes nothing when there's nothing to fix, or "retagged" when it wrote <out>.
+ */
+static int cmdRetag(const std::string &input, const std::string &output)
+{
+	AVFormatContext *in = openInput(input);
+	if (!in)
+		return fail("Could not open input");
+	bool needed = false;
+	for (unsigned i = 0; i < in->nb_streams; i++) {
+		const AVCodecParameters *par = in->streams[i]->codecpar;
+		needed |= par->codec_id == AV_CODEC_ID_HEVC && par->codec_tag != MKTAG('h', 'v', 'c', '1');
+	}
+	if (!needed) {
+		avformat_close_input(&in);
+		printf("unchanged\n");
+		fflush(stdout);
+		return 0;
+	}
+
+	AVFormatContext *out = nullptr;
+	int err = avformat_alloc_output_context2(&out, nullptr, "mp4", output.c_str());
+	if (err < 0)
+		return fail("Could not create output", err);
+	av_dict_copy(&out->metadata, in->metadata, 0);
+	std::vector<int> outIndex(in->nb_streams, -1);
+	for (unsigned i = 0; i < in->nb_streams; i++) {
+		AVStream *from = in->streams[i];
+		const AVMediaType type = from->codecpar->codec_type;
+		if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO)
+			continue;
+		AVStream *to = avformat_new_stream(out, nullptr);
+		if (!to || (err = avcodec_parameters_copy(to->codecpar, from->codecpar)) < 0)
+			return fail("Could not copy stream", err);
+		to->codecpar->codec_tag = mp4Tag(to->codecpar);
+		to->time_base = from->time_base;
+		to->disposition = from->disposition;
+		av_dict_copy(&to->metadata, from->metadata, 0);
+		outIndex[i] = to->index;
+	}
+	// Chapters are copied the way FFmpeg's own tool does it, and avformat_free_context frees them.
+	if (in->nb_chapters) {
+		out->chapters = (AVChapter **)av_calloc(in->nb_chapters, sizeof(AVChapter *));
+		if (!out->chapters)
+			return fail("Out of memory");
+		for (unsigned i = 0; i < in->nb_chapters; i++) {
+			const AVChapter *from = in->chapters[i];
+			AVChapter *to = (AVChapter *)av_mallocz(sizeof(AVChapter));
+			if (!to)
+				return fail("Out of memory");
+			to->id = from->id;
+			to->time_base = from->time_base;
+			to->start = from->start;
+			to->end = from->end;
+			av_dict_copy(&to->metadata, from->metadata, 0);
+			out->chapters[out->nb_chapters++] = to;
+		}
+	}
+	if ((err = avio_open(&out->pb, output.c_str(), AVIO_FLAG_WRITE)) < 0)
+		return fail("Could not open output", err);
+	AVDictionary *options = nullptr;
+	av_dict_set(&options, "movflags", "+faststart", 0);
+	err = avformat_write_header(out, &options);
+	av_dict_free(&options);
+	if (err < 0)
+		return fail("Could not write header", err);
+
+	AVPacket *pkt = av_packet_alloc();
+	while (av_read_frame(in, pkt) >= 0) {
+		const int index = outIndex[pkt->stream_index];
+		if (index < 0) {
+			av_packet_unref(pkt);
+			continue;
+		}
+		av_packet_rescale_ts(pkt, in->streams[pkt->stream_index]->time_base, out->streams[index]->time_base);
+		pkt->stream_index = index;
+		pkt->pos = -1;
+		if ((err = av_interleaved_write_frame(out, pkt)) < 0)
+			return fail("Could not write packet", err);
+	}
+	av_packet_free(&pkt);
+	if ((err = av_write_trailer(out)) < 0)
+		return fail("Could not finish file", err);
+	avio_closep(&out->pb);
+	avformat_free_context(out);
+	avformat_close_input(&in);
+	printf("retagged\n");
+	fflush(stdout);
 	return 0;
 }
 
@@ -1258,6 +1352,8 @@ int main()
 			return cmdDuration(in);
 		if (cmd == L"trim" && argc >= 5)
 			return cmdTrim(in, toUtf8(argv[3]), _wtof(argv[4]));
+		if (cmd == L"retag" && argc >= 4)
+			return cmdRetag(in, toUtf8(argv[3]));
 		if (cmd == L"thumb" && argc >= 4)
 			return cmdThumb(in, toUtf8(argv[3]));
 		if (cmd == L"tracks")
