@@ -71,6 +71,15 @@ static AVFormatContext *openInput(const std::string &path)
 	return in;
 }
 
+/**
+ * The MP4 tag for a copied stream. FFmpeg picks hev1 for HEVC, which iPhones and Macs refuse to play,
+ * so HEVC gets hvc1. Anything else lets FFmpeg choose.
+ */
+static uint32_t mp4Tag(const AVCodecParameters *par)
+{
+	return par->codec_id == AV_CODEC_ID_HEVC ? MKTAG('h', 'v', 'c', '1') : 0;
+}
+
 static int cmdDuration(const std::string &path)
 {
 	AVFormatContext *in = openInput(path);
@@ -105,7 +114,7 @@ static int cmdTrim(const std::string &input, const std::string &output, double s
 		AVStream *to = avformat_new_stream(out, nullptr);
 		if (!to || (err = avcodec_parameters_copy(to->codecpar, from->codecpar)) < 0)
 			return fail("Could not copy stream", err);
-		to->codecpar->codec_tag = 0;
+		to->codecpar->codec_tag = mp4Tag(to->codecpar);
 		to->time_base = from->time_base;
 		outIndex[i] = next++;
 	}
@@ -256,7 +265,7 @@ static int cmdJoin(const std::string &output, const std::vector<Segment> &segmen
 				AVStream *to = avformat_new_stream(out, nullptr);
 				if (!to || (err = avcodec_parameters_copy(to->codecpar, in->streams[i]->codecpar)) < 0)
 					return fail("Could not copy stream", err);
-				to->codecpar->codec_tag = 0;
+				to->codecpar->codec_tag = mp4Tag(to->codecpar);
 				to->time_base = in->streams[i]->time_base;
 			}
 			lastDts.assign(in->nb_streams, INT64_MIN);
@@ -755,7 +764,7 @@ static int cmdRetrack(const std::string &input, const std::string &output, const
 			AVStream *to = avformat_new_stream(out, nullptr);
 			if (!to || (err = avcodec_parameters_copy(to->codecpar, from->codecpar)) < 0)
 				return fail("Could not copy stream", err);
-			to->codecpar->codec_tag = 0;
+			to->codecpar->codec_tag = mp4Tag(to->codecpar);
 			to->time_base = from->time_base;
 			copyTo[i] = to->index;
 			continue;
