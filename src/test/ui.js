@@ -118,10 +118,33 @@ async function main() {
         '-f', 'lavfi', '-i', 'sine=440:d=8', '-c:v', 'libx264', '-c:a', 'aac', clip], { windowsHide: true });
       await panel.eval('refresh()');
       await waitFor(() => panel.eval("!!document.querySelector('#media .item .more')"), 10000, 'the clip card');
-      await panel.eval("document.querySelector('#media .item .more').click(); [...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Trim and share').click()");
+      const sourceLabels = await panel.eval(`(() => {
+        const originalChoices = audioChoices;
+        const originalSources = settings.audioSources;
+        try {
+          audioChoices = { inputs: [{ id: 'cable-a', name: 'Cable-A Output', sleekmeeterName: 'Discord' },
+            { id: 'mic', name: 'USB microphone' }], outputs: [], apps: [] };
+          settings.audioSources = [{ kind: 'input', device: 'cable-a', label: 'Cable-A Output', mix: true }];
+          renderAudio();
+          return { names: [...document.querySelector('#audio-list select').options].map((option) => option.text),
+            savedLabel: settings.audioSources[0].label, id: document.querySelector('#audio-list select').value };
+        } finally {
+          audioChoices = originalChoices;
+          settings.audioSources = originalSources;
+          renderAudio();
+        }
+      })()`);
+      check('Sleekmeeter aliases display without changing the capture source', sourceLabels.names.join('|') === 'Discord|USB microphone' && sourceLabels.savedLabel === 'Cable-A Output' && sourceLabels.id === 'cable-a');
+      await panel.eval("document.querySelector('#media .item .more').click()");
+      const options = await panel.eval("[...document.querySelectorAll('.menu button')].map((button) => button.textContent)");
+      check('the clip menu has five entries without duplicate share actions', options.join('|') === 'Trim and share|Edit|Organize ›|File ›|Delete', options.join(', '));
+      await panel.eval("[...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Organize ›').click()");
+      check('rename and tags are grouped under Organize', await panel.eval("[...document.querySelectorAll('.menu button')].map((button) => button.textContent).join('|') === '‹ Back|Rename|Tags'"));
+      await panel.eval("document.querySelector('.menu button').click(); [...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Trim and share').click()");
       const sharePage = await Page.open(/share\.html/);
       try {
         await waitFor(() => sharePage.eval("!document.getElementById('share-tools').hidden && document.getElementById('share-video').readyState >= 2"), 15000, 'the share window to load and decode video');
+        check('clips without existing bookmarks omit the Bookmarks button', await sharePage.eval("document.getElementById('show-bookmarks').hidden"));
         check('Trim and share opens with a playable clip and a wide timeline', await sharePage.eval("innerWidth >= 1000 && document.getElementById('trim').getBoundingClientRect().width >= 900"));
         await sharePage.eval("document.getElementById('trim-start').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true })); document.getElementById('share-trim').click()");
         await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved ')"), 15000, 'a trimmed copy');
@@ -219,19 +242,6 @@ async function main() {
           fs.copyFileSync(clip, path.join(folder, incoming));
           await waitFor(() => fs.existsSync(path.join(path.dirname(clip), incoming)), 15000, 'watch folder import');
           check('a watched folder imports a finished clip', true);
-          const log = path.join(session.home, 'latest.log');
-          fs.writeFileSync(log, '');
-          await invoke('configure-bookmarks', [true, 'PlayerOne', log]);
-          await api.toggleRecord();
-          await waitFor(async () => (await api.status()).recording, 10000, 'the bookmark recording');
-          await sleep(2500);
-          fs.appendFileSync(log, '[12:00:00] [Render thread/INFO]: [CHAT] PlayerOne has made the advancement [Stone Age]\n');
-          const recordingFolder = path.join(output, 'Recordings');
-          await waitFor(() => fs.readdirSync(recordingFolder).some((file) => file.endsWith('.afterclip-bookmarks.json')), 10000, 'the automatic bookmark');
-          await api.toggleRecord();
-          const recording = fs.readdirSync(recordingFolder).find((file) => file.endsWith('.mp4'));
-          const bookmarks = await invoke('clip-bookmarks', path.join(recordingFolder, recording));
-          check('Minecraft Java events are saved as recording bookmarks', bookmarks.some((bookmark) => bookmark.time > 0 && /Stone Age/.test(bookmark.title)));
           const audio = await invoke('test-audio-tracks');
           check('the audio setup test reads actual replay tracks', audio.length > 0 && audio.some((track) => 'db' in track));
           await panel.eval("document.getElementById('open-studio').click()");
@@ -239,6 +249,7 @@ async function main() {
           try {
             await waitFor(() => studioPage.eval("document.getElementById('recovery-latest').textContent.length > 0"), 10000, 'the Tools window');
             check('Tools opens through the main panel', await studioPage.eval("document.getElementById('watch-path').textContent.includes('incoming')"));
+            check('automatic game-event setup is absent from Tools', await studioPage.eval("!document.querySelector('#bookmark-log, #cs2-setup')"));
           } finally {
             studioPage.close();
           }
@@ -472,7 +483,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a clip can be starred', true);
     await panel.eval("document.getElementById('library-favourites').click()");
     check('the favourites filter shows only starred clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 1);
-    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Rename').click(); })()`);
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Organize ›').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Rename').click(); })()`);
     await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'rename field');
     await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Best: moment?'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
     await waitFor(async () => (await items()).includes('Best moment'), 5000, 'renamed clip');
@@ -711,14 +722,18 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a screenshot has no video actions', !/Edit|Compress|vertical/.test(shotMenu) && /Send to Discord/.test(shotMenu), shotMenu);
     await panel.eval("document.body.click(); document.querySelector('.tab[data-kind=clip]').click()");
 
-    // A vertical copy, chosen from the real menu.
+    // A vertical copy, chosen from Trim and share.
     const beforeVertical = new Set(fs.readdirSync(clips));
     await panel.eval("document.querySelector('#media .item .more').click()");
     const clipMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
-    check('a clip has one Compress item instead of fixed sizes', /Compress/.test(clipMenu) && !/MB copy/.test(clipMenu), clipMenu);
-    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Make vertical copy').click()");
+    check('share actions are grouped in Trim and share', /Trim and share/.test(clipMenu) && !/Compress|vertical|Discord/.test(clipMenu), clipMenu);
+    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Trim and share').click()");
+    const sharePage = await Page.open(/share\.html/);
+    await waitFor(() => sharePage.eval("!document.getElementById('share-tools').hidden"), 15000, 'the share window');
+    await sharePage.eval("document.getElementById('share-vertical').click()");
     const verticalName = await waitFor(() => fs.readdirSync(clips).find((n) => !beforeVertical.has(n) && /_vertical\.mp4$/.test(n)), 30000, 'the vertical copy');
-    await waitFor(() => panel.eval("/vertical copy is ready/.test(document.getElementById('banner').textContent)"), 30000, 'the vertical copy to finish');
+    await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved ')"), 30000, 'the vertical copy to finish');
+    sharePage.close();
     const verticalInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', path.join(clips, verticalName)], { encoding: 'utf8', windowsHide: true }).stderr;
     const verticalSize = /(\d{3,4})x(\d{3,4})/.exec(verticalInfo);
     check('a vertical copy is 9:16',Math.abs(verticalSize[1] / verticalSize[2] - 9 / 16) < 0.01 && +verticalSize[2] === Math.min(mode.height, 1920), /Video:.*/.exec(verticalInfo)?.[0]);
@@ -888,7 +903,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('clips in game folders are listed', true);
 
     // Tags, typed into the clip's menu, then found by the filter and by search.
-    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Tags').click(); })()`);
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Organize ›').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Tags').click(); })()`);
     await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'the tags field');
     await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Funny, #clutch, funny'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
     await waitFor(() => panel.eval("/#Funny #clutch$/.test(document.querySelector('#media .item-sub').textContent)"), 5000, 'the tags on the clip');

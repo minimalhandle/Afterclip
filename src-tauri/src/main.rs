@@ -1896,7 +1896,9 @@ fn display_info() -> Value {
 
 #[tauri::command(async)]
 fn audio_choices(core: tauri::State<Shared>) -> Result<Value, String> {
-    core.engine.audio_choices()
+    let mut choices = core.engine.audio_choices()?;
+    audio_check::annotate_audio_choices(&mut choices);
+    Ok(choices)
 }
 
 #[tauri::command(async)]
@@ -2095,7 +2097,7 @@ fn share_source(core: tauri::State<Shared>) -> Result<Value, String> {
         "file": path, "name": path.file_name().unwrap_or_default().to_string_lossy(), "channels": channels,
         "game": source.game, "at": source.at, "even": settings.even_audio,
         "recipes": settings.share_recipes, "layout": settings.vertical_layouts.get(&source.game),
-        "transcript": transcript
+        "transcript": transcript, "hasBookmarks": studio::bookmark_file(path).is_file()
     }))
 }
 
@@ -2662,7 +2664,7 @@ fn main() {
             open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
             save_game_layout, transcribe_clip, search_speech, pick_angle, sync_angle,
             studio::open_studio, studio::studio_state, studio::configure_recovery, studio::checkpoint_now, studio::restore_replay,
-            studio::import_clips, studio::set_watch_folder, studio::configure_bookmarks, studio::configure_cs2, studio::clip_bookmarks,
+            studio::import_clips, studio::set_watch_folder, studio::clip_bookmarks,
             studio::phone_share, studio::stop_phone_share, studio::enqueue_batch, studio::control_batch,
             audio_check::audio_setup, audio_check::apply_audio_roles, audio_check::test_audio_tracks,
             render::render_clip, render::save_captions, render::export_angles, quit_app
@@ -2831,8 +2833,6 @@ fn main() {
             thread::spawn(move || watch_games(watcher));
             let tools = Arc::clone(&core);
             thread::spawn(move || studio::watch_tools(tools));
-            let cs2 = Arc::clone(&core);
-            thread::spawn(move || studio::watch_cs2(cs2));
             let queue = Arc::clone(&core);
             thread::spawn(move || studio::watch_queue(queue));
             let healer = Arc::clone(&core);

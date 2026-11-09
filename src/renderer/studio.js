@@ -29,7 +29,6 @@ async function refreshStudio() {
   if (!initialized) {
     $('recovery-seconds').value = prefs.recoverySeconds;
     $('recovery-size').value = prefs.recoveryMb || 500;
-    $('bookmark-player').value = prefs.minecraftPlayer;
     initialized = true;
   }
   $('batch-selection').textContent = selection.length
@@ -67,9 +66,6 @@ async function refreshStudio() {
   $('recovery-latest').textContent = state.recovery ? checkpoint + new Date(state.recovery).toLocaleString() : 'No recovery checkpoint yet.';
   $('watch-path').textContent = prefs.watchFolder || 'No watched folder.';
   $('watch-stop').disabled = !prefs.watchFolder;
-  $('bookmark-path').textContent = prefs.minecraftLog || 'Automatic bookmarks are off.';
-  $('bookmark-off').disabled = !prefs.minecraftLog;
-  $('cs2-off').disabled = !prefs.cs2Enabled;
 }
 
 $('batch-add').onclick = action(async () => {
@@ -101,10 +97,6 @@ $('import-clips').onclick = action(async () => {
 });
 $('watch-folder').onclick = action(async () => { await api.invoke('set-watch-folder', [true, null]); await refreshStudio(); });
 $('watch-stop').onclick = action(async () => { await api.invoke('set-watch-folder', [false, null]); await refreshStudio(); });
-$('bookmark-log').onclick = action(async () => { await api.invoke('configure-bookmarks', [true, $('bookmark-player').value, null]); await refreshStudio(); });
-$('bookmark-off').onclick = action(async () => { await api.invoke('configure-bookmarks', [false, $('bookmark-player').value, null]); await refreshStudio(); });
-$('cs2-setup').onclick = action(async () => { await api.invoke('configure-cs2', true); await refreshStudio(); });
-$('cs2-off').onclick = action(async () => { await api.invoke('configure-cs2', false); await refreshStudio(); });
 
 const roles = ['audio-game', 'audio-mic', 'audio-chat'];
 $('audio-load').onclick = action(async () => {

@@ -15,9 +15,6 @@ pub struct Preferences {
     recovery_seconds: u64,
     recovery_mb: u64,
     watch_folder: Option<PathBuf>,
-    minecraft_log: Option<PathBuf>,
-    minecraft_player: String,
-    cs2_token: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -417,267 +414,8 @@ impl ImportWatch {
     }
 }
 
-#[tauri::command(async)]
-pub fn configure_bookmarks(
-    core: tauri::State<Shared>,
-    payload: (bool, String, Option<PathBuf>),
-) -> Result<(), String> {
-    let (enabled, player, test_log) = payload;
-    let log = if enabled {
-        let player = player.trim();
-        if player.is_empty()
-            || player.len() > 32
-            || !player
-                .bytes()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
-        {
-            return Err("Enter the Minecraft Java player name first.".into());
-        }
-        let chosen = test_log.filter(|_| api::is_test_instance()).or_else(|| {
-            core.app
-                .dialog()
-                .file()
-                .add_filter("Minecraft log", &["log"])
-                .blocking_pick_file()
-                .and_then(|p| p.into_path().ok())
-        });
-        let Some(log) = chosen else {
-            return Ok(());
-        };
-        Some(log)
-    } else {
-        None
-    };
-    core.studio.edit(|prefs| {
-        prefs.minecraft_log = log;
-        prefs.minecraft_player = player.trim().into();
-    })
-}
-
 pub fn bookmark_file(recording: &Path) -> PathBuf {
     recording.with_extension("afterclip-bookmarks.json")
-}
-
-#[derive(Default)]
-struct GameLog {
-    path: Option<PathBuf>,
-    offset: u64,
-    partial: String,
-}
-
-impl GameLog {
-    fn read(&mut self, path: Option<PathBuf>, player: &str) -> Vec<String> {
-        let changed = path != self.path;
-        self.path = path;
-        let Some(path) = &self.path else {
-            return vec![];
-        };
-        let Ok(mut log) = File::open(path) else {
-            return vec![];
-        };
-        let length = log.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if changed || length < self.offset {
-            self.offset = if changed { length } else { 0 };
-            self.partial.clear();
-        }
-        self.offset = self.offset.max(length.saturating_sub(256 * 1024));
-        if log.seek(SeekFrom::Start(self.offset)).is_err() {
-            return vec![];
-        }
-        let mut bytes = Vec::new();
-        if log.take(256 * 1024).read_to_end(&mut bytes).is_err() {
-            return vec![];
-        }
-        self.offset += bytes.len() as u64;
-        self.partial.push_str(&String::from_utf8_lossy(&bytes));
-        let Some(end) = self.partial.rfind('\n') else {
-            return vec![];
-        };
-        let rest = self.partial.split_off(end + 1);
-        let lines = std::mem::replace(&mut self.partial, rest);
-        lines
-            .lines()
-            .filter_map(|line| {
-                let (_, message) = line.split_once("[CHAT] ")?;
-                let event = message.strip_prefix(player)?.strip_prefix(' ')?;
-                let useful = [
-                    "has made the advancement",
-                    "has reached the goal",
-                    "has completed the challenge",
-                    "was slain by",
-                    "was shot by",
-                    "fell from",
-                    "blew up",
-                    "drowned",
-                ]
-                .iter()
-                .any(|prefix| event.starts_with(prefix));
-                useful.then(|| message.chars().take(180).collect())
-            })
-            .collect()
-    }
-}
-
-fn store_bookmarks(path: &Path, titles: Vec<String>) {
-    if titles.is_empty() {
-        return;
-    }
-    static BOOKMARK_WRITE: Mutex<()> = Mutex::new(());
-    let _write = BOOKMARK_WRITE.lock().unwrap();
-    let time = fs::metadata(path)
-        .ok()
-        .and_then(|meta| meta.created().ok())
-        .and_then(|start| start.elapsed().ok())
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64());
-    let file = bookmark_file(path);
-    let mut marks = read_bookmarks(path);
-    marks.extend(titles.into_iter().map(|title| Bookmark { time, title }));
-    if let Ok(bytes) = serde_json::to_vec(&marks) {
-        let _ = fs::write(file, bytes);
-    }
-}
-
-const CS2_PORT: u16 = 4578;
-
-#[tauri::command(async)]
-pub fn configure_cs2(core: tauri::State<Shared>, payload: bool) -> Result<(), String> {
-    if !payload {
-        return core.studio.edit(|prefs| prefs.cs2_token = None);
-    }
-    let Some(target) = ask_save_path(
-        &core,
-        "gamestate_integration_afterclip.cfg".into(),
-        "Counter-Strike 2 config",
-        "cfg",
-    ) else {
-        return Ok(());
-    };
-    let previous = core.studio.prefs.lock().unwrap().cs2_token.clone();
-    let token = match previous {
-        Some(token) => token,
-        None => format!("{:016x}{:016x}", nonce()?, nonce()?),
-    };
-    let cfg = format!(
-        r#""Afterclip"
-{{
-    "uri" "http://127.0.0.1:{CS2_PORT}/cs2"
-    "timeout" "2.0"
-    "buffer" "0.1"
-    "throttle" "0.3"
-    "heartbeat" "15.0"
-    "auth" {{ "token" "{token}" }}
-    "data"
-    {{
-        "provider" "1"
-        "map" "1"
-        "round" "1"
-        "player_id" "1"
-        "player_match_stats" "1"
-    }}
-}}
-"#
-    );
-    fs::write(target, cfg).map_err(|e| e.to_string())?;
-    core.studio.edit(|prefs| prefs.cs2_token = Some(token))
-}
-
-#[derive(Default)]
-struct Cs2Match {
-    map: String,
-    kills: Option<u64>,
-    won_round: Option<u64>,
-}
-
-impl Cs2Match {
-    fn events(&mut self, state: &Value) -> Vec<String> {
-        let Some(steam) = state["provider"]["steamid"].as_str() else {
-            return vec![];
-        };
-        if state["player"]["steamid"].as_str() != Some(steam) {
-            return vec![];
-        }
-        let Some(map) = state["map"]["name"].as_str() else {
-            return vec![];
-        };
-        let kills = state["player"]["match_stats"]["kills"].as_u64();
-        let round = state["map"]["round"].as_u64();
-        if self.map != map || self.kills.zip(kills).is_some_and(|(old, new)| new < old) {
-            self.map = map.into();
-            self.kills = kills;
-            self.won_round = None;
-            return vec![];
-        }
-        let mut events = Vec::new();
-        if let Some(count) = self
-            .kills
-            .zip(kills)
-            .and_then(|(old, new)| new.checked_sub(old))
-        {
-            if count == 1 {
-                events.push("CS2 · Kill".into());
-            }
-            if count > 1 {
-                events.push(format!("CS2 · {count} kills"));
-            }
-        }
-        self.kills = kills.or(self.kills);
-        if let Some(round) = round {
-            let winner = state["round"]["win_team"].as_str();
-            if self.won_round != Some(round)
-                && state["round"]["phase"] == "over"
-                && winner.is_some()
-                && winner == state["player"]["team"].as_str()
-            {
-                self.won_round = Some(round);
-                events.push(format!("CS2 · Won round {}", round.saturating_add(1)));
-            }
-        }
-        events
-    }
-}
-
-pub fn watch_cs2(core: Shared) {
-    while !core.quitting.load(Ordering::Relaxed) {
-        let enabled = core.studio.prefs.lock().unwrap().cs2_token.clone();
-        let Some(token) = enabled else {
-            thread::sleep(Duration::from_secs(1));
-            continue;
-        };
-        let Ok(server) = Server::http((std::net::Ipv4Addr::LOCALHOST, CS2_PORT)) else {
-            thread::sleep(Duration::from_secs(5));
-            continue;
-        };
-        let mut game = Cs2Match::default();
-        while !core.quitting.load(Ordering::Relaxed)
-            && core.studio.prefs.lock().unwrap().cs2_token.as_deref() == Some(&token)
-        {
-            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_millis(500)) else {
-                continue;
-            };
-            if request.method() != &Method::Post || request.url() != "/cs2" {
-                let _ = request.respond(Response::empty(404));
-                continue;
-            }
-            let mut bytes = Vec::new();
-            let parsed: Option<Value> = request
-                .as_reader()
-                .take(64 * 1024)
-                .read_to_end(&mut bytes)
-                .ok()
-                .and_then(|_| serde_json::from_slice(&bytes).ok());
-            let Some(state) =
-                parsed.filter(|state| state["auth"]["token"].as_str() == Some(&token))
-            else {
-                let _ = request.respond(Response::empty(403));
-                continue;
-            };
-            let _ = request.respond(Response::empty(204));
-            let events = game.events(&state);
-            if let Some(recording) = core.engine.active_recording() {
-                store_bookmarks(&recording, events);
-            }
-        }
-    }
 }
 
 fn read_bookmarks(path: &Path) -> Vec<Bookmark> {
@@ -987,15 +725,10 @@ pub fn watch_queue(core: Shared) {
 
 pub fn watch_tools(core: Shared) {
     let mut imports = ImportWatch::default();
-    let mut log = GameLog::default();
     let mut count = 0;
     while !core.quitting.load(Ordering::Relaxed) {
         let prefs = core.studio.prefs.lock().unwrap().clone();
         imports.scan(&core, prefs.watch_folder.clone());
-        let titles = log.read(prefs.minecraft_log.clone(), &prefs.minecraft_player);
-        if let Some(recording) = core.engine.active_recording() {
-            store_bookmarks(&recording, titles);
-        }
         if prefs.recovery_seconds > 0 && core.engine.status().state == "error" {
             if let Ok(_lock) = core.studio.checkpoint_lock.try_lock() {
                 preserve_previous();
@@ -1028,8 +761,7 @@ pub fn studio_state(core: tauri::State<Shared>) -> Value {
         .collect();
     let prefs = state.prefs.lock().unwrap();
     let public = json!({ "recoverySeconds": prefs.recovery_seconds, "recoveryMb": prefs.recovery_mb,
-        "watchFolder": prefs.watch_folder, "minecraftLog": prefs.minecraft_log, "minecraftPlayer": prefs.minecraft_player,
-        "cs2Enabled": prefs.cs2_token.is_some() });
+        "watchFolder": prefs.watch_folder });
     json!({
         "prefs": public, "recovery": recovery, "recipes": recipes,
         "previousReplay": previous_replay().is_file(),
@@ -1058,29 +790,4 @@ pub fn open_studio(core: tauri::State<Shared>, payload: Option<Vec<String>>) -> 
     recover_from_browser_crash(&core, &window);
     watch_startup(&core, STUDIO);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cs2_marks_local_kills_and_wins_once() {
-        let mut game = Cs2Match::default();
-        let packet = |player: &str, kills, phase: &str| {
-            json!({
-                "provider": { "steamid": "local" },
-                "player": { "steamid": player, "team": "CT", "match_stats": { "kills": kills } },
-                "map": { "name": "de_mirage", "round": 4 },
-                "round": { "phase": phase, "win_team": "CT" },
-            })
-        };
-        assert!(game.events(&packet("local", 4, "live")).is_empty());
-        assert!(game.events(&packet("someone else", 7, "over")).is_empty());
-        assert_eq!(
-            game.events(&packet("local", 5, "over")),
-            ["CS2 · Kill", "CS2 · Won round 5"]
-        );
-        assert!(game.events(&packet("local", 5, "over")).is_empty());
-    }
 }

@@ -28,6 +28,7 @@ dependencies = [
  "trash",
  "webview2-com",
  "windows",
+ "winreg",
  "zip",
 ]
 

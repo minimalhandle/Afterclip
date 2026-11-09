@@ -31,6 +31,11 @@ function setupShareTools(source) {
   setLayout(source.layout || null);
   showTranscript(source.transcript || []);
   setupExtras();
+  $('show-bookmarks').hidden = !source.hasBookmarks;
+  if (!source.hasBookmarks) {
+    $('bookmarks').hidden = true;
+    $('show-bookmarks').setAttribute('aria-expanded', 'false');
+  }
   if (source.at > 0) {
     const jump = () => { if (clip === source) seek(source.at); };
     if (video.readyState > 0) jump();

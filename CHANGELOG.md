@@ -5,8 +5,10 @@ update itself. Each version starts with `## ` and its number. Lines that start w
 
 ## 1.4.0
 
+- The clip menu groups file and library actions, with video exports in Trim and share.
+- Audio Sources shows matching Sleekmeeter channel names when Sleekmeeter is installed.
+
 - Recover recent gameplay from disk checkpoints, import existing clips or watch a folder, and queue batches with saved share recipes.
-- Automatically bookmark Minecraft Java advancements and deaths, and Counter-Strike 2 kills and round wins.
 - Redact video and audio, export captions or burn them into video, and export an edit with synchronized angle cuts.
 - Share a clip to your phone on Wi-Fi, check audio track routing alongside Voicemeeter labels, and hide protected games when they lose focus.
 

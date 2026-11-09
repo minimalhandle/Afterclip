@@ -564,37 +564,51 @@ function buildMenu(m) {
     return b;
   };
   const video = m.kind !== 'screenshot';
-  const hooks = webhooks();
-  // One item for each channel, named after it once there's more than one.
-  const sendItems = (hooks.length ? hooks : [null]).map((hook) => item(hooks.length > 1 ? `Send to ${hook.name}` : 'Send to Discord', () => {
+  const sendTo = (hook) => {
     if (!hook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
-    showBanner(`Sending to ${hooks.length > 1 ? hook.name : 'Discord'}. A long clip is made smaller first, and you can keep playing.`);
+    showBanner(`Sending to ${hook.name}…`);
     return api.invoke('share-clip', { file: m.file, action: 'discord', webhook: hook.index }).catch(() => undefined);
-  }));
-  menu.append(
-    item(video ? 'Play' : 'Open', () => api.invoke('open', m.file)),
-    ...(video ? [item('Trim and share', () => openShare(m)), item('Edit', () => api.invoke('open-editor', [m.file]))] : []),
-    item('Rename', () => { renaming = m.file; renderMedia(); }),
-    item('Tags', () => { tagging = m.file; renderMedia(); }),
-    item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
-    ...sendItems,
+  };
+  const group = (label, choices) => {
+    const button = item(label + ' ›', () => {});
+    button.onclick = (event) => {
+      event.stopPropagation();
+      const back = item('‹ Back', () => {});
+      back.onclick = (event) => {
+        event.stopPropagation();
+        menu.replaceChildren(...mainItems);
+        button.focus();
+      };
+      menu.replaceChildren(back, ...choices);
+      back.focus();
+    };
+    return button;
+  };
+  const hooks = video ? [] : webhooks();
+  const mainItems = [
     ...(video ? [
-      item('Compress', () => {
-        showBanner('Making a smaller copy. A long clip can take a while, and you can keep playing.');
-        api.invoke('compress-clip', m.file).catch(() => undefined);
-      }),
-      item('Make vertical copy', () => {
-        showBanner('Making a vertical copy for phones. A long clip can take a while, and you can keep playing.');
-        api.invoke('vertical-clip', m.file).catch(() => undefined);
-      }),
-    ] : []),
-    item('Show in folder', () => api.invoke('reveal', m.file)),
+      item('Trim and share', () => openShare(m)),
+      item('Edit', () => api.invoke('open-editor', [m.file])),
+    ] : [
+      hooks.length > 1
+        ? group('Send to Discord', hooks.map((hook) => item(hook.name, () => sendTo(hook))))
+        : item('Send to Discord', () => sendTo(hooks[0])),
+    ]),
+    group('Organize', [
+      item('Rename', () => { renaming = m.file; renderMedia(); }),
+      item('Tags', () => { tagging = m.file; renderMedia(); }),
+    ]),
+    group('File', [
+      item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
+      item('Show in folder', () => api.invoke('reveal', m.file)),
+    ]),
     item('Delete', async () => {
       await api.invoke('trash', m.file).catch((e) => showBanner(errorText(e), 'bad'));
       selected.delete(m.file);
       refresh();
     }, 'danger'),
-  );
+  ];
+  menu.append(...mainItems);
   return menu;
 }
 
@@ -842,7 +856,7 @@ function renderAudio() {
     const select = document.createElement('select');
     select.setAttribute('aria-label', `${kindNames[source.kind]} source`);
     const choices = choicesFor(source);
-    for (const c of choices) select.add(new Option(c.name, c.id));
+    for (const c of choices) select.add(new Option(c.sleekmeeterName ?? c.name, c.id));
     // Keep a saved source listed even if it isn't available right now, such as Discord being closed.
     if (source.device && !choices.some((c) => c.id === source.device)) {
       select.add(new Option(`${source.label} (not running)`, source.device));
@@ -850,14 +864,15 @@ function renderAudio() {
     select.value = source.device;
     select.onchange = () => {
       source.device = select.value;
-      source.label = select.selectedOptions[0]?.text ?? source.label;
+      source.label = choices.find((choice) => choice.id === source.device)?.name ?? source.label;
       checkAudio();
       scheduleSave();
     };
     const del = document.createElement('button');
     del.className = 'more';
     del.textContent = '×';
-    del.setAttribute('aria-label', `Remove ${source.label}`);
+    const displayName = choices.find((choice) => choice.id === source.device)?.sleekmeeterName ?? source.label;
+    del.setAttribute('aria-label', `Remove ${displayName}`);
     del.onclick = () => { settings.audioSources.splice(i, 1); renderAudio(); scheduleSave(); };
     top.append(tag, select, del);
 

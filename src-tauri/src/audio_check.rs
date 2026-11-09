@@ -7,6 +7,117 @@ use windows::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
 };
 
+fn sleekmeeter_installed() -> bool {
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+    use winreg::RegKey;
+
+    const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .any(|root| {
+            let root = RegKey::predef(root);
+            [KEY_WOW64_64KEY, KEY_WOW64_32KEY].into_iter().any(|view| {
+                let Ok(uninstall) = root.open_subkey_with_flags(UNINSTALL, KEY_READ | view) else {
+                    return false;
+                };
+                uninstall.enum_keys().flatten().any(|key| {
+                    uninstall
+                        .open_subkey(key)
+                        .ok()
+                        .and_then(|entry| entry.get_value::<String, _>("DisplayName").ok())
+                        .is_some_and(|name| name.trim().eq_ignore_ascii_case("Sleekmeeter"))
+                })
+            })
+        })
+}
+
+fn device_name(name: &str) -> String {
+    let name = name.trim().to_ascii_lowercase();
+    let name = name
+        .strip_prefix("wdm: ")
+        .or_else(|| name.strip_prefix("mme: "))
+        .or_else(|| name.strip_prefix("ks: "))
+        .unwrap_or(&name);
+    name.trim().to_owned()
+}
+
+fn endpoint_label(name: &str, capture: bool, mixer: &Value) -> Option<String> {
+    let name = device_name(name);
+    let (base, adapter) = name.split_once(" (").unwrap_or((&name, ""));
+    let mut labels = Vec::new();
+    for (index, strip) in mixer["inputs"].as_array().into_iter().flatten().enumerate() {
+        let device = device_name(strip["device"].as_str().unwrap_or_default());
+        let (device_base, device_adapter) = device.split_once(" (").unwrap_or((&device, ""));
+        let same_adapter =
+            adapter.is_empty() || device_adapter.is_empty() || adapter == device_adapter;
+        let vm_input = strip["endpoint"].as_str();
+        let matched = if capture {
+            !device.is_empty() && same_adapter && device_base == base
+        } else if let Some(endpoint) = vm_input {
+            base == endpoint
+        } else {
+            base == format!("voicemeeter in {}", index + 1)
+                || (device_base.starts_with("cable")
+                    && same_adapter
+                    && device_base
+                        .strip_suffix(" output")
+                        .zip(base.strip_suffix(" input"))
+                        .is_some_and(|(heard, played)| heard == played))
+        };
+        if matched {
+            labels.push(strip["name"].as_str().unwrap_or_default().trim());
+        }
+    }
+    for bus in mixer["outputs"].as_array().into_iter().flatten() {
+        let channel = bus["channel"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let device = device_name(bus["device"].as_str().unwrap_or_default());
+        let matched = if capture {
+            base == format!("voicemeeter out {channel}")
+                || matches!(
+                    (channel.as_str(), base),
+                    ("b1", "voicemeeter output")
+                        | ("b2", "voicemeeter aux output")
+                        | ("b3", "voicemeeter vaio3 output")
+                        | ("b3", "vaio3 output")
+                )
+        } else {
+            !device.is_empty() && device == name
+        };
+        if matched {
+            labels.push(bus["name"].as_str().unwrap_or_default().trim());
+        }
+    }
+    // A device used by multiple differently named channels has no unambiguous alias.
+    let first = *labels.first()?;
+    (!first.is_empty() && labels.iter().all(|label| *label == first)).then(|| first.to_owned())
+}
+
+pub fn annotate_audio_choices(choices: &mut Value) {
+    if !sleekmeeter_installed() {
+        return;
+    }
+    let Ok(mixer) = mixer_labels() else {
+        return;
+    };
+    for (key, capture) in [("inputs", true), ("outputs", false)] {
+        if let Some(devices) = choices[key].as_array_mut() {
+            for device in devices {
+                if let Some(label) = device["name"]
+                    .as_str()
+                    .and_then(|name| endpoint_label(name, capture, &mixer))
+                {
+                    device["sleekmeeterName"] = json!(label);
+                }
+            }
+        }
+    }
+}
+
 fn voicemeeter_dll() -> Option<PathBuf> {
     let reg = PathBuf::from(std::env::var_os("SystemRoot")?).join("System32/reg.exe");
     let key = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {17359A74-1236-5467}";
@@ -32,6 +143,8 @@ fn voicemeeter_dll() -> Option<PathBuf> {
 }
 
 fn mixer_labels() -> Result<Value, String> {
+    static REMOTE: Mutex<()> = Mutex::new(());
+    let _session = REMOTE.lock().unwrap();
     let path = voicemeeter_dll()
         .filter(|path| path.is_file())
         .ok_or("Voicemeeter was not found on this PC.")?;
@@ -54,6 +167,8 @@ fn mixer_labels() -> Result<Value, String> {
                 std::mem::transmute(symbol(b"VBVMR_Logout\0")?);
             let edition: unsafe extern "system" fn(*mut i32) -> i32 =
                 std::mem::transmute(symbol(b"VBVMR_GetVoicemeeterType\0")?);
+            let refresh: unsafe extern "system" fn() -> i32 =
+                std::mem::transmute(symbol(b"VBVMR_IsParametersDirty\0")?);
             let get: unsafe extern "system" fn(*const u8, *mut u16) -> i32 =
                 std::mem::transmute(symbol(b"VBVMR_GetParameterStringW\0")?);
             let connected = login();
@@ -65,10 +180,16 @@ fn mixer_labels() -> Result<Value, String> {
             let labels = if connected != 0 || status != 0 {
                 Err("Start Voicemeeter to read the channel names.".into())
             } else {
-                let (inputs, hardware, virtual_buses) = match kind {
-                    3 => (8, 5, 3),
-                    2 => (5, 3, 2),
-                    _ => (3, 1, 1),
+                refresh();
+                let (hardware_inputs, virtual_inputs, hardware, virtual_buses): (
+                    usize,
+                    usize,
+                    usize,
+                    usize,
+                ) = match kind {
+                    3 => (5, 3, 5, 3),
+                    2 => (3, 2, 3, 2),
+                    _ => (2, 1, 1, 1),
                 };
                 let label = |parameter: String| {
                     let mut buf = [0u16; 512];
@@ -78,7 +199,17 @@ fn mixer_labels() -> Result<Value, String> {
                     let end = buf.iter().position(|&unit| unit == 0).unwrap_or(buf.len());
                     String::from_utf16_lossy(&buf[..end])
                 };
-                let strips: Vec<_> = (0..inputs).map(|i| json!({ "channel": format!("Input {}", i + 1), "name": label(format!("Strip[{i}].Label\0")) })).collect();
+                let virtual_devices = [
+                    "voicemeeter input",
+                    "voicemeeter aux input",
+                    "voicemeeter vaio3 input",
+                ];
+                let strips: Vec<_> = (0..hardware_inputs + virtual_inputs).map(|i| {
+                    let endpoint = i.checked_sub(hardware_inputs).map(|index| virtual_devices[index]);
+                    json!({ "channel": format!("Input {}", i + 1), "name": label(format!("Strip[{i}].Label\0")),
+                        "device": if endpoint.is_none() { label(format!("Strip[{i}].device.name\0")) } else { String::new() },
+                        "endpoint": endpoint })
+                }).collect();
                 let buses: Vec<_> = (0..hardware + virtual_buses)
                     .map(|i| {
                         let channel = if i < hardware {
@@ -86,7 +217,8 @@ fn mixer_labels() -> Result<Value, String> {
                         } else {
                             format!("B{}", i - hardware + 1)
                         };
-                        json!({ "channel": channel, "name": label(format!("Bus[{i}].Label\0")) })
+                        json!({ "channel": channel, "name": label(format!("Bus[{i}].Label\0")),
+                            "device": if i < hardware { label(format!("Bus[{i}].device.name\0")) } else { String::new() } })
                     })
                     .collect();
                 Ok(json!({ "inputs": strips, "outputs": buses }))
@@ -238,4 +370,68 @@ pub fn test_audio_tracks(core: tauri::State<Shared>) -> Result<Value, String> {
     })();
     let _ = fs::remove_file(sample);
     result
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn uses_the_channel_on_each_side_of_a_virtual_cable() {
+        let mixer = json!({
+            "inputs": [
+                { "device": "WDM: CABLE-A Output (VB-Audio Cable A)", "name": "Discord" },
+                { "device": "CABLE-B Output (VB-Audio Cable B)", "name": "Music" },
+                { "endpoint": "voicemeeter input", "name": "Desktop" }
+            ],
+            "outputs": [{ "channel": "B2", "name": "Stream mix" }]
+        });
+        assert_eq!(
+            endpoint_label("Cable-A Output", true, &mixer).as_deref(),
+            Some("Discord")
+        );
+        assert_eq!(
+            endpoint_label("CABLE-A Input (VB-Audio Cable A)", false, &mixer).as_deref(),
+            Some("Discord")
+        );
+        assert_eq!(
+            endpoint_label("CABLE-B Input (VB-Audio Cable B)", false, &mixer).as_deref(),
+            Some("Music")
+        );
+        assert_eq!(
+            endpoint_label(
+                "Voicemeeter Input (VB-Audio Voicemeeter VAIO)",
+                false,
+                &mixer
+            )
+            .as_deref(),
+            Some("Desktop")
+        );
+        assert_eq!(
+            endpoint_label(
+                "Voicemeeter Out B2 (VB-Audio Voicemeeter AUX VAIO)",
+                true,
+                &mixer
+            )
+            .as_deref(),
+            Some("Stream mix")
+        );
+        assert_eq!(
+            endpoint_label("Microphone (USB Audio Device)", true, &mixer),
+            None
+        );
+        assert_eq!(
+            endpoint_label("CABLE-A Input (Other Vendor)", false, &mixer),
+            None
+        );
+    }
+
+    #[test]
+    fn leaves_shared_devices_with_conflicting_labels_unchanged() {
+        let mixer = json!({ "inputs": [
+            { "device": "CABLE-A Output", "name": "Discord" },
+            { "device": "CABLE-A Output", "name": "Music" }
+        ] });
+        assert_eq!(endpoint_label("CABLE-A Output", true, &mixer), None);
+    }
 }
