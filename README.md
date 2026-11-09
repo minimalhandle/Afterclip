@@ -7,6 +7,8 @@
 <p align="center"><strong>Save the moment after it happens.</strong><br>
 A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-session recording.</p>
 
+<p align="center"><a href="https://afterclip.app"><strong>afterclip.app</strong></a></p>
+
 <p align="center">
   <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer and recent clips">
   <img src="docs/screenshots/library.png" width="32%" alt="The library, showing every clip in a grid">
@@ -112,7 +114,7 @@ Choose Low, Medium, High or Full quality, or set each option yourself: resolutio
 
 ## Install
 
-Download the installer from the [latest release](https://github.com/minimalhandle/Afterclip/releases/latest) and run it. It installs to `Program Files`, and Windows asks for permission once. The installer isn't code-signed yet, so Windows may show a SmartScreen warning: choose **More info**, then **Run anyway**.
+Download the installer from [afterclip.app](https://afterclip.app) or the [latest release](https://github.com/minimalhandle/Afterclip/releases/latest) and run it. It installs to `Program Files`, and Windows asks for permission once. The installer isn't code-signed yet, so Windows may show a SmartScreen warning: choose **More info**, then **Run anyway**.
 
 For Stream Deck keys, download the `.streamDeckPlugin` file from the same release and double-click it.
 
