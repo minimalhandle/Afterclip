@@ -7,7 +7,6 @@ let showingAngle = false;
 let originalMute = false;
 let pinStart = null;
 let pinPurpose = 'layout';
-let savedTranscript = [];
 
 function withNote(task) {
   return async () => {
@@ -29,7 +28,6 @@ function setupShareTools(source) {
   $('recipe-even').checked = source.even;
   $('layout-save').disabled = !source.game;
   setLayout(source.layout || null);
-  showTranscript(source.transcript || []);
   setupExtras();
   $('show-bookmarks').hidden = !source.hasBookmarks;
   if (!source.hasBookmarks) {
@@ -43,7 +41,7 @@ function setupShareTools(source) {
   }
 }
 
-const optionNames = ['recipes', 'layout', 'speech', 'angles', 'edits', 'captions', 'bookmarks', 'phone'];
+const optionNames = ['recipes', 'layout', 'angles', 'edits', 'bookmarks', 'phone'];
 for (const name of optionNames) {
   $('show-' + name).onclick = () => {
     const opening = $(name).hidden;
@@ -202,34 +200,6 @@ pinSelection.onpointerup = (event) => {
   note('Region pinned in the vertical preview.');
 };
 pinSelection.onpointercancel = () => { pinStart = null; pinSelection.hidden = true; };
-
-function showTranscript(lines) {
-  savedTranscript = lines;
-  $('speech-lines').replaceChildren(...lines.map((line) => {
-    const button = document.createElement('button');
-    button.className = 'small';
-    button.textContent = clock(line.start) + ' · ' + line.text;
-    button.onclick = () => seek(line.start);
-    return button;
-  }));
-}
-
-$('speech-run').onclick = withNote(async () => {
-  const source = clip;
-  const tracks = selectedTracks();
-  if (!$('share-tracks').hidden && !tracks.length) throw new Error('Tick at least one audio track.');
-  $('speech-run').disabled = true;
-  note('Transcribing on this PC…');
-  try {
-    const lines = await api.invoke('transcribe-clip', { file: source.file, tracks });
-    if (clip === source) {
-      showTranscript(lines);
-      note(lines.length ? 'Transcript saved. Search it in View all.' : 'No speech found in the selected tracks.');
-    }
-  } finally {
-    $('speech-run').disabled = false;
-  }
-});
 
 function updateAngleButtons() {
   $('angle-sync').disabled = $('angle-switch').disabled = $('angle-play').disabled = !angle.getAttribute('src');

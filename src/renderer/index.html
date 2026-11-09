@@ -102,8 +102,6 @@
   </div>
   <div id="library-tools" class="library-tools" hidden>
     <input id="library-search" type="search" placeholder="Search clips" aria-label="Search clips">
-    <label class="speech-search-toggle"><input id="library-speech" type="checkbox"> Search spoken words</label>
-    <div id="speech-results" class="speech-lines" hidden></div>
     <div class="row">
       <select id="library-game" aria-label="Filter by game"></select>
       <select id="library-tag" aria-label="Filter by tag"></select>
@@ -300,10 +298,6 @@
           <option value="16">Small</option><option value="22">Medium</option><option value="30">Large</option>
         </select>
       </div>
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Face cam in vertical copies</div><div class="setting-desc">A vertical copy of a clip with your webcam puts it above the game, ready for TikTok or Shorts.</div></div>
-        <input id="verticalFaceCam" class="switch" type="checkbox" aria-label="Face cam in vertical copies">
-      </div>
     </div>
     <p id="perf-health" class="perf-health">Checking.</p>
     <div class="card">
@@ -318,23 +312,6 @@
   </div>
 
   <div class="pane" data-pane="audio" hidden>
-    <div class="card">
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Clean Mic</div><div class="setting-desc">Removes background noise and keyboard sound on sources ticked Mute key, in your clips only.</div></div>
-        <input id="cleanMicSwitch" class="switch" type="checkbox" aria-label="Clean Mic">
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">Push to talk</div>
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Push to talk</div><div class="setting-desc">Your mic is only in clips while you hold the key below. It affects sources ticked Mute key, and only in Afterclip.</div></div>
-        <input id="pushToTalk" class="switch" type="checkbox" aria-label="Push to talk">
-      </div>
-      <div class="setting">
-        <div class="setting-text"><div class="setting-name">Talk key</div><div class="setting-desc">Click, then press a key or a mouse side button. Your game still gets the press.</div></div>
-        <input id="pushToTalkKey" readonly aria-label="Push to talk key" class="key-field">
-      </div>
-    </div>
     <div class="card">
       <div class="card-title">Game audio</div>
       <div class="setting">
@@ -360,6 +337,21 @@
     </div>
     <p class="note"><b>Main mix</b> is what ordinary players hear. <b>Own track</b> also saves it separately. <b>Mute key</b> is silenced by the mic mute key. An app is already part of desktop audio, so leave it out of the main mix if desktop audio is in it, or you'll hear it twice.</p>
     <p id="audio-warning" class="note warn" hidden></p>
+    <div class="card">
+      <div class="card-title">Microphone</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clean Mic</div><div class="setting-desc">Removes background noise and keyboard sound on sources ticked Mute key, in your clips only.</div></div>
+        <input id="cleanMicSwitch" class="switch" type="checkbox" aria-label="Clean Mic">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Push to talk</div><div class="setting-desc">Your mic is only in clips while you hold the key below. It affects sources ticked Mute key, and only in Afterclip.</div></div>
+        <input id="pushToTalk" class="switch" type="checkbox" aria-label="Push to talk">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Talk key</div><div class="setting-desc">Click, then press a key or a mouse side button. Your game still gets the press.</div></div>
+        <input id="pushToTalkKey" readonly aria-label="Push to talk key" class="key-field">
+      </div>
+    </div>
   </div>
 
   <div class="pane" data-pane="controls" hidden>
@@ -510,6 +502,10 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Even out volume</div><div class="setting-desc">Compress, Send to Discord and vertical copies come out at the same loudness, so a quiet clip doesn't need turning up. Loud moments are kept from clipping. Your originals aren't changed.</div></div>
         <input id="evenAudio" class="switch" type="checkbox" aria-label="Even out volume">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Face cam in vertical copies</div><div class="setting-desc">Puts your webcam above the game in a vertical copy, ready for TikTok or Shorts. Turn on Show your webcam in Video first.</div></div>
+        <input id="verticalFaceCam" class="switch" type="checkbox" aria-label="Face cam in vertical copies">
       </div>
     </div>
 

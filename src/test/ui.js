@@ -137,15 +137,13 @@ async function main() {
       check('Sleekmeeter aliases display without changing the capture source', sourceLabels.names.join('|') === 'Discord|USB microphone' && sourceLabels.savedLabel === 'Cable-A Output' && sourceLabels.id === 'cable-a');
       await panel.eval("document.querySelector('#media .item .more').click()");
       const options = await panel.eval("[...document.querySelectorAll('.menu button')].map((button) => button.textContent)");
-      check('the clip menu has five entries without duplicate share actions', options.join('|') === 'Trim and share|Edit|Organize ›|File ›|Delete', options.join(', '));
-      await panel.eval("[...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Organize ›').click()");
-      check('rename and tags are grouped under Organize', await panel.eval("[...document.querySelectorAll('.menu button')].map((button) => button.textContent).join('|') === '‹ Back|Rename|Tags'"));
-      await panel.eval("document.querySelector('.menu button').click(); [...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Trim and share').click()");
+      check('the clip menu has four entries', options.join('|') === 'Edit and share|Rename|Tags|Show in folder', options.join(', '));
+      await panel.eval("[...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Edit and share').click()");
       const sharePage = await Page.open(/share\.html/);
       try {
         await waitFor(() => sharePage.eval("!document.getElementById('share-tools').hidden && document.getElementById('share-video').readyState >= 2"), 15000, 'the share window to load and decode video');
         check('clips without existing bookmarks omit the Bookmarks button', await sharePage.eval("document.getElementById('show-bookmarks').hidden"));
-        check('Trim and share opens with a playable clip and a wide timeline', await sharePage.eval("innerWidth >= 1000 && document.getElementById('trim').getBoundingClientRect().width >= 900"));
+        check('Edit and share opens with a playable clip and a wide timeline', await sharePage.eval("innerWidth >= 1000 && document.getElementById('trim').getBoundingClientRect().width >= 900"));
         await sharePage.eval("document.getElementById('trim-start').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true })); document.getElementById('share-trim').click()");
         await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Saved ')"), 15000, 'a trimmed copy');
         check('the trim button writes a separate clip', fs.readdirSync(path.dirname(clip)).some((name) => name.endsWith('_trim.mp4')));
@@ -166,23 +164,19 @@ async function main() {
         check('saved recipes apply the file size target', fs.readdirSync(path.dirname(clip)).some((name) => name.endsWith('_3MB.mp4')));
         const recipeResponse = await api.call('/last-clip/recipe?name=Smoke%20recipe', 'POST');
         check('the Stream Deck API runs a saved recipe by name', recipeResponse.ok && /_3MB\.mp4$/.test((await recipeResponse.json()).file));
-        if (process.env.AFTERCLIP_SPEECH_FIXTURE) {
-          const speech = path.join(path.dirname(clip), 'Speech smoke.mp4');
-          fs.copyFileSync(process.env.AFTERCLIP_SPEECH_FIXTURE, speech);
-          await panel.eval(`window.afterclip.invoke('open-share', ${JSON.stringify({ file: speech, game: 'Speech smoke' })})`);
-          await waitFor(() => sharePage.eval("document.getElementById('share-name').textContent === 'Speech smoke.mp4' && !document.getElementById('share-tools').hidden"), 15000, 'the speech fixture');
-          await sharePage.eval("document.getElementById('show-speech').click(); document.getElementById('speech-run').click()");
-          await waitFor(() => sharePage.eval("document.getElementById('share-note').textContent.startsWith('Transcript saved.')"), 20000, 'offline transcription');
-          const matches = await panel.eval("window.afterclip.invoke('search-speech', 'country')");
-          check('spoken words are indexed with a playable timestamp', matches.some((match) => match.file === speech && match.at >= 0 && /country/i.test(match.text)));
+        if (process.env.AFTERCLIP_ANGLE_FIXTURE) {
+          const angleSource = path.join(path.dirname(clip), 'Angle smoke.mp4');
+          fs.copyFileSync(process.env.AFTERCLIP_ANGLE_FIXTURE, angleSource);
+          await panel.eval(`window.afterclip.invoke('open-share', ${JSON.stringify({ file: angleSource, game: 'Angle smoke' })})`);
+          await waitFor(() => sharePage.eval("document.getElementById('share-name').textContent === 'Angle smoke.mp4' && !document.getElementById('share-tools').hidden"), 15000, 'the angle fixture');
           const angle = path.join(path.dirname(clip), 'Second angle.mp4');
-          execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', speech, '-vf', 'negate', '-c:v', 'libx264', '-af', 'adelay=700:all=1,volume=0.5',
+          execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', angleSource, '-vf', 'negate', '-c:v', 'libx264', '-af', 'adelay=700:all=1,volume=0.5',
             '-c:a', 'aac', angle], { windowsHide: true });
-          const match = await sharePage.eval(`window.afterclip.invoke('pick-angle', ${JSON.stringify(angle)}).then(() => window.afterclip.invoke('sync-angle', ${JSON.stringify(speech)}))`);
+          const match = await sharePage.eval(`window.afterclip.invoke('pick-angle', ${JSON.stringify(angle)}).then(() => window.afterclip.invoke('sync-angle', ${JSON.stringify(angleSource)}))`);
           check('audio matching finds the second angle despite a volume change', Math.abs(match.offset - 0.7) < 0.08, JSON.stringify(match));
           if (studioSmoke) {
             const replay = await sharePage.eval(`window.afterclip.invoke('export-angles', ${JSON.stringify({
-              file: speech, start: 0, end: 5, offset: match.offset, cuts: [{ time: 2, angle: 2 }, { time: 4, angle: 1 }], continuousAudio: true,
+              file: angleSource, start: 0, end: 5, offset: match.offset, cuts: [{ time: 2, angle: 2 }, { time: 4, angle: 1 }], continuousAudio: true,
             })})`);
             check('angle edits export with continuous audio', fs.existsSync(replay) && /_angles_/.test(replay));
             const color = (time) => execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', replay,
@@ -209,10 +203,6 @@ async function main() {
           const cleanFrequency = frequency(0.25);
           const beepFrequency = frequency(1.5);
           check('the bleep replaces audio only inside its interval', Math.abs(cleanFrequency - 440) < 25 && Math.abs(beepFrequency - 950) < 25, cleanFrequency + '/' + beepFrequency + ' Hz');
-          const captions = '1\n00:00:00,500 --> 00:00:02,000\nAfterclip test caption\n';
-          const captioned = await invoke('render-clip', { file: clip, start: 0, end: 4, vertical: true, captions });
-          execFileSync(ffmpeg, ['-hide_banner', '-i', captioned, '-frames:v', '1', '-f', 'null', '-'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-          check('captions burn into a playable vertical export', fs.existsSync(captioned) && /_captioned_/.test(captioned));
           await invoke('control-batch', [true, false, null]);
           await invoke('enqueue-batch', { files: [clip], recipe: 'Smoke recipe' });
           check('the batch queue waits while paused', (await invoke('studio-state')).jobs[0].status === 'waiting');
@@ -328,13 +318,12 @@ async function main() {
     check('View all opens every clip in a grid, with the editor link', library.items === 6 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
     await panel.shot('2b-library');
 
-    // Copy file, keeping whatever text was on the clipboard before.
-    const clipFile = await panel.eval("window.afterclip.invoke('state').then((s) => s.media[0].file)");
+    // Copy Last Clip, keeping whatever text was on the clipboard before.
     const oldClipboard = powershell('Get-Clipboard -Raw');
-    await panel.eval(`window.afterclip.invoke('copy-file', ${JSON.stringify(clipFile)})`);
+    const clipFile = (await (await api.call('/last-clip/copy', 'POST')).json()).file;
     const copied = powershell('(Get-Clipboard -Format FileDropList).FullName');
     if (oldClipboard) execFileSync('powershell', ['-NoProfile', '-Command', '$input | Set-Clipboard'], { input: oldClipboard, windowsHide: true });
-    check('Copy file puts the clip on the clipboard', copied.toLowerCase() === clipFile.toLowerCase(), copied);
+    check('Copy Last Clip puts the clip on the clipboard', copied.toLowerCase() === clipFile.toLowerCase(), copied);
     const refused = await panel.eval("window.afterclip.invoke('start-drag', 'C:\\\\Windows\\\\win.ini').then(() => 'allowed', (e) => e.message)");
     check('dragging refuses files outside your clips', /Not a Afterclip file/.test(refused), refused);
 
@@ -483,7 +472,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a clip can be starred', true);
     await panel.eval("document.getElementById('library-favourites').click()");
     check('the favourites filter shows only starred clips', (await panel.eval("document.querySelectorAll('#media .item').length")) === 1);
-    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Organize ›').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Rename').click(); })()`);
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Rename').click(); })()`);
     await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'rename field');
     await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Best: moment?'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
     await waitFor(async () => (await items()).includes('Best moment'), 5000, 'renamed clip');
@@ -504,7 +493,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
 
     // A share-ready copy, reported when it's done.
     const shareFile = await panel.eval("window.afterclip.invoke('state').then((s) => s.media.find((m) => m.size > 1000000).file)");
-    const shared = await panel.eval(`window.afterclip.invoke('compress-clip', ${JSON.stringify(shareFile)})`);
+    const shared = await panel.eval(`window.afterclip.invoke('share-clip', ${JSON.stringify({ file: shareFile, action: 'compress' })})`);
     check('a compressed copy is smaller, beside the original', fs.statSync(shared).size < fs.statSync(shareFile).size && /_small\.mp4$/.test(shared), `${(fs.statSync(shared).size / 1e6).toFixed(2)} MB`);
     await waitFor(() => panel.eval("/MB copy is ready/.test(document.getElementById('banner').textContent)"), 5000, 'the compressed copy banner');
     check('the panel says how big the copy is', true);
@@ -628,9 +617,9 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('Open editor button works without freezing', true);
     await waitFor(() => panel.eval("!document.getElementById('home').hidden"), 5000, 'home view');
     await waitFor(() => panel.eval("document.querySelectorAll('#media .more').length >= 2"), 10000, 'clips in list');
-    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Edit').click(); })()`);
-    await waitFor(() => editor.eval("document.querySelectorAll('.segment').length === 1"), 10000, 'clip from Edit menu');
-    check('a clip\'s Edit menu item opens it in the editor', true);
+    await panel.eval("window.afterclip.invoke('open-editor', [media.find((m) => m.kind !== 'screenshot').file])");
+    await waitFor(() => editor.eval("document.querySelectorAll('.segment').length === 1"), 10000, 'clip sent to the editor');
+    check('a clip sent to the editor opens in it', true);
     check('the app still answers after opening the editor', (await api.status()).buffering);
     await waitFor(() => editor.eval("document.querySelectorAll('.lib-item').length >= 2"), 10000, 'editor library');
     const editorWin = await waitFor(() => windowInfo(app.pid).find((w) => /Editor/.test(w.title)), 12000, 'editor window');
@@ -719,15 +708,15 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a screenshot shows no video length', await panel.eval("document.querySelector('#media .item .length').hidden"));
     await panel.eval("document.querySelector('#media .item .more').click()");
     const shotMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
-    check('a screenshot has no video actions', !/Edit|Compress|vertical/.test(shotMenu) && /Send to Discord/.test(shotMenu), shotMenu);
+    check('a screenshot has no video actions', shotMenu === 'Rename,Tags,Show in folder', shotMenu);
     await panel.eval("document.body.click(); document.querySelector('.tab[data-kind=clip]').click()");
 
-    // A vertical copy, chosen from Trim and share.
+    // A vertical copy, chosen from Edit and share.
     const beforeVertical = new Set(fs.readdirSync(clips));
     await panel.eval("document.querySelector('#media .item .more').click()");
     const clipMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
-    check('share actions are grouped in Trim and share', /Trim and share/.test(clipMenu) && !/Compress|vertical|Discord/.test(clipMenu), clipMenu);
-    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Trim and share').click()");
+    check('share actions are grouped in Edit and share', /Edit and share/.test(clipMenu) && !/Compress|vertical|Discord/.test(clipMenu), clipMenu);
+    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Edit and share').click()");
     const sharePage = await Page.open(/share\.html/);
     await waitFor(() => sharePage.eval("!document.getElementById('share-tools').hidden"), 15000, 'the share window');
     await sharePage.eval("document.getElementById('share-vertical').click()");
@@ -753,7 +742,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     });
     await new Promise((resolve) => discordServer.listen(0, '127.0.0.1', resolve));
     const discordFile = fs.readdirSync(clips).map((n) => path.join(clips, n)).find((f) => f.endsWith('.mp4'));
-    const sendToDiscord = (file) => panel.eval(`window.afterclip.invoke('send-to-discord', ${JSON.stringify(file)}).then(() => 'sent', (e) => e.message)`);
+    const sendToDiscord = (file) => panel.eval(`window.afterclip.invoke('share-clip', ${JSON.stringify({ file, action: 'discord' })}).then(() => 'sent', (e) => e.message)`);
     check('Send to Discord asks for a webhook first', /Add your Discord webhook/.test(await sendToDiscord(discordFile)));
     await panel.eval("document.getElementById('open-settings').click(); document.querySelector('[data-pane=clips]').click(); document.getElementById('add-webhook').click()");
     await panel.eval("(() => { const f = document.querySelector('#webhook-list input[type=password]'); f.value = 'https://example.com/not-discord'; f.dispatchEvent(new Event('input')); })()");
@@ -903,7 +892,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('clips in game folders are listed', true);
 
     // Tags, typed into the clip's menu, then found by the filter and by search.
-    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Organize ›').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Tags').click(); })()`);
+    await panel.eval(`(() => { document.querySelector('#media .more').click(); [...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Tags').click(); })()`);
     await waitFor(() => panel.eval("!!document.querySelector('.rename-field')"), 3000, 'the tags field');
     await panel.eval(`(() => { const i = document.querySelector('.rename-field'); i.value = 'Funny, #clutch, funny'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
     await waitFor(() => panel.eval("/#Funny #clutch$/.test(document.querySelector('#media .item-sub').textContent)"), 5000, 'the tags on the clip');
@@ -928,7 +917,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('the preview goes when the mouse leaves', await panel.eval("!document.querySelector('#media .thumb .scrub')"));
     check('a screenshot has no preview strip', (await panel.eval(`window.afterclip.invoke('preview-strip', ${JSON.stringify(shotFile)})`)) === null);
 
-    const besideCopy = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(inFolder.file)})`);
+    const besideCopy = await panel.eval(`window.afterclip.invoke('share-clip', ${JSON.stringify({ file: inFolder.file, action: 'vertical' })})`);
     check('a copy is made beside the original, in its game folder', path.dirname(besideCopy) === gameFolder, besideCopy);
     for (const file of [inFolder.file, besideCopy]) await panel.eval(`window.afterclip.invoke('trash', ${JSON.stringify(file)})`);
     check('an empty game folder is removed', !fs.existsSync(gameFolder));
@@ -1011,7 +1000,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('the webcam is in its corner', isCam(camPixel), [...camPixel].join());
     check('the rest of the picture is the game', isCard(at(withCam.file, canvas.width / 2, canvas.height / 2)));
     check('where the webcam sits is remembered for the clip', !!JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'library.json'), 'utf8')).cameras?.[path.basename(withCam.file)]);
-    const faceCam = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(withCam.file)})`);
+    const faceCam = await panel.eval(`window.afterclip.invoke('share-clip', ${JSON.stringify({ file: withCam.file, action: 'vertical' })})`);
     const faceSize = /(\d{3,4})x(\d{3,4})/.exec(spawnSync(ffmpeg, ['-hide_banner', '-i', faceCam], { encoding: 'utf8', windowsHide: true }).stderr);
     // The copy is encoded again at a lower bitrate, so its colours are only roughly the same.
     const magenta = (p) => p[0] > 180 && p[1] < 100 && p[2] > 160;
@@ -1065,7 +1054,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await sleep(3000);
     const noCamTall = await api.clip(2);
     check('with the webcam off, the game fills the whole picture, without a restart', isCard(at(noCamTall.file, 200, 40)) && (await api.status()).buffering, [...at(noCamTall.file, 200, 40)].join());
-    const alreadyTall = await panel.eval(`window.afterclip.invoke('vertical-clip', ${JSON.stringify(noCamTall.file)}).then(() => 'made', (e) => e.message)`);
+    const alreadyTall = await panel.eval(`window.afterclip.invoke('share-clip', ${JSON.stringify({ file: noCamTall.file, action: 'vertical' })}).then(() => 'made', (e) => e.message)`);
     check('a vertical clip needs no vertical copy', /already vertical/.test(alreadyTall), alreadyTall);
     await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, verticalMode: false }))");
     await waitFor(async () => (await api.status()).state !== 'ready', 8000, 'the wide restart').catch(() => undefined);

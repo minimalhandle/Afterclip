@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src data:; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost">
-<title>Afterclip · Trim and share</title>
+<title>Afterclip · Edit and share</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main class="share-window">
-  <header><strong>Trim and share</strong><div id="share-name" class="setting-desc"></div></header>
+  <header><strong>Edit and share</strong><div id="share-name" class="setting-desc"></div></header>
   <div class="share-preview">
     <div id="share-player" class="player">
       <video id="share-video" controls preload="metadata" aria-label="Clip preview"></video>
@@ -45,10 +45,8 @@
     <div class="share-actions">
       <button id="show-recipes" class="small">Share recipes</button>
       <button id="show-layout" class="small">Vertical layout</button>
-      <button id="show-speech" class="small">Transcript</button>
       <button id="show-angles" class="small">Sync angles</button>
       <button id="show-edits" class="small">Privacy edits</button>
-      <button id="show-captions" class="small">Captions</button>
       <button id="show-bookmarks" class="small" hidden>Bookmarks</button>
       <button id="show-phone" class="small">Send to phone</button>
     </div>
@@ -70,10 +68,6 @@
       <button id="layout-pin" class="small">Pin a region</button>
       <button id="layout-reset" class="small">Reset layout</button>
       <button id="layout-save" class="small">Save for this game</button>
-    </div>
-    <div id="speech" class="share-option" hidden>
-      <button id="speech-run" class="small">Transcribe selected audio locally</button>
-      <div id="speech-lines" class="speech-lines"></div>
     </div>
     <div id="angles" class="share-option row wrap" hidden>
       <button id="angle-pick" class="small">Choose second clip</button>
@@ -100,22 +94,13 @@
       <button id="redact-export" class="small primary">Save redacted copy</button>
       <p class="note">If a voice is also in the main mix, choose All audio tracks to remove it there too.</p>
     </div>
-    <div id="captions" class="share-option" hidden>
-      <div class="row wrap">
-        <button id="caption-generate" class="small">Use transcript</button>
-        <button id="caption-save" class="small">Save SRT</button>
-        <button id="caption-burn" class="small primary">Burn into video</button>
-        <label><input id="caption-vertical" type="checkbox" checked> Vertical 9:16</label>
-      </div>
-      <textarea id="caption-text" rows="4" aria-label="Editable SRT captions" placeholder="Transcribe audio first, then select Use transcript."></textarea>
-    </div>
     <div id="bookmarks" class="share-option" hidden>
       <div class="row wrap">
         <label>Before <input id="bookmark-before" type="number" min="0" max="120" value="10"> s</label>
         <label>After <input id="bookmark-after" type="number" min="0" max="120" value="10"> s</label>
         <button id="bookmark-load" class="small">Load bookmarks</button>
       </div>
-      <div id="bookmark-results" class="speech-lines"></div>
+      <div id="bookmark-results" class="bookmark-lines"></div>
     </div>
     <div id="phone" class="share-option row wrap" hidden>
       <button id="phone-start" class="small primary">Create phone link</button>

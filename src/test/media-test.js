@@ -197,10 +197,10 @@ try {
   run('shrink', burst, burstEven, '3000000', '--even');
   check('--even keeps a sudden loud moment under 0 dB', peak(burstEven) <= -0.3 && loudness(burstEven) > loudness(burst) + 6, `${peak(burst)} to ${peak(burstEven)} dB peak, ${loudness(burst)} to ${loudness(burstEven)} LUFS`);
   check('--even with a loud moment decodes cleanly', decodes(burstEven));
-  const whisper = toneClip('whisper.mp4', 0.02);
-  const whisperEven = f('whisper-even.mp4');
-  run('shrink', whisper, whisperEven, '3000000', '--even');
-  const boost = loudness(whisperEven) - loudness(whisper);
+  const nearSilent = toneClip('near-silent.mp4', 0.02);
+  const nearSilentEven = f('near-silent-even.mp4');
+  run('shrink', nearSilent, nearSilentEven, '3000000', '--even');
+  const boost = loudness(nearSilentEven) - loudness(nearSilent);
   check('--even turns a near-silent clip up by no more than 18 dB', boost > 16.5 && boost < 19, `${boost.toFixed(1)} dB`);
   const silence = f('silence.mp4');
   execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=5', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo:d=5', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', silence]);

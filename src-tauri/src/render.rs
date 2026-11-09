@@ -9,7 +9,6 @@ pub struct Export {
     end: f64,
     blur: Option<Blur>,
     audio: Option<AudioEdit>,
-    captions: Option<String>,
     vertical: bool,
 }
 
@@ -162,33 +161,6 @@ fn interval(from: f64, to: f64, start: f64, end: f64) -> Result<(f64, f64), Stri
     Ok((from, to))
 }
 
-fn write_captions(folder: &WorkDir, captions: &str) -> Result<(), String> {
-    if captions.trim().is_empty() || captions.len() > 256 * 1024 || !captions.contains(" --> ") {
-        return Err("Enter captions in SRT format.".into());
-    }
-    fs::write(folder.path("captions.srt"), captions).map_err(|e| e.to_string())
-}
-
-#[tauri::command(async)]
-pub fn save_captions(
-    core: tauri::State<Shared>,
-    payload: String,
-) -> Result<Option<String>, String> {
-    if payload.trim().is_empty() || payload.len() > 256 * 1024 || !payload.contains(" --> ") {
-        return Err("Enter captions in SRT format.".into());
-    }
-    let Some(target) = ask_save_path(
-        &core,
-        "Afterclip captions.srt".into(),
-        "SubRip captions",
-        "srt",
-    ) else {
-        return Ok(None);
-    };
-    fs::write(&target, payload).map_err(|e| e.to_string())?;
-    Ok(Some(target.to_string_lossy().into_owned()))
-}
-
 #[tauri::command(async)]
 pub fn render_clip(core: tauri::State<Shared>, payload: Export) -> Result<String, String> {
     let _job = core
@@ -225,12 +197,6 @@ pub fn render_clip(core: tauri::State<Shared>, payload: Export) -> Result<String
     let mut filters = Vec::new();
     if payload.vertical {
         filters.push("crop=w='min(iw,trunc(ih*9/32)*2)':h=ih,scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1");
-    }
-    if let Some(captions) = &payload.captions {
-        write_captions(&folder, captions)?;
-        filters.push(
-            "subtitles=captions.srt:force_style='FontName=Arial,FontSize=22,Outline=2,MarginV=25'",
-        );
     }
     if !graph.is_empty() || !filters.is_empty() {
         let chain = if filters.is_empty() {
@@ -277,12 +243,7 @@ pub fn render_clip(core: tauri::State<Shared>, payload: Export) -> Result<String
     video_encoder(&mut args);
     push(&mut args, &["-movflags", "+faststart", "output.mp4"]);
     ffmpeg(&core, &folder, &args)?;
-    let label = if payload.captions.is_some() {
-        "captioned"
-    } else {
-        "redacted"
-    };
-    finish(&core, &source, label, &folder.path("output.mp4"))
+    finish(&core, &source, "redacted", &folder.path("output.mp4"))
 }
 
 #[tauri::command(async)]

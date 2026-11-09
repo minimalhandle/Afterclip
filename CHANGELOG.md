@@ -5,15 +5,15 @@ update itself. Each version starts with `## ` and its number. Lines that start w
 
 ## 1.4.0
 
-- The clip menu groups file and library actions, with video exports in Trim and share.
+- The clip menu is down to Edit and share, Rename, Tags and Show in folder. Trimming and every video export live in Edit and share.
 - Audio Sources shows matching Sleekmeeter channel names when Sleekmeeter is installed.
 
 - Recover recent gameplay from disk checkpoints, import existing clips or watch a folder, and queue batches with saved share recipes.
-- Redact video and audio, export captions or burn them into video, and export an edit with synchronized angle cuts.
+- Redact video and audio, and export an edit with synchronized angle cuts.
 - Share a clip to your phone on Wi-Fi, check audio track routing alongside Voicemeeter labels, and hide protected games when they lose focus.
 
-- Trim and share opens in its own editor with video playback and one-click vertical Discord sharing.
-- Save share recipes, reframe vertical clips with pinned regions, search local transcripts, and switch between synchronized clip angles.
+- Edit and share opens in its own window with video playback and one-click vertical Discord sharing.
+- Save share recipes, reframe vertical clips with pinned regions, and switch between synchronized clip angles.
 
 - Trim a clip from its menu and save or share the selected range.
 - Even out audio levels and choose which recorded tracks go into share copies.

@@ -1,10 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::os::windows::process::CommandExt;
+use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Layout {
@@ -40,56 +36,6 @@ impl Recipe {
             && self.max_mb.is_none_or(|mb| (1..=250).contains(&mb))
             && self.layout.as_ref().is_none_or(Layout::valid)
     }
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct SpeechLine {
-    pub start: f64,
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end: Option<f64>,
-}
-
-pub fn transcript_path(folder: &Path, clip: &Path) -> Result<PathBuf, String> {
-    let meta = fs::metadata(clip).map_err(|e| e.to_string())?;
-    let mut key = DefaultHasher::new();
-    clip.hash(&mut key);
-    meta.len().hash(&mut key);
-    meta.modified().ok().hash(&mut key);
-    Ok(folder.join(format!("{:016x}.json", key.finish())))
-}
-
-pub fn read_transcript(path: &Path) -> Vec<SpeechLine> {
-    fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-}
-
-pub fn transcribe(runtime: &Path, wav: &Path) -> Result<Vec<SpeechLine>, String> {
-    let model = runtime.join("ggml-tiny.bin");
-    let binary = runtime.join("whisper-cli.exe");
-    if !model.is_file() || !binary.is_file() {
-        return Err("The offline speech model is missing from this installation.".into());
-    }
-    let result = Command::new(binary)
-        .args(["-m"]).arg(model).args(["-f"]).arg(wav)
-        .args(["-l", "auto", "-t", "4", "-ng", "-oj", "-of"]).arg(wav)
-        .current_dir(runtime).creation_flags(0x0800_4000).output()
-        .map_err(|e| format!("Couldn't start offline transcription: {e}"))?;
-    let mut json = wav.as_os_str().to_os_string();
-    json.push(".json");
-    let result_file = PathBuf::from(json);
-    let bytes = fs::read(&result_file);
-    let _ = fs::remove_file(&result_file);
-    if !result.status.success() {
-        return Err("Offline transcription failed. Try a shorter clip or a different audio track.".into());
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let segments = value["transcription"].as_array().ok_or("No transcription was returned.")?;
-    Ok(segments.iter().filter_map(|part| {
-        let start = part["offsets"]["from"].as_f64()? / 1000.0;
-        let text = part["text"].as_str()?.trim().to_string();
-        let end = part["offsets"]["to"].as_f64().map(|time| time / 1000.0);
-        (!text.is_empty() && !text.starts_with('[')).then_some(SpeechLine { start, text, end })
-    }).collect())
 }
 
 // Audio features at 50 Hz. Comparing changes in level reduces sensitivity to

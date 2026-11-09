@@ -12,7 +12,6 @@ function setupExtras() {
   $('redact-track').replaceChildren(new Option('All audio tracks', ''),
     ...(tracks.length ? tracks.map((track, index) => new Option(index === 0 ? 'Main mix' : 'Track ' + (index + 1), index))
       : [new Option('Main mix', '0')]));
-  $('caption-text').value = '';
   $('bookmark-results').replaceChildren();
   $('angle-follow').checked = false;
   cuts = [];
@@ -56,32 +55,6 @@ $('redact-export').onclick = () => {
   const audio = mode ? { track: track === '' ? null : Number(track), bleep: mode === 'bleep', from, to } : null;
   runEdit('render-clip', { file: clip.file, start, end, blur, audio, vertical: false }, 'Saving redacted copy…');
 };
-
-function srtTime(seconds) {
-  const ms = Math.round(seconds * 1000);
-  const fields = [Math.floor(ms / 3600000), Math.floor(ms / 60000) % 60, Math.floor(ms / 1000) % 60];
-  return fields.map((value) => String(value).padStart(2, '0')).join(':') + ',' + String(ms % 1000).padStart(3, '0');
-}
-
-$('caption-generate').onclick = () => {
-  if (!savedTranscript.length) return note('Transcribe the selected audio in Transcript first.', true);
-  const lines = savedTranscript.flatMap((line, index) => {
-    const until = line.end ?? savedTranscript[index + 1]?.start ?? line.start + 4;
-    const first = Math.max(line.start, start);
-    const last = Math.min(until, end);
-    return last > first ? [{ first: first - start, last: last - start, text: line.text }] : [];
-  });
-  $('caption-text').value = lines.map((line, index) =>
-    (index + 1) + '\n' + srtTime(line.first) + ' --> ' + srtTime(line.last) + '\n' + line.text
-  ).join('\n\n') + '\n';
-  note(lines.length ? 'Captions are timed to the selected trim. Edit the text before exporting.' : 'No transcript lines in the selected range.', !lines.length);
-};
-$('caption-save').onclick = withNote(async () => {
-  if (await api.invoke('save-captions', $('caption-text').value)) note('Saved SRT captions.');
-});
-$('caption-burn').onclick = () => runEdit('render-clip', {
-  file: clip.file, start, end, captions: $('caption-text').value, vertical: $('caption-vertical').checked,
-}, 'Rendering captions…');
 
 function renderCuts() {
   $('angle-cuts').replaceChildren(...cuts.map((cut, index) => {

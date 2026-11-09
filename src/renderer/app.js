@@ -351,7 +351,6 @@ function setLibrary(open) {
   $('view-all').hidden = open;
   $('open-editor').hidden = !open;
   $('library-tools').hidden = !open;
-  searchSpeech();
   renderMedia();
 }
 
@@ -563,98 +562,25 @@ function buildMenu(m) {
     b.onclick = () => { closeMenus(); fn(); };
     return b;
   };
-  const video = m.kind !== 'screenshot';
-  const sendTo = (hook) => {
-    if (!hook) return showBanner('Add your Discord webhook in Settings, under Clips and sharing.', 'bad');
-    showBanner(`Sending to ${hook.name}…`);
-    return api.invoke('share-clip', { file: m.file, action: 'discord', webhook: hook.index }).catch(() => undefined);
-  };
-  const group = (label, choices) => {
-    const button = item(label + ' ›', () => {});
-    button.onclick = (event) => {
-      event.stopPropagation();
-      const back = item('‹ Back', () => {});
-      back.onclick = (event) => {
-        event.stopPropagation();
-        menu.replaceChildren(...mainItems);
-        button.focus();
-      };
-      menu.replaceChildren(back, ...choices);
-      back.focus();
-    };
-    return button;
-  };
-  const hooks = video ? [] : webhooks();
-  const mainItems = [
-    ...(video ? [
-      item('Trim and share', () => openShare(m)),
-      item('Edit', () => api.invoke('open-editor', [m.file])),
-    ] : [
-      hooks.length > 1
-        ? group('Send to Discord', hooks.map((hook) => item(hook.name, () => sendTo(hook))))
-        : item('Send to Discord', () => sendTo(hooks[0])),
-    ]),
-    group('Organize', [
-      item('Rename', () => { renaming = m.file; renderMedia(); }),
-      item('Tags', () => { tagging = m.file; renderMedia(); }),
-    ]),
-    group('File', [
-      item('Copy file', () => api.invoke('copy-file', m.file).then(() => showBanner('Copied. Paste it into any app.', 'good'), (e) => showBanner(errorText(e), 'bad'))),
-      item('Show in folder', () => api.invoke('reveal', m.file)),
-    ]),
-    item('Delete', async () => {
-      await api.invoke('trash', m.file).catch((e) => showBanner(errorText(e), 'bad'));
-      selected.delete(m.file);
-      refresh();
-    }, 'danger'),
-  ];
-  menu.append(...mainItems);
+  menu.append(
+    ...(m.kind !== 'screenshot' ? [item('Edit and share', () => openShare(m))] : []),
+    item('Rename', () => { renaming = m.file; renderMedia(); }),
+    item('Tags', () => { tagging = m.file; renderMedia(); }),
+    item('Show in folder', () => api.invoke('reveal', m.file)),
+  );
   return menu;
 }
 
-/* Trim and share */
+/* Edit and share */
 
 /** Discord channels that have an address, each with its place in the full list, which is how the backend finds it. */
 const webhooks = () => (settings?.discordWebhooks ?? [])
   .map((h, index) => ({ name: h.name.trim() || `Channel ${index + 1}`, url: h.url, index }))
   .filter((h) => h.url.trim());
 
-/** What each audio track of a clip holds, going by the current settings, or plain numbers if they've changed since. */
+/** Opens the Edit and share window on a clip, optionally at a time in seconds. */
 function openShare(m, at = 0) {
   return api.invoke('open-share', { file: m.file, game: gameOf(m), at }).catch((e) => showBanner(errorText(e), 'bad'));
-}
-
-let speechSearchTimer;
-let speechSearchGeneration = 0;
-function searchSpeech() {
-  clearTimeout(speechSearchTimer);
-  const generation = ++speechSearchGeneration;
-  const output = $('speech-results');
-  output.replaceChildren();
-  output.hidden = !libraryOpen || !$('library-speech').checked;
-  if (output.hidden) return;
-  const query = $('library-search').value.trim();
-  if (query.length < 2) {
-    output.textContent = 'Transcribe clips in Trim and share, then search for a phrase.';
-    return;
-  }
-  output.textContent = 'Searching transcripts…';
-  speechSearchTimer = setTimeout(async () => {
-    try {
-      const results = await api.invoke('search-speech', query);
-      if (generation !== speechSearchGeneration) return;
-      output.replaceChildren(...results.map((result) => {
-        const button = document.createElement('button');
-        button.className = 'small';
-        button.textContent = result.name + ' · ' + clockLabel(result.at) + ' · ' + result.text;
-        button.onclick = () => openShare(result, result.at);
-        return button;
-      }));
-      if (!results.length) output.textContent = 'No matching speech in transcribed clips.';
-    } catch (error) {
-      if (generation === speechSearchGeneration) output.textContent = errorText(error);
-    }
-  }, 200);
 }
 
 async function refresh() {
@@ -1570,10 +1496,10 @@ const icon = (path) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="no
 const SECTIONS = [
   ['general', 'General', 'Startup, notifications, updates', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/>'],
   ['video', 'Video', 'Quality, buffer, webcam, performance', '<rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10l5-3v10l-5-3"/>'],
-  ['audio', 'Audio', 'Push to talk, game audio, devices', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
+  ['audio', 'Audio', 'Game audio, devices, microphone', '<path d="M4 10v4h4l5 4V6L8 10zM16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>'],
   ['controls', 'Controls', 'Hotkeys, clip lengths, controller', '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'],
   ['games', 'Games', 'Per-game settings and auto-record', '<rect x="2.5" y="7" width="19" height="11" rx="4.5"/><path d="M7 11v3M5.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/>'],
-  ['clips', 'Clips and sharing', 'Save location, folders, Discord', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+  ['clips', 'Clips and sharing', 'Save location, share copies, Discord', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
 ];
 let currentPane = null;
 
@@ -1694,8 +1620,7 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 document.querySelectorAll('[data-add]').forEach((b) => { b.onclick = () => addAudio(b.dataset.add); });
 $('open-settings').onclick = () => showView('settings');
-$('library-search').oninput = () => { renderMedia(); searchSpeech(); };
-$('library-speech').onchange = searchSpeech;
+$('library-search').oninput = renderMedia;
 $('library-game').onchange = () => renderMedia();
 $('library-tag').onchange = () => renderMedia();
 $('library-sort').onchange = () => renderMedia();

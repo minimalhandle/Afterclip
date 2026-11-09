@@ -42,7 +42,7 @@ Turn on **Vertical mode** in **Settings > Video**, or for one game in **Settings
 
 ### Your webcam
 
-**Settings > Video** can put your webcam in any corner of every clip and recording, at three sizes. A vertical copy of a clip with your webcam puts it above the game, ready for TikTok or Shorts.
+**Settings > Video** can put your webcam in any corner of every clip and recording, at three sizes. Turn on **Face cam in vertical copies** in **Settings > Clips and sharing** to put it above the game in a vertical copy, ready for TikTok or Shorts.
 
 ### Full-session recording
 
@@ -65,9 +65,9 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 
 ### Share anywhere
 
-Drag a clip straight into Discord or any other app, the same way you would from File Explorer. Or choose **Copy file** from its menu and paste it.
+Drag a clip straight into Discord or any other app, the same way you would from File Explorer.
 
-From a clip's menu you can also make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or use **Send to Discord**. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Trim and share** lets you pick a range and choose recorded audio tracks from the clip menu. **Even out volume** levels the audio in share copies.
+Choose **Edit and share** from a clip's menu to pick a range, choose recorded audio tracks, make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or **Send to Discord**. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Even out volume** levels the audio in share copies.
 
 **Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
 

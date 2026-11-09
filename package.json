@@ -5,7 +5,7 @@
   "description": "Clip game moments with hotkeys or Stream Deck, powered by libobs",
   "private": true,
   "scripts": {
-    "build:engine": "node scripts/fetch-obs.js && node scripts/build-engine.js && node scripts/fetch-speech.js && node scripts/prepare-studio.js && node scripts/build-plugin.js",
+    "build:engine": "node scripts/fetch-obs.js && node scripts/build-engine.js && node scripts/prepare-studio.js && node scripts/build-plugin.js",
     "start": "npm run build:engine && tauri dev",
     "dist": "npm run build:engine && tauri build",
     "release": "node scripts/build-release.js",
