@@ -31,13 +31,40 @@ const clockLabel = (seconds) => {
 };
 const bufferLabel = (seconds) => (seconds >= 60 ? `${+(seconds / 60).toFixed(1)}m` : `${seconds}s`);
 
-function showBanner(text, tone) {
+const BANNER_MS = 6000;
+const UNDO_BANNER_MS = 10000; // Longer, so there's time to reach the button.
+
+/** A short message at the bottom of the panel, optionally with one button, such as Undo. */
+function showBanner(text, tone, action) {
   const b = $('banner');
   b.textContent = text;
   b.className = `banner ${tone ?? ''}`;
+  if (action) {
+    const button = document.createElement('button');
+    button.className = 'banner-action';
+    button.textContent = action.label;
+    button.onclick = () => { b.hidden = true; action.run(); };
+    b.append(button);
+  }
   b.hidden = false;
   clearTimeout(showBanner.timer);
-  showBanner.timer = setTimeout(() => { b.hidden = true; }, 6000);
+  showBanner.timer = setTimeout(() => { b.hidden = true; }, action ? UNDO_BANNER_MS : BANNER_MS);
+}
+
+/** Says files went to the Recycle Bin, with an Undo that puts them back. */
+function showDeleted(files) {
+  const text = files.length === 1 ? 'Moved to the Recycle Bin' : `Moved ${files.length} to the Recycle Bin`;
+  showBanner(text, 'good', { label: 'Undo', run: () => undoDelete(files) });
+}
+
+async function undoDelete(files) {
+  try {
+    const restored = await api.invoke('restore', files);
+    showBanner(restored === 1 ? 'Put back' : `Put back ${restored}`, 'good');
+  } catch (e) {
+    showBanner(errorText(e), 'bad');
+  }
+  await refresh();
 }
 
 function renderStatus() {
@@ -46,6 +73,7 @@ function renderStatus() {
   const shining = card.classList.contains('saved');
   card.className = `capture-card ${status.recording ? 'recording' : ready ? 'live' : status.state === 'error' ? 'bad' : ''}`;
   card.classList.toggle('saved', shining);
+  renderSummary();
   const labels = {
     desktop: 'Recording primary monitor',
     detecting: `Connecting to ${capture.app ?? 'game'}`,
@@ -128,9 +156,10 @@ function shineBuffer() {
 function renderSummary() {
   if (!settings) return;
   const quality = settings.quality === 'full' ? 'Full' : settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
+  const where = `${status.bufferOnDisk ? ' on disk' : ''}`;
   $('summary').textContent = activeProfile
-    ? `${settings.gameProfiles.find((p) => p.exe === activeProfile)?.name ?? activeProfile} profile · ${bufferLabel(activeBuffer ?? settings.bufferSeconds)} buffer`
-    : `${quality}${settings.verticalMode ? ' · Vertical' : ''} · ${bufferLabel(settings.bufferSeconds)} buffer · ${settings.fps} FPS`;
+    ? `${settings.gameProfiles.find((p) => p.exe === activeProfile)?.name ?? activeProfile} profile · ${bufferLabel(activeBuffer ?? settings.bufferSeconds)} buffer${where}`
+    : `${quality}${status.hdr ? ' · HDR' : ''}${settings.verticalMode ? ' · Vertical' : ''} · ${bufferLabel(settings.bufferSeconds)} buffer${where} · ${settings.fps} FPS`;
 }
 
 function renderLengths() {
@@ -304,8 +333,9 @@ async function deleteSelected() {
     selected.delete(file);
   }));
   const failed = results.filter((r) => r.status === 'rejected');
-  if (failed.length) showBanner(`Couldn't delete ${failed.length} of ${files.length}. They may be open in another app.`, 'bad');
-  else showBanner(`Moved ${files.length} to the Recycle Bin`, 'good');
+  // The first reason is shown, since "open in another app" is only one of them.
+  if (failed.length) showBanner(`Couldn't delete ${failed.length} of ${files.length}. ${errorText(failed[0].reason)}`, 'bad');
+  else showDeleted(files);
   await refresh();
   renderMedia();
 }
@@ -344,6 +374,7 @@ const HOME_CLIPS = 5;
 let libraryOpen = false;
 function setLibrary(open) {
   libraryOpen = open;
+  if (!open) sessionFilter = null;
   $('home').classList.toggle('library-open', open);
   $('library-head').hidden = !open;
   $('brand').hidden = open;
@@ -389,11 +420,42 @@ const SORTS = {
   name: (a, b) => a.name.localeCompare(b.name),
 };
 
+/** The game session being looked over, from its card on the home page, or null. */
+let sessionFilter = null;
+let lastSession = null;
+
+const inSession = (m, s) => m.mtime >= s.startMs && m.mtime <= s.endMs;
+
+/** The card on the home page after a game closes, saying how many clips it saved. */
+function renderSession() {
+  const card = $('session');
+  card.hidden = !lastSession || libraryOpen;
+  if (!lastSession) return;
+  const clips = media.filter((m) => m.kind === 'clip' && inSession(m, lastSession));
+  const games = [...new Set(clips.map(gameOf))];
+  const count = `${clips.length} ${clips.length === 1 ? 'clip' : 'clips'}`;
+  $('session-text').textContent = games.length === 1 ? `Last ${games[0]} session: ${count}` : `Last session: ${count}`;
+  if (!clips.length) card.hidden = true;
+}
+
+function reviewSession() {
+  sessionFilter = lastSession;
+  kind = 'clip';
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.kind === 'clip'));
+  $('library-search').value = '';
+  $('library-game').value = '';
+  $('library-tag').value = '';
+  favouritesOnly = false;
+  $('library-favourites').setAttribute('aria-pressed', 'false');
+  setLibrary(true);
+}
+
 function filtered(all) {
   const words = $('library-search').value.trim().toLowerCase();
   const game = $('library-game').value;
   const tag = $('library-tag').value;
   return all
+    .filter((m) => !sessionFilter || inSession(m, sessionFilter))
     .filter((m) => !favouritesOnly || m.favourite)
     .filter((m) => !game || gameOf(m) === game)
     .filter((m) => !tag || tagsOf(m).includes(tag))
@@ -463,7 +525,12 @@ function renderMedia() {
   renderGameFilter(all);
   renderTagFilter(all);
   const shown = libraryOpen ? filtered(all) : all.slice(0, HOME_CLIPS);
+  $('session-filter').hidden = !sessionFilter;
+  renderSession();
   $('view-all').textContent = `View all (${all.length})`;
+  $('make-reel').hidden = kind === 'screenshot';
+  $('find-overlaps').hidden = kind !== 'clip';
+  if (kind !== 'clip') $('overlaps').hidden = true;
   $('library-title').textContent = KIND_TEXT[kind].title;
   const empty = $('empty');
   empty.hidden = shown.length > 0;
@@ -521,6 +588,13 @@ function renderMedia() {
       closeMenus();
       if (!wasOpen) li.append(buildMenu(m));
     };
+    // Right-clicking a clip opens the same menu, instead of the browser's own.
+    li.oncontextmenu = (e) => {
+      if (e.target.closest('input')) return;
+      e.preventDefault();
+      closeMenus();
+      li.append(buildMenu(m));
+    };
     const pick = document.createElement('input');
     pick.type = 'checkbox';
     pick.title = m.kind === 'screenshot' ? 'Select to delete together' : 'Select to edit or delete together';
@@ -567,6 +641,16 @@ function buildMenu(m) {
     item('Rename', () => { renaming = m.file; renderMedia(); }),
     item('Tags', () => { tagging = m.file; renderMedia(); }),
     item('Show in folder', () => api.invoke('reveal', m.file)),
+    item('Delete', async () => {
+      try {
+        await api.invoke('trash', m.file);
+        selected.delete(m.file);
+        showDeleted([m.file]);
+      } catch (e) {
+        showBanner(errorText(e), 'bad');
+      }
+      refresh();
+    }, 'danger'),
   );
   return menu;
 }
@@ -595,6 +679,7 @@ async function refresh() {
   patchNotes = state.patchNotes ?? null;
   seenVersion = state.settings.seenVersion ?? '';
   storageUsed = state.storageUsedBytes ?? 0;
+  lastSession = state.lastSession ?? null;
   remote = state.remote ?? remote;
   renderRemote();
   controllersSeen = state.controllers ?? controllersSeen;
@@ -751,6 +836,45 @@ function renderPresets(failures = []) {
   $('recordHotkey').classList.toggle('failed', failures.includes(settings.recordHotkey));
 }
 
+const MAX_MARKER_KEYS = 8;
+/** Named marker keys: a name and a hotkey each. */
+function renderMarkerKeys(failures = lastFailures ? lastFailures.split(',') : []) {
+  const keys = settings.markerKeys;
+  $('marker-keys').replaceChildren(...keys.map((k, i) => {
+    const row = document.createElement('div');
+    row.className = 'preset marker-key';
+    const label = document.createElement('input');
+    label.value = k.label;
+    label.maxLength = 30;
+    label.placeholder = 'Name, such as clutch';
+    label.setAttribute('aria-label', 'Marker name');
+    label.oninput = () => { k.label = label.value; scheduleSave(TYPING_DELAY_MS); };
+    const key = document.createElement('input');
+    key.setAttribute('aria-label', `Hotkey for ${k.label || 'this marker'}`);
+    bindHotkey(key, () => k.hotkey, (v) => { k.hotkey = v; scheduleSave(); });
+    key.classList.toggle('failed', !!k.hotkey && failures.includes(k.hotkey));
+    const del = document.createElement('button');
+    del.className = 'remove';
+    del.textContent = '×';
+    del.setAttribute('aria-label', 'Remove named marker');
+    del.onclick = () => { keys.splice(i, 1); renderMarkerKeys(); scheduleSave(); };
+    row.append(label, key, del);
+    return row;
+  }));
+  $('add-marker-key').disabled = keys.length >= MAX_MARKER_KEYS;
+}
+
+function renderAutoClip() {
+  $('auto-clip-details').hidden = !$('autoClip').checked;
+  const level = Number($('autoClipLevelDb').value);
+  $('auto-clip-level').textContent = `${level} dB`;
+  $('auto-clip-line').style.left = `${loudPercent(level)}%`;
+}
+
+// The meter shows -50 dB to 0 dB, so the slider's whole range fits with some room below it.
+const LOUD_FLOOR_DB = -50;
+const loudPercent = (db) => Math.max(0, Math.min(100, ((db - LOUD_FLOOR_DB) / -LOUD_FLOOR_DB) * 100));
+
 const kindNames = { output: 'Output', input: 'Input', app: 'App' };
 const appLabel = (choice) => {
   const exe = choice.id.split(':').pop().replace(/#3A/g, ':').replace(/#22/g, '#').replace(/\.exe$/i, '');
@@ -866,6 +990,8 @@ const PANE_STATS_MS = 1000;
 const OVERLOAD_PERCENT = 1; // Above this share of recent frames lost, it's worth a warning.
 let meterTimer = null;
 let statsTimer = null;
+let loudTimer = null;
+const LOUD_MS = 250;
 let lastStats = null;
 
 /** Meters and stats run only while on screen, so they cost nothing during play. */
@@ -881,6 +1007,9 @@ function updateLiveViews() {
     api.invoke('set-meters', false).catch(() => undefined);
     document.querySelectorAll('[data-meter]').forEach((f) => { f.style.transform = 'scaleX(0)'; });
   }
+  const loudWanted = visible && currentPane === 'controls' && !$('settings').hidden && $('autoClip').checked;
+  if (loudWanted && !loudTimer) loudTimer = setInterval(pollLoud, LOUD_MS);
+  else if (!loudWanted && loudTimer) { clearInterval(loudTimer); loudTimer = null; }
   const paneOpen = !$('settings').hidden && currentPane === 'video';
   const homeOpen = $('settings').hidden;
   const wanted = visible && (paneOpen || homeOpen) ? (paneOpen ? PANE_STATS_MS : HOME_STATS_MS) : 0;
@@ -892,6 +1021,27 @@ function updateLiveViews() {
     renderBuffer();
     if (wanted) pollStats();
   }
+}
+
+let loudBusy = false;
+async function pollLoud() {
+  if (loudBusy) return;
+  loudBusy = true;
+  const db = await api.invoke('loud-level', $('autoClipSource').value).catch(() => null);
+  loudBusy = false;
+  const fill = $('auto-clip-fill');
+  const note = $('auto-clip-now');
+  if (typeof db !== 'number') {
+    fill.style.width = '0%';
+    note.textContent = $('autoClipSource').value === 'game'
+      ? 'Open your game to see how loud it is. It must be in front.'
+      : 'No mic to listen to. Add one in Audio, and unmute it in clips.';
+    return;
+  }
+  fill.style.width = `${loudPercent(db)}%`;
+  const over = db >= Number($('autoClipLevelDb').value);
+  fill.classList.toggle('over', over);
+  note.textContent = `Hearing ${db <= -99 ? 'silence' : `${Math.round(db)} dB`} now${over ? ', which would count as a moment' : ''}. Set the line just above your normal talking.`;
 }
 
 async function pollLevels() {
@@ -969,9 +1119,20 @@ function addAudio(addKind) {
 }
 
 async function renderEstimate() {
-  const mb = await api.invoke('estimate', { bufferSeconds: Number($('bufferMinutes').value) * 60, bitrateKbps: Number($('bitrateKbps').value) });
+  const seconds = Number($('bufferMinutes').value) * 60;
+  const bitrateKbps = Number($('bitrateKbps').value);
+  const mb = await api.invoke('estimate', { bufferSeconds: seconds, bitrateKbps });
+  const size = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
   const note = $('estimate');
-  note.textContent = `Uses about ${mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`} of memory at this quality and length.`;
+  if ($('diskBuffer').checked) {
+    // Only the last 40 seconds stay in memory. The rest is on disk, plus up to one file being written.
+    const ramMb = await api.invoke('estimate', { bufferSeconds: Math.min(seconds, 40), bitrateKbps });
+    const diskMb = await api.invoke('estimate', { bufferSeconds: seconds + 60, bitrateKbps });
+    note.textContent = `Uses about ${size(ramMb)} of memory and up to ${size(diskMb)} on your save drive at this quality and length.`;
+    note.classList.remove('warn');
+    return;
+  }
+  note.textContent = `Uses about ${size(mb)} of memory at this quality and length.`;
   note.classList.toggle('warn', mb >= LARGE_BUFFER_MB);
 }
 
@@ -1400,6 +1561,12 @@ function fillForm() {
   renderWebhooks();
   ensureOption($('starClipSeconds'), settings.starClipSeconds, `${settings.starClipSeconds} seconds`);
   $('starClipSeconds').value = settings.starClipSeconds;
+  ensureOption($('markerClipSeconds'), settings.markerClipSeconds, `${settings.markerClipSeconds} seconds`);
+  $('markerClipSeconds').value = settings.markerClipSeconds;
+  ensureOption($('autoClipSeconds'), settings.autoClipSeconds, `${settings.autoClipSeconds} seconds`);
+  for (const k of ['toastCorner', 'autoClipSource', 'autoClipSeconds', 'autoClipLevelDb']) $(k).value = settings[k];
+  renderMarkerKeys();
+  renderAutoClip();
   renderProfiles();
   renderStorageUsed();
   renderUpdate();
@@ -1410,6 +1577,9 @@ function fillForm() {
   ensureOption($('bufferMinutes'), minutes, `Custom (${settings.bufferSeconds} seconds)`);
   $('bufferMinutes').value = minutes;
   for (const k of SWITCHES) $(k).checked = settings[k];
+  renderAutoClip();
+  $('weeklyReelTag').value = settings.weeklyReelTag ? `#${settings.weeklyReelTag}` : '';
+  renderWeeklyReel();
   ensureOption($('clipAfterSeconds'), settings.clipAfterSeconds, `${settings.clipAfterSeconds} seconds`);
   ensureOption($('cameraSize'), settings.cameraSize, `${settings.cameraSize}%`);
   ensureOption($('lowSpaceWarnGb'), settings.lowSpaceWarnGb, `${settings.lowSpaceWarnGb} GB`);
@@ -1428,7 +1598,8 @@ function fillForm() {
 }
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
-  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode', 'evenAudio'];
+  'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode', 'evenAudio', 'autoClip', 'keepTagged',
+  'diskBuffer', 'freeMemoryInGames', 'hdrCapture', 'weeklyReel'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1459,7 +1630,7 @@ async function saveNow() {
     if (!failed) saveNow.reset = setTimeout(() => { note.textContent = NOTE_DEFAULT; }, 5000);
     // Only redrawn when it changes, because redrawing takes focus from a field being typed in.
     const failures = r.hotkeyFailures.join();
-    if (failures !== lastFailures) { lastFailures = failures; renderPresets(r.hotkeyFailures); }
+    if (failures !== lastFailures) { lastFailures = failures; renderPresets(r.hotkeyFailures); renderMarkerKeys(r.hotkeyFailures); }
     settings.width = r.width;
     settings.height = r.height;
     settings.fps = r.fps;
@@ -1482,6 +1653,9 @@ function readForm() {
   settings.storageLimitGb = Number($('storageLimitGb').value);
   settings.deleteAfterDays = Number($('deleteAfterDays').value);
   settings.starClipSeconds = Number($('starClipSeconds').value);
+  settings.markerClipSeconds = Number($('markerClipSeconds').value);
+  for (const k of ['toastCorner', 'autoClipSource']) settings[k] = $(k).value;
+  for (const k of ['autoClipSeconds', 'autoClipLevelDb']) settings[k] = Number($(k).value);
   settings.bufferSeconds = Math.round(Number($('bufferMinutes').value) * 60);
   for (const k of SWITCHES) settings[k] = $(k).checked;
   for (const k of ['quality', 'resolution', 'frameRate', 'codec', 'encoderPreset', 'encoder', 'cameraCorner']) settings[k] = $(k).value;
@@ -1490,6 +1664,13 @@ function readForm() {
   settings.cameraDevice = $('cameraDevice').value || settings.cameraDevice;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
+  settings.weeklyReelTag = $('weeklyReelTag').value.trim().replace(/^#/, '');
+}
+
+/** The weekly reel's choices only show while it's on. With the buffer on disk, moving it there has nothing to do. */
+function renderWeeklyReel() {
+  $('weekly-reel-details').hidden = !$('weeklyReel').checked;
+  $('freeMemoryInGames').disabled = $('diskBuffer').checked;
 }
 
 const icon = (path) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
@@ -1546,6 +1727,7 @@ function showView(name) {
 /* Wiring */
 
 api.on('status', (s) => { status = s; renderStatus(); });
+api.on('session', () => refresh());
 api.on('capture', (c) => { capture = c; renderStatus(); });
 api.on('update', (u) => { update = u; renderUpdate(); });
 api.on('profile', (p) => { activeProfile = p.game ?? null; activeBuffer = p.bufferSeconds; renderSummary(); renderBuffer(); });
@@ -1597,6 +1779,11 @@ api.on('feedback', (f) => {
     showBanner(`Capture stopped after a problem. Starting it again in ${f.seconds} seconds.`, 'bad');
   } else if (f.kind === 'recovered') {
     showBanner('Capture is running again. The buffer started over.', 'good');
+  } else if (f.kind === 'buffer-on-disk') {
+    showBanner(f.message, 'good');
+  } else if (f.kind === 'reel' && f.ok) {
+    const total = Math.round(f.seconds);
+    showBanner(`Your weekly reel is ready: ${f.clips} clips, ${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}. It's tagged #reel.`, 'good');
   } else if (f.kind === 'camera' && f.ok) {
     showBanner(f.cameraOn ? 'Webcam is on' : 'Webcam is off', 'good');
   } else if (f.kind === 'favourite' && f.ok) {
@@ -1651,6 +1838,21 @@ $('starClipSeconds').onchange = () => scheduleSave();
 $('profile-browse').onclick = async () => { const exe = await api.invoke('pick-game'); if (exe) addProfile(exe); };
 $('view-all').onclick = () => setLibrary(true);
 $('library-back').onclick = () => setLibrary(false);
+$('session-review').onclick = reviewSession;
+$('session-dismiss').onclick = async () => {
+  lastSession = null;
+  renderSession();
+  await api.invoke('dismiss-session').catch(() => {});
+};
+$('session-filter').onclick = () => { sessionFilter = null; renderMedia(); };
+
+// The Delete key deletes what's selected, with the same second press for more than one as the Delete button.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Delete' || !selected.size || $('home').hidden) return;
+  if (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  deleteSelected();
+});
 $('close-panel').onclick = () => { if (saveTimer) saveNow(); api.invoke('close-panel'); };
 $('crumb-root').onclick = () => showPane(null);
 $('go-back').onclick = () => {
@@ -1704,6 +1906,83 @@ $('runAsAdmin').onchange = async () => {
 $('save-clip').onclick = () => api.invoke('clip', chosenLength).catch(() => undefined);
 $('record').onclick = () => api.invoke('toggle-record').catch(() => undefined);
 $('open-editor').onclick = () => api.invoke('open-editor', []);
+// More than this is too long to trim comfortably in one go.
+const MAX_REEL_CLIPS = 30;
+$('make-reel').onclick = () => {
+  const shown = filtered(media.filter((m) => m.kind === kind)).sort(SORTS.oldest);
+  if (!shown.length) { showBanner('Nothing is shown to make a reel from. Try another filter.', 'bad'); return; }
+  const files = shown.slice(-MAX_REEL_CLIPS).map((m) => m.file);
+  const left = shown.length - files.length;
+  api.invoke('open-editor', files)
+    .then(() => showBanner(left > 0 ? `Opened the newest ${files.length} in the editor. Trim them, then Merge and save.` : `Opened ${files.length} in the editor. Trim them, then Merge and save.`, 'good'))
+    .catch((e) => showBanner(errorText(e), 'bad'));
+};
+/** Pairs of clips that show the same moment, each with a way to drop the shorter one or keep both. */
+async function findOverlaps() {
+  const box = $('overlaps');
+  const button = $('find-overlaps');
+  button.disabled = true;
+  button.textContent = 'Looking';
+  let pairs = [];
+  try {
+    pairs = await api.invoke('find-overlaps');
+  } catch (e) {
+    showBanner(errorText(e), 'bad');
+    return;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Find overlapping clips';
+  }
+  // A saved clip's name ends with its length, such as _30s, or _full for the whole buffer.
+  const length = (name) => {
+    const m = /_(d+)s(?:_d+)?.w+$/.exec(name);
+    return m ? lengthLabel(Number(m[1])) : 'whole buffer';
+  };
+  const when = (file) => { const m = media.find((x) => x.file === file); return m ? timeAgo(m.mtime).toLowerCase() : ''; };
+  const close = document.createElement('button');
+  close.className = 'small';
+  close.textContent = 'Done';
+  close.onclick = () => { box.hidden = true; };
+  const head = document.createElement('div');
+  head.className = 'overlaps-head';
+  const summary = document.createElement('span');
+  summary.textContent = pairs.length
+    ? `${pairs.length} ${pairs.length === 1 ? 'pair shows' : 'pairs show'} the same moment. The longer clip of each has all of it.`
+    : 'No clips overlap. Each one shows a different moment.';
+  head.append(summary, close);
+  const rows = pairs.map((p) => {
+    const row = document.createElement('div');
+    row.className = 'overlap';
+    const text = document.createElement('div');
+    text.className = 'overlap-text';
+    text.textContent = `${parseName(p.keep.name).game}, ${when(p.keep.file)}: the ${length(p.covered.name)} clip is inside the ${length(p.keep.name)} one`;
+    text.title = `${p.covered.name}
+${p.keep.name}`;
+    const drop = document.createElement('button');
+    drop.className = 'small';
+    drop.textContent = 'Remove shorter';
+    drop.title = `Moves ${p.covered.name} to the Recycle Bin`;
+    drop.onclick = async () => {
+      try {
+        await api.invoke('trash', p.covered.file);
+        row.remove();
+        await refresh();
+      } catch (e) { showBanner(errorText(e), 'bad'); }
+    };
+    const keep = document.createElement('button');
+    keep.className = 'small';
+    keep.textContent = 'Keep both';
+    keep.onclick = async () => {
+      await api.invoke('keep-overlap', { keep: p.keep.name, covered: p.covered.name }).catch((e) => showBanner(errorText(e), 'bad'));
+      row.remove();
+    };
+    row.append(text, drop, keep);
+    return row;
+  });
+  box.replaceChildren(head, ...rows);
+  box.hidden = false;
+}
+$('find-overlaps').onclick = findOverlaps;
 $('merge-selected').onclick = () => {
   const ordered = media.filter((m) => selected.has(m.file) && m.kind !== 'screenshot').reverse().map((m) => m.file);
   api.invoke('open-editor', ordered);
@@ -1716,6 +1995,28 @@ $('open-studio').onclick = () => api.invoke('open-studio').catch((error) => show
 $('batch-selected').onclick = () => api.invoke('open-studio', [...selected]).catch((error) => showBanner(errorText(error), 'bad'));
 api.on('studio-import', () => refresh());
 $('restart-admin').onclick = () => api.invoke('restart-admin').catch((e) => showBanner(errorText(e), 'bad'));
+$('add-marker-key').onclick = () => { settings.markerKeys.push({ label: '', hotkey: '' }); renderMarkerKeys(); scheduleSave(); };
+for (const id of ['toastCorner', 'markerClipSeconds', 'autoClipSource', 'autoClipSeconds']) $(id).onchange = () => scheduleSave();
+$('autoClip').onchange = () => { renderAutoClip(); scheduleSave(); updateLiveViews(); };
+$('autoClipLevelDb').oninput = () => { renderAutoClip(); scheduleSave(TYPING_DELAY_MS); };
+// A restart clears the buffer, so these wait until the switch has settled.
+for (const id of ['diskBuffer', 'hdrCapture']) $(id).onchange = () => { renderWeeklyReel(); renderEstimate(); scheduleSave(TYPING_DELAY_MS); };
+for (const id of ['freeMemoryInGames', 'weeklyReel']) $(id).onchange = () => { renderWeeklyReel(); scheduleSave(); };
+$('weeklyReelTag').oninput = () => scheduleSave(TYPING_DELAY_MS);
+$('make-weekly-reel').onclick = async () => {
+  const button = $('make-weekly-reel');
+  button.disabled = true;
+  try {
+    await saveNow();
+    const reel = await api.invoke('make-weekly-reel');
+    if (!reel) showBanner('Not enough clips for a reel. It needs at least two from the last 7 days, with the same video settings.');
+    else refresh();
+  } catch (e) {
+    showBanner(errorText(e), 'bad');
+  } finally {
+    button.disabled = false;
+  }
+};
 $('add-preset').onclick = () => { settings.presets.push({ seconds: 45, hotkey: '' }); renderPresets(); scheduleSave(); };
 $('pick-folder').onclick = async () => { const dir = await api.invoke('pick-folder'); if (dir) { $('outputDir').value = dir; scheduleSave(); } };
 $('quality').onchange = () => { applyQuality(); scheduleSave(); };

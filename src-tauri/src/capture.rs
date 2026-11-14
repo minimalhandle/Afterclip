@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_secs(1);
 // Hooking a game normally takes a few seconds. After this, say capture has fallen back.
 const HOOK_GRACE: Duration = Duration::from_secs(10);
+// A game whose anti-cheat blocks the hook, such as Call of Duty, refuses it every time, and each try reaches into
+// the game's process, which can make it stutter. After this long with no hook at all, its monitor is recorded instead.
+const HOOK_GIVE_UP: Duration = Duration::from_secs(60);
 // How many polls between checking which device the game plays through.
 const AUDIO_CHECK_EVERY: u32 = 3;
 
@@ -49,7 +52,7 @@ impl CaptureManager {
         let me = Arc::clone(&manager);
         thread::spawn(move || {
             init_com_for_thread();
-            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None };
+            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false };
             loop {
                 thread::sleep(POLL);
                 if engine.status().state == "ready" && enabled() {
@@ -106,6 +109,8 @@ impl CaptureManager {
             w.game_mix = None;
             w.audio_check_in = 0;
             w.deadline = Instant::now() + HOOK_GRACE;
+            w.hooked_once = false;
+            w.gave_up = false;
             if engine.game_audio_enabled() {
                 let _ = engine.set_game_audio(Some(app), false);
             }
@@ -162,6 +167,12 @@ impl CaptureManager {
             }
             let Ok(hooked) = engine.is_app_hooked() else { return };
             let late = Instant::now() > w.deadline;
+            w.hooked_once |= hooked;
+            // A game that hooked once may just be loading, and a private game needs the hook to be shown at all.
+            let hopeless = Instant::now() > w.deadline - HOOK_GRACE + HOOK_GIVE_UP;
+            if !hooked && !w.hooked_once && !w.gave_up && !private && hopeless && engine.stop_hooking(&current.exe).is_ok() {
+                w.gave_up = true;
+            }
             if hooked != w.display_hidden && engine.set_display_visible(!hooked).is_ok() {
                 // No point capturing a monitor the game completely covers. It comes back if the hook drops.
                 w.display_hidden = hooked;
@@ -188,4 +199,8 @@ struct Watcher {
     display_hidden: bool,
     generation: u64,
     privacy: Option<bool>,
+    /// The current game has been hooked at least once.
+    hooked_once: bool,
+    /// The current game kept refusing the hook, so it's no longer tried until it's opened again.
+    gave_up: bool,
 }

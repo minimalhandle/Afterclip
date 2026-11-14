@@ -88,6 +88,14 @@ obs_encoder_t *g_video = nullptr;
 std::vector<obs_encoder_t *> g_audio; // Index 0 is the main mix. The rest are per-source tracks.
 obs_output_t *g_replay = nullptr, *g_record = nullptr;
 HANDLE g_recordStopped = nullptr;
+// The buffer on disk: a muxer sharing the buffer's encoders that writes short files one after another, so a long
+// buffer costs disk writes instead of RAM. The app deletes the files that fall out of the buffer's length.
+obs_output_t *g_disk = nullptr;
+// Set while the RAM buffer is restarted shorter on purpose, so its stop and start aren't reported as a failure.
+std::atomic<bool> g_quietReplayStop{false}, g_quietReplayStart{false};
+HANDLE g_replayStopped = nullptr;
+// HDR: the picture is 10-bit BT.2100 PQ, which only HEVC and AV1 can carry.
+bool g_hdr = false;
 
 void writeLine(obs_data_t *data)
 {
@@ -125,8 +133,20 @@ void emitOutputEvent(const char *event, bool active, const char *extraKey = null
 	obs_data_release(d);
 }
 
-void onReplayStart(void *, calldata_t *) { emitOutputEvent("replay", true); }
-void onReplayStop(void *, calldata_t *cd) { emitOutputEvent("replay", false, nullptr, nullptr, (int)calldata_int(cd, "code")); }
+void onReplayStart(void *, calldata_t *)
+{
+	if (!g_quietReplayStart.exchange(false))
+		emitOutputEvent("replay", true);
+}
+void onReplayStop(void *, calldata_t *cd)
+{
+	SetEvent(g_replayStopped);
+	if (!g_quietReplayStop.exchange(false))
+		emitOutputEvent("replay", false, nullptr, nullptr, (int)calldata_int(cd, "code"));
+}
+void onDiskStart(void *, calldata_t *) { emitOutputEvent("disk", true); }
+void onDiskStop(void *, calldata_t *cd) { emitOutputEvent("disk", false, nullptr, nullptr, (int)calldata_int(cd, "code")); }
+void onDiskFileChanged(void *, calldata_t *cd) { emitOutputEvent("diskFile", true, "path", calldata_string(cd, "next_file")); }
 void onRecordStart(void *, calldata_t *) { emitOutputEvent("record", true); }
 void onRecordFileChanged(void *, calldata_t *cd) { emitOutputEvent("recordFile", true, "path", calldata_string(cd, "next_file")); }
 void onRecordStop(void *, calldata_t *cd)
@@ -298,7 +318,9 @@ bool encoderRegistered(const char *wanted)
  */
 const char *startReplayWithEncoder(const std::string &vendor, const std::string &codec, int bitrate, const std::string &preset, bool multipass)
 {
-	const char *const *wanted = codec == "av1" ? AV1_ENCODERS : codec == "hevc" ? HEVC_ENCODERS : H264_ENCODERS;
+	// HDR is 10-bit, which no H.264 encoder here takes, so it falls back to the other 10-bit codec instead.
+	const char *const *wanted = codec == "av1" ? AV1_ENCODERS : codec == "hevc" || g_hdr ? HEVC_ENCODERS : H264_ENCODERS;
+	const char *const *fallback = g_hdr ? (wanted == AV1_ENCODERS ? HEVC_ENCODERS : AV1_ENCODERS) : H264_ENCODERS;
 	const size_t column = vendor == "nvenc" ? 0 : vendor == "amd" ? 1 : vendor == "qsv" ? 2 : vendor == "x264" ? 3 : ENCODER_COLUMNS;
 
 	std::vector<const char *> order;
@@ -308,12 +330,12 @@ const char *startReplayWithEncoder(const std::string &vendor, const std::string 
 	};
 	if (column < ENCODER_COLUMNS) {
 		add(wanted[column]);
-		add(H264_ENCODERS[column]);
+		add(fallback[column]);
 	}
 	for (size_t i = 0; i < ENCODER_COLUMNS; i++)
 		add(wanted[i]);
 	for (size_t i = 0; i < ENCODER_COLUMNS; i++)
-		add(H264_ENCODERS[i]);
+		add(fallback[i]);
 
 	for (const char *id : order) {
 		if (!encoderRegistered(id))
@@ -582,8 +604,9 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	ovi.fps_den = 1;
 	ovi.base_width = ovi.output_width = width;
 	ovi.base_height = ovi.output_height = height;
-	ovi.output_format = VIDEO_FORMAT_NV12;
-	ovi.colorspace = VIDEO_CS_709;
+	g_hdr = obs_data_get_bool(c, "hdr");
+	ovi.output_format = g_hdr ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+	ovi.colorspace = g_hdr ? VIDEO_CS_2100_PQ : VIDEO_CS_709;
 	ovi.range = VIDEO_RANGE_PARTIAL;
 	ovi.scale_type = OBS_SCALE_BICUBIC;
 	ovi.gpu_conversion = true;
@@ -593,6 +616,12 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		error = "Could not start video on this GPU (code " + std::to_string(video) + ")";
 		return false;
 	}
+	// On an HDR monitor, Windows shows ordinary content at the SDR brightness its slider sets. Matching it keeps
+	// the desktop and SDR games at the brightness you see, in an HDR picture and when HDR is turned into SDR.
+	const double sdrWhite = obs_data_get_double(c, "sdrWhiteNits");
+	if (sdrWhite >= 80.0 && sdrWhite <= 480.0)
+		obs_set_video_levels((float)sdrWhite, obs_get_video_hdr_nominal_peak_level());
+	obs_data_set_bool(reply, "hdr", g_hdr);
 	obs_audio_info2 oai = {};
 	oai.samples_per_sec = 48000;
 	oai.speakers = SPEAKERS_STEREO;
@@ -659,19 +688,30 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
 	g_cpuInfo = os_cpu_usage_info_start();
 	const int tracks = createAudioSources(c);
+	// Recordings name each audio track after its encoder, so editors show "Discord" instead of "Track 3".
+	obs_data_array_t *trackNames = obs_data_get_array(c, "trackNames");
 	for (int track = 0; track < tracks; track++) {
 		obs_data_t *as = obs_data_create();
 		obs_data_set_int(as, "bitrate", track == 0 ? MAIN_AUDIO_KBPS : EXTRA_AUDIO_KBPS);
-		const std::string name = "audio" + std::to_string(track);
+		std::string name = "Track " + std::to_string(track + 1);
+		if (trackNames && (size_t)track < obs_data_array_count(trackNames)) {
+			obs_data_t *item = obs_data_array_item(trackNames, track);
+			const char *given = obs_data_get_string(item, "name");
+			if (given && *given)
+				name = given;
+			obs_data_release(item);
+		}
 		obs_encoder_t *encoder = obs_audio_encoder_create("ffmpeg_aac", name.c_str(), as, track, nullptr);
 		obs_data_release(as);
 		if (!encoder) {
+			obs_data_array_release(trackNames);
 			error = "Could not create the audio encoder";
 			return false;
 		}
 		obs_encoder_set_audio(encoder, obs_get_audio());
 		g_audio.push_back(encoder);
 	}
+	obs_data_array_release(trackNames);
 	obs_data_set_int(reply, "audioTracks", tracks);
 
 	obs_data_t *rs = obs_data_create();
@@ -760,6 +800,8 @@ void shutdownAll()
 		obs_output_stop(g_record);
 		WaitForSingleObject(g_recordStopped, 8000);
 	}
+	if (g_disk && obs_output_active(g_disk))
+		obs_output_force_stop(g_disk);
 	if (g_replay && obs_output_active(g_replay))
 		obs_output_force_stop(g_replay);
 	obs_set_output_source(0, nullptr);
@@ -774,6 +816,7 @@ void shutdownAll()
 	if (g_cameraItem)
 		obs_sceneitem_remove(g_cameraItem);
 	obs_output_release(g_record);
+	obs_output_release(g_disk);
 	obs_output_release(g_replay);
 	obs_encoder_release(g_video);
 	for (obs_encoder_t *encoder : g_audio)
@@ -803,13 +846,15 @@ void onScreenshotFrame(void *param, video_data *frame)
 	ScreenshotFrame *shot = static_cast<ScreenshotFrame *>(param);
 	if (shot->taken)
 		return;
-	const uint32_t width = shot->width, height = shot->height;
-	shot->nv12.resize((size_t)width * height * 3 / 2);
+	// P010 has two bytes for each sample where NV12 has one, in the same layout.
+	const size_t row = (size_t)shot->width * (g_hdr ? 2 : 1);
+	const uint32_t height = shot->height;
+	shot->nv12.resize(row * height * 3 / 2);
 	uint8_t *to = shot->nv12.data();
-	for (uint32_t y = 0; y < height; y++, to += width)
-		memcpy(to, frame->data[0] + (size_t)y * frame->linesize[0], width);
-	for (uint32_t y = 0; y < height / 2; y++, to += width)
-		memcpy(to, frame->data[1] + (size_t)y * frame->linesize[1], width);
+	for (uint32_t y = 0; y < height; y++, to += row)
+		memcpy(to, frame->data[0] + (size_t)y * frame->linesize[0], row);
+	for (uint32_t y = 0; y < height / 2; y++, to += row)
+		memcpy(to, frame->data[1] + (size_t)y * frame->linesize[1], row);
 	shot->taken = true;
 	SetEvent(shot->ready);
 }
@@ -849,6 +894,88 @@ bool cmdScreenshot(obs_data_t *c, obs_data_t *reply, std::string &error)
 	}
 	obs_data_set_int(reply, "width", shot.width);
 	obs_data_set_int(reply, "height", shot.height);
+	obs_data_set_string(reply, "format", g_hdr ? "p010" : "nv12");
+	return true;
+}
+
+/** Starts writing the buffer to disk as well, in files of `segmentSeconds`, with the buffer's own encoders. */
+bool cmdDiskStart(obs_data_t *c, std::string &error)
+{
+	if (!g_replay || !g_video) {
+		error = "Capture is not running";
+		return false;
+	}
+	if (g_disk && obs_output_active(g_disk))
+		return true;
+	obs_data_t *s = obs_data_create();
+	obs_data_set_string(s, "path", obs_data_get_string(c, "path"));
+	obs_data_set_bool(s, "split_file", true);
+	obs_data_set_int(s, "max_time_sec", obs_data_get_int(c, "segmentSeconds"));
+	obs_data_set_int(s, "max_size_mb", 0);
+	obs_data_set_string(s, "directory", obs_data_get_string(c, "directory"));
+	obs_data_set_string(s, "format", "Buffer %CCYY-%MM-%DD %hh-%mm-%ss");
+	obs_data_set_string(s, "extension", "mp4");
+	obs_data_set_bool(s, "allow_spaces", true);
+	obs_data_set_bool(s, "allow_overwrite", false);
+	if (!g_disk) {
+		g_disk = obs_output_create("ffmpeg_muxer", "Disk Buffer", s, nullptr);
+		if (!g_disk) {
+			obs_data_release(s);
+			error = "Could not create the disk buffer";
+			return false;
+		}
+		signal_handler_t *sh = obs_output_get_signal_handler(g_disk);
+		signal_handler_connect(sh, "start", onDiskStart, nullptr);
+		signal_handler_connect(sh, "stop", onDiskStop, nullptr);
+		signal_handler_connect(sh, "file_changed", onDiskFileChanged, nullptr);
+	} else {
+		obs_output_update(g_disk, s);
+	}
+	obs_data_release(s);
+	obs_output_set_video_encoder(g_disk, g_video);
+	for (size_t i = 0; i < g_audio.size(); i++)
+		obs_output_set_audio_encoder(g_disk, g_audio[i], i);
+	if (!obs_output_start(g_disk)) {
+		const char *why = obs_output_get_last_error(g_disk);
+		error = why ? why : "The disk buffer could not start";
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Restarts the RAM buffer at a new length, which libobs only reads when it starts. What it held is lost, so the
+ * app saves it first, or has it on disk already. The stop and start aren't reported, since nothing failed.
+ */
+bool cmdReplayWindow(obs_data_t *c, std::string &error)
+{
+	if (!g_replay || !obs_output_active(g_replay)) {
+		error = "Replay buffer is not running";
+		return false;
+	}
+	g_quietReplayStop = true;
+	g_quietReplayStart = true;
+	ResetEvent(g_replayStopped);
+	obs_output_stop(g_replay);
+	if (WaitForSingleObject(g_replayStopped, 5000) != WAIT_OBJECT_0) {
+		g_quietReplayStop = false;
+		g_quietReplayStart = false;
+		error = "The buffer did not stop in time";
+		return false;
+	}
+	obs_data_t *s = obs_output_get_settings(g_replay);
+	obs_data_set_int(s, "max_time_sec", obs_data_get_int(c, "bufferSeconds"));
+	obs_data_set_int(s, "max_size_mb", obs_data_get_int(c, "bufferMaxMb"));
+	obs_output_update(g_replay, s);
+	obs_data_release(s);
+	if (!obs_output_start(g_replay)) {
+		g_quietReplayStart = false;
+		// Reported as a stop, so the app restarts capture the way it does after any failure.
+		emitOutputEvent("replay", false, nullptr, nullptr, -1);
+		error = "The buffer could not start again";
+		return false;
+	}
+	blog(LOG_INFO, "RAM buffer now %lld seconds", obs_data_get_int(c, "bufferSeconds"));
 	return true;
 }
 
@@ -899,6 +1026,22 @@ bool handle(const std::string &line)
 			error = "Replay buffer is not running";
 	} else if (cmd == "screenshot") {
 		ok = cmdScreenshot(c, reply, error);
+	} else if (cmd == "diskStart") {
+		ok = cmdDiskStart(c, error);
+	} else if (cmd == "diskSplit") {
+		// Finishes the file being written at the next keyframe, so everything up to now can be read.
+		calldata_t cd;
+		calldata_init(&cd);
+		ok = g_disk && obs_output_active(g_disk) && proc_handler_call(obs_output_get_proc_handler(g_disk), "split_file", &cd) &&
+		     calldata_bool(&cd, "split_file_enabled");
+		calldata_free(&cd);
+		if (!ok)
+			error = "The disk buffer is not running";
+	} else if (cmd == "diskStop") {
+		if (g_disk && obs_output_active(g_disk))
+			obs_output_stop(g_disk);
+	} else if (cmd == "replayWindow") {
+		ok = cmdReplayWindow(c, error);
 	} else if (cmd == "recordStart") {
 		ok = cmdRecordStart(c, error);
 	} else if (cmd == "recordStop") {
@@ -993,6 +1136,9 @@ bool handle(const std::string &line)
 		g_privatePid.store(0);
 		if (g_gameItem)
 			obs_sceneitem_set_visible(g_gameItem, false);
+		const char *why = obs_data_get_string(c, "reason");
+		if (why && *why)
+			blog(LOG_INFO, "Game capture off: %s", why);
 	} else if (cmd == "hooked") {
 		// An unhooked game capture source reports zero size.
 		obs_data_set_bool(reply, "hooked", g_gameItem && obs_sceneitem_visible(g_gameItem) && obs_source_get_width(g_game) > 0);
@@ -1059,6 +1205,7 @@ int main()
 
 	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 	g_recordStopped = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+	g_replayStopped = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	g_queued = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
 	if (!obs_startup("en-US", config.c_str(), nullptr)) {

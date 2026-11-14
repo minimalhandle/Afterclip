@@ -92,6 +92,11 @@
     <div id="hint" class="hint"></div>
   </footer>
 
+  <div id="session" class="session-card" hidden>
+    <span id="session-text"></span>
+    <button id="session-review" class="small">Review</button>
+    <button id="session-dismiss" class="icon session-close" aria-label="Dismiss" title="Dismiss">×</button>
+  </div>
   <div class="tabs" role="tablist">
     <button class="tab active" data-kind="clip" role="tab">Clips</button>
     <button class="tab" data-kind="recording" role="tab">Recordings</button>
@@ -108,10 +113,16 @@
       <select id="library-sort" aria-label="Sort by">
         <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="largest">Largest</option><option value="name">Name</option>
       </select>
+      <button id="session-filter" class="small session-chip" hidden title="Show all clips again">Last session ×</button>
       <button id="library-favourites" class="star-filter" aria-pressed="false" aria-label="Show favourites only" title="Show favourites only">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 3l2.7 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8l-5.5 2.9 1.2-6.1-4.5-4.2 6.1-.8z"/></svg>
       </button>
     </div>
+    <div class="row library-actions">
+      <button id="make-reel" class="small" title="Opens everything shown here in the editor, oldest first, ready to trim and merge into one video">Make a reel</button>
+      <button id="find-overlaps" class="small" title="Finds clips saved so close together that they show the same moment">Find overlapping clips</button>
+    </div>
+    <div id="overlaps" class="overlaps" hidden></div>
   </div>
   <div id="banner" class="banner" hidden></div>
   <ul id="media" class="media"></ul>
@@ -150,8 +161,14 @@
     <div class="card">
       <div class="card-title">Notifications</div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Clip saved popup</div><div class="setting-desc">A small note in the top right of your screen. Exclusive fullscreen games may hide it.</div></div>
+        <div class="setting-text"><div class="setting-name">Clip saved popup</div><div class="setting-desc">A small note on the screen you're using, which during a game is the game's monitor. Exclusive fullscreen games may hide it.</div></div>
         <input id="toastEnabled" class="switch" type="checkbox" aria-label="Clip saved popup">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Popup position</div><div class="setting-desc">Move it away from your game's map or health bar.</div></div>
+        <select id="toastCorner" aria-label="Popup position">
+          <option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
+        </select>
       </div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Beeps</div><div class="setting-desc">Sounds for saved clips, recording, mic mute and errors.</div></div>
@@ -234,6 +251,10 @@
         <div class="setting-text"><div class="setting-name">Codec</div><div class="setting-desc">H.264 plays everywhere. HEVC and AV1 give smaller files at the same quality. HEVC plays on iPhones and most PCs, but not in some browsers. AV1 only plays on iPhone 15 Pro and newer, and on recent PCs.</div></div>
         <select id="codec" aria-label="Codec"><option value="h264">H.264</option><option value="hevc">HEVC (H.265)</option><option value="av1">AV1</option></select>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">HDR</div><div id="hdr-note" class="setting-desc">While Windows HDR is on for your main monitor, captures in HDR, so HDR games keep their bright highlights. It uses HEVC, or AV1 if you chose it. Thumbnails, screenshots and shared copies are turned into SDR, so they never look washed out. Switching restarts capture, which clears the buffer.</div></div>
+        <input id="hdrCapture" class="switch" type="checkbox" aria-label="HDR">
+      </div>
       <p id="encoder-note" class="note"></p>
     </div>
     <p id="quality-note" class="note"></p>
@@ -262,6 +283,14 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Only buffer during games</div><div class="setting-desc">Frees memory and GPU on the desktop. The buffer starts when a game opens, and stops 10 minutes after it closes. Record still works any time.</div></div>
         <input id="bufferOnlyInGames" class="switch" type="checkbox" aria-label="Only buffer during games">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Keep the buffer on disk</div><div class="setting-desc">Writes the buffer to your save drive as it goes, instead of holding it in memory, so a long buffer costs almost no RAM. Only the last 40 seconds stay in memory. It writes all the time, so use an SSD. Switching restarts capture, which clears the buffer.</div></div>
+        <input id="diskBuffer" class="switch" type="checkbox" aria-label="Keep the buffer on disk">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Move it to disk when memory runs low</div><div class="setting-desc">During a game, if your PC runs short of memory, the buffer moves to disk instead of slowing the game down. Nothing in it is lost, and it goes back into memory when the game closes.</div></div>
+        <input id="freeMemoryInGames" class="switch" type="checkbox" aria-label="Move the buffer to disk when memory runs low">
       </div>
     </div>
     <p id="estimate" class="note"></p>
@@ -391,6 +420,48 @@
       </div>
     </div>
     <div class="card">
+      <div class="card-title">Named markers</div>
+      <p class="note card-note">A key that marks a moment with a name, such as clutch or fail. During a recording it adds a chapter with that name. Otherwise it saves a clip tagged with it, so you can find it with the tag filter.</p>
+      <div id="marker-keys"></div>
+      <div class="row wrap"><button id="add-marker-key" class="small">Add named marker</button></div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Clip length without a recording</div></div>
+        <select id="markerClipSeconds" aria-label="Named marker clip length">
+          <option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="120">2 minutes</option>
+          <option value="300">5 minutes</option><option value="0">Whole buffer</option>
+        </select>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Clip loud moments</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Save clips by themselves</div><div class="setting-desc">During a game, saves a clip tagged #auto when your mic or the game stays loud for a moment, such as when you shout. Clips never overlap, and a muted mic is never listened to.</div></div>
+        <input id="autoClip" class="switch" type="checkbox" aria-label="Clip loud moments">
+      </div>
+      <div id="auto-clip-details">
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">Listen to</div></div>
+          <select id="autoClipSource" aria-label="Listen to">
+            <option value="mic">Your mic</option><option value="game">The game's sound</option>
+          </select>
+        </div>
+        <div class="setting wide">
+          <div class="setting-text"><div class="setting-name">How loud</div><div id="auto-clip-now" class="setting-desc">Make some noise to see how loud it hears you, then set the line just above your normal talking.</div></div>
+          <div class="loud-meter">
+            <div class="loud-track"><div id="auto-clip-fill" class="loud-fill"></div><div id="auto-clip-line" class="loud-line"></div></div>
+            <input id="autoClipLevelDb" type="range" class="volume" min="-40" max="-1" step="1" aria-label="How loud counts as a moment">
+            <output id="auto-clip-level"></output>
+          </div>
+        </div>
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">Clip length</div><div class="setting-desc">Ends 3 seconds after the moment, so your reaction is in it.</div></div>
+          <select id="autoClipSeconds" aria-label="Automatic clip length">
+            <option value="15">15 seconds</option><option value="30">30 seconds</option><option value="45">45 seconds</option><option value="60">1 minute</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-title">Controller</div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Use a controller</div><div id="controller-seen" class="setting-desc">Turn this on, then press a button to check your controller is found.</div></div>
@@ -485,6 +556,10 @@
         </select>
       </div>
       <div class="setting">
+        <div class="setting-text"><div class="setting-name">Keep tagged clips</div><div class="setting-desc">The storage limit and cleanup also leave alone clips you've tagged. Clips tagged #auto by Clip loud moments still get cleaned up.</div></div>
+        <input id="keepTagged" class="switch" type="checkbox" aria-label="Keep tagged clips">
+      </div>
+      <div class="setting">
         <div class="setting-text"><div class="setting-name">A folder for each game</div><div class="setting-desc">Saves new clips, recordings and screenshots into a folder named after the game. Files you already have stay where they are.</div></div>
         <input id="gameFolders" class="switch" type="checkbox" aria-label="A folder for each game">
       </div>
@@ -506,6 +581,24 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Face cam in vertical copies</div><div class="setting-desc">Puts your webcam above the game in a vertical copy, ready for TikTok or Shorts. Turn on Show your webcam in Video first.</div></div>
         <input id="verticalFaceCam" class="switch" type="checkbox" aria-label="Face cam in vertical copies">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Weekly reel</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Make a weekly reel</div><div class="setting-desc">Once a week, joins the last 30 seconds of each of the week's clips into one video, oldest first, without re-encoding. It's tagged #reel, and only made while no game is open.</div></div>
+        <input id="weeklyReel" class="switch" type="checkbox" aria-label="Make a weekly reel">
+      </div>
+      <div id="weekly-reel-details">
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">Which clips</div><div class="setting-desc">Leave this empty for your favourites, or type a tag, such as funny.</div></div>
+          <input id="weeklyReelTag" placeholder="Favourites" maxlength="30" aria-label="Tag for the weekly reel">
+        </div>
+        <div class="setting">
+          <div class="setting-text"><div class="setting-name">Make one now</div><div id="weekly-reel-note" class="setting-desc">From the last 7 days. It needs at least two clips with the same video settings.</div></div>
+          <button id="make-weekly-reel" class="small">Make reel</button>
+        </div>
       </div>
     </div>
 

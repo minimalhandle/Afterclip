@@ -308,6 +308,58 @@ try {
   check('retag of a missing file fails cleanly', run('retag', f('none.mp4'), f('none-out.mp4')).status === 1);
   const trimmedHevc = f('hevc-trim.mp4');
   check('trimming HEVC makes hvc1', run('trim', hev1, trimmedHevc, '4').status === 0 && tagOf(trimmedHevc).join() === 'hvc1', tagOf(trimmedHevc).join());
+
+  // Audio track names, which editors show instead of "Track 2".
+  const handlers = (file) => [...spawnSync(ffmpeg, ['-hide_banner', '-i', file], { encoding: 'utf8' }).stderr.matchAll(/handler_name\s*:\s*(.+)/g)].map((m) => m[1].trim()).slice(1);
+  const named = f('named.mp4');
+  check('trim names the audio tracks', run('trim', noisy, named, '5', '--names=Main mix|Discord').status === 0 && handlers(named).join() === 'Main mix,Discord', handlers(named).join());
+  const namedJoin = f('named-join.mp4');
+  check('join keeps the names', run('join', namedJoin, named, '0', '-1', named, '0', '-1').status === 0 && handlers(namedJoin).join() === 'Main mix,Discord', handlers(namedJoin).join());
+  const namedMix = f('named-mix.mp4');
+  check('retrack keeps the names, re-encoded or not', run('retrack', named, namedMix, '1', '0.5').status === 0 && handlers(namedMix).join() === 'Main mix,Discord', handlers(namedMix).join());
+
+  // probe says which clips can be merged losslessly.
+  const signature = (file) => run('probe', file).stdout.split('\n')[0].trim();
+  check('probe matches clips that can merge', signature(input) === signature(f('t5.mp4')) && signature(input).length > 0);
+  check('probe tells apart clips that can\'t', signature(input) !== signature(noisy));
+  check('probe gives the length', Math.abs(Number(run('probe', input).stdout.split('\n')[1]) - 30) < 0.2);
+
+  // HDR: an SDR picture stored as BT.2100 PQ should come back looking like the original, not washed out.
+  const pq = f('pq.mp4');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=3,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv',
+    '-vf', 'zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt2020:t=smpte2084:m=bt2020nc:r=tv:npl=203,format=yuv420p10le',
+    '-c:v', 'libx265', '-x265-params', 'log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc', pq]);
+  // Washed out means flat, so pictures are compared pixel by pixel, on a small grey copy of each.
+  const grey = (args) => spawnSync(ffmpeg, ['-hide_banner', '-v', 'error', ...args, '-frames:v', '1', '-vf', 'scale=64:36,format=gray', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 20 }).stdout;
+  const original = grey(['-ss', '1', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=3']);
+  const apart = (picture) => picture.length === original.length ? picture.reduce((sum, v, i) => sum + Math.abs(v - original[i]), 0) / picture.length : 255;
+  const naive = apart(grey(['-ss', '1', '-i', pq]));
+  const pqThumb = f('pq.jpg');
+  check('thumb of an HDR clip runs', run('thumb', pq, pqThumb).status === 0);
+  const mapped = apart(grey(['-i', pqThumb]));
+  check('HDR thumbnails look like the SDR original', mapped < 12 && naive > mapped * 2, `ours ${mapped.toFixed(1)} apart, untouched ${naive.toFixed(1)} apart`);
+  const pqVertical = f('pq-vertical.mp4');
+  check('a shared copy of an HDR clip runs', run('vertical', pq, pqVertical).status === 0);
+  const vInfo = spawnSync(ffmpeg, ['-hide_banner', '-i', pqVertical], { encoding: 'utf8' }).stderr;
+  check('the shared copy is 8-bit SDR', /yuv420p\(/.test(vInfo) && !/smpte2084/.test(vInfo), (/Video: .*/.exec(vInfo) ?? [''])[0].slice(0, 120));
+  const p010 = f('frame.p010');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1', '-i', pq, '-frames:v', '1', '-pix_fmt', 'p010le', '-f', 'rawvideo', p010]);
+  const hdrPng = f('frame.png');
+  check('an HDR screenshot becomes a PNG', run('png', p010, hdrPng, '640', '360', 'p010').status === 0 && fs.existsSync(hdrPng));
+  // Against an SDR screenshot of the same picture, since a PNG is RGB and turns grey differently from video.
+  const sdrRaw = f('frame.nv12');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=30:d=3', '-frames:v', '1', '-vf', 'scale=out_color_matrix=bt709', '-pix_fmt', 'nv12', '-f', 'rawvideo', sdrRaw]);
+  const sdrPng = f('frame-sdr.png');
+  run('png', sdrRaw, sdrPng, '640', '360');
+  const sdrShot = grey(['-i', sdrPng]);
+  const hdrShot = grey(['-i', hdrPng]);
+  const fromSdr = (picture) => picture.length === sdrShot.length ? picture.reduce((sum, v, i) => sum + Math.abs(v - sdrShot[i]), 0) / picture.length : 255;
+  // The untouched frame, turned into a PNG the way a plain conversion would, is what washed out looks like.
+  const untouchedPng = f('frame-untouched.png');
+  execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1', '-i', pq, '-frames:v', '1', untouchedPng]);
+  const [shot, washed] = [fromSdr(hdrShot), fromSdr(grey(['-i', untouchedPng]))];
+  // The moving parts of the pattern differ a little between the two sources, so a perfect match isn't expected.
+  check('the HDR screenshot looks like an SDR one', shot < 20 && washed > shot * 1.5, `ours ${shot.toFixed(1)} apart, untouched ${washed.toFixed(1)} apart`);
 } catch (e) {
   check('no exceptions', false, e.message);
 } finally {

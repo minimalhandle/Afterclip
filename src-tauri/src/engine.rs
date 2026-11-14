@@ -23,6 +23,35 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const SAVE_TIMEOUT: Duration = Duration::from_secs(60);
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(12);
+/// With the buffer on disk, RAM keeps only this much, so short clips still save straight from memory.
+pub const RAM_WINDOW_SECONDS: i64 = 40;
+/// The buffer on disk is written as files of this length. The oldest are deleted as they fall out of the buffer.
+const DISK_SEGMENT_SECONDS: i64 = 60;
+const DISK_START_TIMEOUT: Duration = Duration::from_secs(5);
+const DISK_SPLIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// A finished file can take a moment to be readable, while the muxer writes its index.
+const DISK_READABLE_TRIES: u32 = 50;
+/// A file the RAM buffer saved can't be renamed above this, so a full-buffer clip is copied to name its tracks.
+const NAME_TRACKS_UP_TO_BYTES: u64 = 4_000_000_000;
+
+/// One finished file of the buffer on disk, oldest first. `overlap` is how much of its end the next file
+/// also has, which only happens to the RAM buffer saved when memory ran low.
+#[derive(Clone, Debug)]
+struct DiskSegment {
+    path: PathBuf,
+    overlap: f64,
+}
+
+#[derive(Default)]
+struct DiskBuffer {
+    active: bool,
+    started_at: Option<Instant>,
+    /// The file being written now, which can't be read until it's finished.
+    current: Option<PathBuf>,
+    finished: Vec<DiskSegment>,
+    /// Waiting for the next file, after asking for the current one to finish.
+    next_file: Option<Sender<String>>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EngineStatus {
@@ -37,6 +66,11 @@ pub struct EngineStatus {
     /// Stopped on purpose, because the buffer only runs during games and none is open.
     #[serde(rename = "waitingForGame")]
     pub waiting_for_game: bool,
+    /// The buffer is kept on disk, by choice or because memory ran low.
+    #[serde(rename = "bufferOnDisk")]
+    pub buffer_on_disk: bool,
+    /// Capturing in HDR.
+    pub hdr: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -77,6 +111,11 @@ pub struct Engine {
     next_id: AtomicU64,
     generation: AtomicU64,
     stopping: AtomicBool,
+    disk: Mutex<DiskBuffer>,
+    /// When the RAM buffer last started filling, and how long it keeps, which is shorter with the buffer on disk.
+    ram: Mutex<(Instant, i64)>,
+    /// HDR failed to start on this graphics card, so capture uses SDR until the settings change.
+    hdr_blocked: AtomicBool,
     on_event: Box<dyn Fn(EngineEvent) + Send + Sync>,
 }
 
@@ -86,7 +125,7 @@ impl Engine {
             home,
             root,
             settings: Mutex::new(settings),
-            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false }),
+            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false, buffer_on_disk: false, hdr: false }),
             running: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             saved: Mutex::new(None),
@@ -98,8 +137,15 @@ impl Engine {
             next_id: AtomicU64::new(1),
             generation: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
+            disk: Mutex::new(DiskBuffer::default()),
+            ram: Mutex::new((Instant::now(), 0)),
+            hdr_blocked: AtomicBool::new(false),
             on_event,
         })
+    }
+
+    fn disk_dir(&self) -> PathBuf {
+        self.staging_dir().join("buffer")
     }
 
     fn output_dir(&self) -> PathBuf {
@@ -231,6 +277,36 @@ impl Engine {
                     let _ = tx.send(path.to_string());
                 }
             }
+            Some("disk") => {
+                {
+                    let mut disk = self.disk.lock().unwrap();
+                    disk.active = active;
+                    disk.started_at = active.then(Instant::now);
+                }
+                self.update(|s| s.buffer_on_disk = active);
+                if !active && code != 0 && !self.stopping.load(Ordering::SeqCst) {
+                    (self.on_event)(EngineEvent::Warning(format!(
+                        "The buffer on disk stopped (code {code}), so clips can only reach back {RAM_WINDOW_SECONDS} seconds until capture restarts. Is the drive full?"
+                    )));
+                }
+            }
+            // The buffer on disk moved on to its next file, so the last one is finished.
+            Some("diskFile") => {
+                if let Some(next) = m["path"].as_str() {
+                    let next = PathBuf::from(next.replace('/', "\\"));
+                    let waiting = {
+                        let mut disk = self.disk.lock().unwrap();
+                        if let Some(done) = disk.current.replace(next.clone()) {
+                            disk.finished.push(DiskSegment { path: done, overlap: 0.0 });
+                        }
+                        disk.next_file.take()
+                    };
+                    if let Some(tx) = waiting {
+                        let _ = tx.send(next.to_string_lossy().into_owned());
+                    }
+                    self.prune_disk();
+                }
+            }
             _ => {
                 if let Some(id) = m["id"].as_u64() {
                     if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
@@ -267,10 +343,24 @@ impl Engine {
 
     pub fn start(self: &Arc<Self>, settings: Option<Settings>) -> Result<(), String> {
         if let Some(settings) = settings {
-            *self.settings.lock().unwrap() = settings;
+            let mut current = self.settings.lock().unwrap();
+            if current.hdr_capture != settings.hdr_capture || current.codec != settings.codec || current.encoder != settings.encoder {
+                self.hdr_blocked.store(false, Ordering::SeqCst);
+            }
+            *current = settings;
         }
         self.stopping.store(false, Ordering::SeqCst);
-        let result = self.try_start();
+        let mut result = self.try_start();
+        // A graphics card that can't encode 10-bit still gets a buffer, in SDR.
+        if result.is_err() && self.status().hdr {
+            self.stop();
+            self.stopping.store(false, Ordering::SeqCst);
+            self.hdr_blocked.store(true, Ordering::SeqCst);
+            result = self.try_start();
+            if result.is_ok() {
+                (self.on_event)(EngineEvent::Warning("HDR couldn't start on this graphics card, so capture is in SDR. Choose HEVC or AV1 in Settings, under Video, or turn HDR off.".into()));
+            }
+        }
         if let Err(e) = &result {
             self.stop();
             self.update(|s| {
@@ -282,13 +372,21 @@ impl Engine {
     }
 
     fn try_start(self: &Arc<Self>) -> Result<(), String> {
-        self.update(|s| {
-            s.state = "starting";
-            s.message = Some("Starting capture".into());
-            s.buffering = false;
-            s.recording = false;
-            s.waiting_for_game = false;
+        let s = self.settings.lock().unwrap().clone();
+        // HDR follows Windows' Use HDR switch for the main monitor, which is where games run.
+        let (monitor_hdr, sdr_white) = crate::win32::primary_hdr().unwrap_or((false, 0.0));
+        let hdr = s.hdr_capture && monitor_hdr && !s.test_pattern && !self.hdr_blocked.load(Ordering::SeqCst);
+        self.update(|status| {
+            status.state = "starting";
+            status.message = Some("Starting capture".into());
+            status.buffering = false;
+            status.recording = false;
+            status.waiting_for_game = false;
+            status.buffer_on_disk = false;
+            status.hdr = hdr;
         });
+        *self.disk.lock().unwrap() = DiskBuffer::default();
+        let _ = fs::remove_dir_all(self.disk_dir());
         let config = self.home.join("engine");
         for dir in [self.clips_dir(), self.recordings_dir(), self.screenshots_dir(), self.staging_dir(), config.clone()] {
             fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
@@ -335,7 +433,8 @@ impl Engine {
             me.on_exit(generation);
         });
 
-        let s = self.settings.lock().unwrap().clone();
+        // On disk, RAM keeps only the last few seconds, for clips that save straight away.
+        let ram_seconds = if s.disk_buffer { s.buffer_seconds.min(RAM_WINDOW_SECONDS) } else { s.buffer_seconds };
         let started = self.rpc("start", json!({
             "root": self.root,
             "width": s.canvas().0,
@@ -343,12 +442,15 @@ impl Engine {
             "vertical": s.vertical_mode,
             "fps": s.fps,
             "bitrateKbps": s.bitrate_kbps,
-            "bufferSeconds": s.buffer_seconds,
-            // The size cap must not cut the buffer short, so leave headroom over the estimate.
-            "bufferMaxMb": estimate_buffer_mb(s.buffer_seconds, s.bitrate_kbps) * 3 / 2 + 64,
+            "bufferSeconds": ram_seconds,
+            "bufferMaxMb": buffer_max_mb(ram_seconds, s.bitrate_kbps),
             "stagingDir": self.staging_dir(),
             "encoder": s.encoder,
-            "codec": s.codec,
+            // HDR is 10-bit, and H.264 can't be, so it uses HEVC.
+            "codec": if hdr && s.codec == "h264" { "hevc" } else { s.codec.as_str() },
+            "hdr": hdr,
+            "sdrWhiteNits": if monitor_hdr { sdr_white } else { 0.0 },
+            "trackNames": s.track_names().iter().map(|name| json!({ "name": name })).collect::<Vec<_>>(),
             "preset": s.encoder_preset,
             "multipass": s.multipass,
             "audio": s.audio_sources.iter().map(|a| {
@@ -374,11 +476,160 @@ impl Engine {
             }
             thread::sleep(Duration::from_millis(100));
         }
+        *self.ram.lock().unwrap() = (Instant::now(), ram_seconds);
+        if s.disk_buffer {
+            if let Err(e) = self.start_disk() {
+                // Without the disk, the buffer goes back into RAM at its full length.
+                (self.on_event)(EngineEvent::Warning(format!("The buffer couldn't be kept on disk, so it's in RAM: {e}")));
+                self.resize_ram(s.buffer_seconds)?;
+            }
+        }
         self.update(|s| {
             s.state = "ready";
             s.message = None;
         });
         Ok(())
+    }
+
+    /// Starts writing the buffer to disk too, and waits until it's running.
+    fn start_disk(&self) -> Result<(), String> {
+        let dir = self.disk_dir();
+        fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+        // Named the way the engine names the files after it.
+        let first = unique_path(&dir.join(format!("Buffer {}.mp4", chrono::Local::now().format("%Y-%m-%d %H-%M-%S"))));
+        self.disk.lock().unwrap().current = Some(first.clone());
+        self.rpc("diskStart", json!({ "path": first, "directory": dir, "segmentSeconds": DISK_SEGMENT_SECONDS }))?;
+        let deadline = Instant::now() + DISK_START_TIMEOUT;
+        while !self.disk.lock().unwrap().active {
+            if Instant::now() > deadline {
+                let _ = self.rpc("diskStop", json!({}));
+                return Err("the buffer on disk did not start".into());
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Ok(())
+    }
+
+    /// Restarts the RAM buffer at a new length. What it held is lost, so it must be saved or on disk first.
+    fn resize_ram(&self, seconds: i64) -> Result<(), String> {
+        let bitrate = self.settings.lock().unwrap().bitrate_kbps;
+        self.rpc("replayWindow", json!({ "bufferSeconds": seconds, "bufferMaxMb": buffer_max_mb(seconds, bitrate) }))?;
+        *self.ram.lock().unwrap() = (Instant::now(), seconds);
+        Ok(())
+    }
+
+    /// Deletes the files on disk that have fallen out of the buffer. A file is deleted once even its newest
+    /// moment is older than the buffer, so a clip of the whole buffer always has what it needs.
+    pub fn prune_disk(&self) {
+        // Never while a clip is saving, which may be joining these files. The next file change tries again.
+        let Ok(_no_clip_saving) = self.clip_lock.try_lock() else { return };
+        let keep = Duration::from_secs((self.settings.lock().unwrap().buffer_seconds + 10).max(0) as u64);
+        let now = std::time::SystemTime::now();
+        let mut disk = self.disk.lock().unwrap();
+        disk.finished.retain(|segment| {
+            let ended = fs::metadata(&segment.path).and_then(|m| m.modified()).unwrap_or(now);
+            let stale = now.duration_since(ended).unwrap_or_default() > keep;
+            if stale {
+                let _ = fs::remove_file(&segment.path);
+            }
+            !stale && segment.path.exists()
+        });
+    }
+
+    /// Whether the buffer is being kept on disk right now.
+    pub fn buffer_on_disk(&self) -> bool {
+        self.disk.lock().unwrap().active
+    }
+
+    /// Moves the buffer from RAM to disk without losing anything in it, for when memory runs low during a
+    /// game. Disk writing starts first, then RAM saves what it holds into the disk buffer and restarts short.
+    /// Capture goes back to the normal settings the next time it restarts.
+    pub fn move_buffer_to_disk(&self) -> Result<(), String> {
+        let _one_at_a_time = self.clip_lock.lock().unwrap();
+        if !self.status().buffering {
+            return Err("Replay buffer is not running".into());
+        }
+        if self.buffer_on_disk() {
+            return Ok(());
+        }
+        let (since, ram_seconds) = *self.ram.lock().unwrap();
+        if ram_seconds <= RAM_WINDOW_SECONDS {
+            return Err("The buffer is already short".into());
+        }
+        self.start_disk()?;
+        // The disk's first file starts at the next keyframe, at most a second away.
+        thread::sleep(Duration::from_millis(1500));
+        let disk_since = self.disk.lock().unwrap().started_at.unwrap_or_else(Instant::now);
+        let asked_at = Instant::now();
+        let saved = match self.save_replay() {
+            Ok(path) => PathBuf::from(path),
+            Err(e) => {
+                let _ = self.rpc("diskStop", json!({}));
+                return Err(e);
+            }
+        };
+        // The end of the saved RAM buffer is also at the start of the disk's first file.
+        let overlap = asked_at.duration_since(disk_since).as_secs_f64().min(since.elapsed().as_secs_f64());
+        let rescued = unique_path(&self.disk_dir().join(format!("Earlier {}.mp4", timestamp())));
+        move_file(&saved, &rescued)?;
+        self.disk.lock().unwrap().finished.insert(0, DiskSegment { path: rescued, overlap });
+        self.resize_ram(RAM_WINDOW_SECONDS)
+    }
+
+    /// Saves the last `seconds`, or the whole buffer for 0, from the buffer on disk. The file being written is
+    /// finished first, so the clip reaches right up to now. Returns None when the disk has nothing yet.
+    fn clip_from_disk(&self, seconds: i64, file: &Path) -> Result<Option<()>, String> {
+        let (tx, rx) = channel();
+        self.disk.lock().unwrap().next_file = Some(tx);
+        let split = self.rpc("diskSplit", json!({})).and_then(|_| rx.recv_timeout(DISK_SPLIT_TIMEOUT).map_err(|_| "The buffer on disk did not answer".to_string()));
+        self.disk.lock().unwrap().next_file = None;
+        split?;
+        let segments = self.disk.lock().unwrap().finished.clone();
+        let Some(last) = segments.last() else { return Ok(None) };
+        // The muxer finishes the file in its own process, so its index can arrive a moment later.
+        for _ in 0..DISK_READABLE_TRIES {
+            if self.duration(&last.path).is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let wanted = if seconds > 0 { seconds } else { self.settings.lock().unwrap().buffer_seconds } as f64;
+        // Newest first, until there's enough.
+        let mut chosen: Vec<(PathBuf, f64)> = Vec::new();
+        let mut total = 0.0;
+        for segment in segments.iter().rev() {
+            let Ok(length) = self.duration(&segment.path) else { continue };
+            let usable = length - segment.overlap;
+            if usable <= 0.1 {
+                continue;
+            }
+            chosen.push((segment.path.clone(), usable));
+            total += usable;
+            if total >= wanted {
+                break;
+            }
+        }
+        if chosen.is_empty() {
+            return Ok(None);
+        }
+        chosen.reverse();
+        let extra = (total - wanted).max(0.0);
+        let mut args: Vec<std::ffi::OsString> = vec!["join".into(), file.into()];
+        for (i, (path, usable)) in chosen.iter().enumerate() {
+            let start = if i == 0 { extra } else { 0.0 };
+            args.push(path.into());
+            args.push(start.to_string().into());
+            args.push(usable.to_string().into());
+        }
+        args.push(self.names_arg().into());
+        let refs: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
+        self.media(&refs, false).inspect_err(|_| { let _ = fs::remove_file(file); })?;
+        Ok(Some(()))
+    }
+
+    /// The --names option, which names a clip's audio tracks after its sources.
+    fn names_arg(&self) -> String {
+        format!("--names={}", self.settings.lock().unwrap().track_names().join("|"))
     }
 
     pub fn stop(&self) {
@@ -398,11 +649,15 @@ impl Engine {
             let _ = child.wait();
         }
         self.pending.lock().unwrap().clear();
+        // The buffer on disk goes with the buffer, the same as RAM's does.
+        *self.disk.lock().unwrap() = DiskBuffer::default();
+        let _ = fs::remove_dir_all(self.disk_dir());
         self.update(|s| {
             s.state = "stopped";
             s.message = None;
             s.buffering = false;
             s.recording = false;
+            s.buffer_on_disk = false;
         });
     }
 
@@ -435,18 +690,33 @@ impl Engine {
         if !self.status().buffering {
             return Err("Replay buffer is not running".into());
         }
-        let replay = PathBuf::from(self.save_replay()?);
         let label = if seconds > 0 { format!("{seconds}s") } else { "full".to_string() };
         let folder = self.game_folder(self.clips_dir());
         fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
         let file = unique_path(&folder.join(format!("{}_{}_{label}.mp4", self.name_prefix("Clip"), timestamp())));
 
-        let available = self.duration(&replay)?;
-        if seconds > 0 && (seconds as f64) < available {
-            self.media(&["trim".as_ref(), replay.as_os_str(), file.as_os_str(), seconds.to_string().as_ref()], false)?;
-            let _ = fs::remove_file(&replay);
-        } else {
-            move_file(&replay, &file)?;
+        // RAM saves at once, so it's used whenever it holds enough. Anything longer comes from the disk.
+        let (ram_since, ram_seconds) = *self.ram.lock().unwrap();
+        let ram_holds = ram_since.elapsed().as_secs_f64().min(ram_seconds as f64);
+        let from_disk = self.buffer_on_disk() && (seconds <= 0 || seconds as f64 > ram_holds - 1.0);
+        let saved_from_disk = from_disk && self.clip_from_disk(seconds, &file)?.is_some();
+        if !saved_from_disk {
+            let replay = PathBuf::from(self.save_replay()?);
+            let available = self.duration(&replay)?;
+            let small = fs::metadata(&replay).is_ok_and(|m| m.len() <= NAME_TRACKS_UP_TO_BYTES);
+            if (seconds > 0 && (seconds as f64) < available) || small {
+                // Copying names the audio tracks too. A whole buffer this large is moved as it is instead, to save time.
+                let keep = if seconds > 0 { seconds as f64 } else { available + 10.0 }.to_string();
+                let names = self.names_arg();
+                let trimmed = self.media(&["trim".as_ref(), replay.as_os_str(), file.as_os_str(), keep.as_ref(), names.as_ref()], false);
+                match trimmed {
+                    Ok(_) => { let _ = fs::remove_file(&replay); }
+                    Err(e) if seconds > 0 => { let _ = fs::remove_file(&file); return Err(e); }
+                    Err(_) => { let _ = fs::remove_file(&file); move_file(&replay, &file)?; }
+                }
+            } else {
+                move_file(&replay, &file)?;
+            }
         }
         Ok(ClipResult {
             actual_seconds: self.duration(&file)?,
@@ -578,7 +848,9 @@ impl Engine {
         let output = unique_path(&folder.join(format!("{}_{stamp}.png", self.name_prefix("Screenshot"))));
         let converted = self.rpc("screenshot", json!({ "path": raw })).and_then(|frame| {
             let (width, height) = (frame["width"].to_string(), frame["height"].to_string());
-            self.media(&["png".as_ref(), raw.as_os_str(), output.as_os_str(), width.as_ref(), height.as_ref()], true)
+            // An HDR frame comes as 10-bit P010, which the PNG step turns into SDR.
+            let format = frame["format"].as_str().unwrap_or("nv12").to_string();
+            self.media(&["png".as_ref(), raw.as_os_str(), output.as_os_str(), width.as_ref(), height.as_ref(), format.as_ref()], true)
         });
         let _ = fs::remove_file(&raw);
         if let Err(e) = converted {
@@ -690,6 +962,27 @@ impl Engine {
         Ok(file)
     }
 
+    /// What must match for clips to merge losslessly, and the clip's length in seconds.
+    pub fn probe(&self, file: &Path) -> Result<(String, f64), String> {
+        let out = self.media(&["probe".as_ref(), file.as_os_str()], true)?;
+        let mut lines = out.lines();
+        let signature = lines.next().unwrap_or_default().trim().to_string();
+        let seconds = lines.next().and_then(|l| l.trim().parse().ok()).ok_or("Could not read the clip")?;
+        Ok((signature, seconds))
+    }
+
+    /// Joins ranges of clips into `file` losslessly, in the background, so it can't compete with a game.
+    pub fn join_in_background(&self, file: &Path, segments: &[(PathBuf, f64, f64)]) -> Result<(), String> {
+        let mut args: Vec<std::ffi::OsString> = vec!["join".into(), file.into()];
+        for (path, start, end) in segments {
+            args.push(path.into());
+            args.push(start.to_string().into());
+            args.push(end.to_string().into());
+        }
+        let refs: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_os_str()).collect();
+        self.media(&refs, true).map(|_| ()).inspect_err(|_| { let _ = fs::remove_file(file); })
+    }
+
     fn save_replay(&self) -> Result<String, String> {
         let (tx, rx) = channel();
         *self.saved.lock().unwrap() = Some(tx);
@@ -782,10 +1075,14 @@ impl Engine {
         Ok(true)
     }
 
-    /// Drops a chapter into the running recording. Returns its number.
-    pub fn add_marker(&self) -> Result<u64, String> {
+    /// Drops a chapter into the running recording, named after its number unless it has a label. Returns its number.
+    pub fn add_marker(&self, label: Option<&str>) -> Result<u64, String> {
         let number = self.marker_count.load(Ordering::SeqCst) + 1;
-        self.rpc("marker", json!({ "name": format!("Marker {number}") }))?;
+        let name = match label.map(str::trim).filter(|l| !l.is_empty()) {
+            Some(label) => format!("{label} ({number})"),
+            None => format!("Marker {number}"),
+        };
+        self.rpc("marker", json!({ "name": name }))?;
         self.marker_count.store(number, Ordering::SeqCst);
         Ok(number)
     }
@@ -812,6 +1109,12 @@ impl Engine {
 
     pub fn stats(&self) -> Result<Value, String> {
         self.rpc("stats", json!({}))
+    }
+
+    /// Stops trying to hook the game, which goes on recording its monitor. `exe` says which game, for the log.
+    pub fn stop_hooking(&self, exe: &str) -> Result<(), String> {
+        let reason = format!("{exe} kept refusing the hook, so its monitor is recorded until it opens again");
+        self.rpc("gameOff", json!({ "reason": reason })).map(|_| ())
     }
 
     /// Records the primary monitor, with game capture off.
@@ -874,6 +1177,11 @@ impl ShareAudio {
     }
 }
 
+/// The RAM buffer's size cap, which must not cut it short, so it leaves headroom over the estimate.
+fn buffer_max_mb(seconds: i64, bitrate_kbps: i64) -> i64 {
+    estimate_buffer_mb(seconds, bitrate_kbps) * 3 / 2 + 64
+}
+
 /// The folder a file is in, for copies made from it.
 fn beside(file: &Path, fallback: &Path) -> PathBuf {
     file.parent().map(Path::to_path_buf).unwrap_or_else(|| fallback.to_path_buf())
@@ -883,7 +1191,7 @@ fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
-fn unique_path(file: &Path) -> PathBuf {
+pub(crate) fn unique_path(file: &Path) -> PathBuf {
     let dir = file.parent().unwrap_or(Path::new("."));
     let stem = file.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let ext = file.extension().unwrap_or_default().to_string_lossy().into_owned();

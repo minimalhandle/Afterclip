@@ -93,6 +93,7 @@ function select(id, seekTo) {
   }
   renderSegments();
   renderTrim();
+  if (changed) renderWave();
 }
 
 function renderTotal() {
@@ -176,6 +177,49 @@ function renderSegments() {
   }));
   renderTotal();
 }
+
+// The main mix's loudness for each clip, drawn under the trim handles so a moment is easy to find.
+const waves = new Map();
+function waveFor(file) {
+  if (!waves.has(file)) waves.set(file, api.invoke('clip-loudness', file).catch(() => null));
+  return waves.get(file);
+}
+
+async function renderWave() {
+  const s = current();
+  const canvas = $('wave');
+  const wave = s ? await waveFor(s.file) : null;
+  // Another clip may have been chosen while this one was being worked out.
+  if (current() !== s) return;
+  $('loudest').disabled = !wave?.levels?.length;
+  const box = canvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(box.width * scale));
+  canvas.height = Math.max(1, Math.round(box.height * scale));
+  const draw = canvas.getContext('2d');
+  draw.clearRect(0, 0, canvas.width, canvas.height);
+  if (!s || !wave?.levels?.length) return;
+  // The extract stops after 10 minutes, so a longer recording only has its start drawn.
+  const covered = Math.min(1, wave.seconds / s.duration);
+  const step = (canvas.width * covered) / wave.levels.length;
+  draw.fillStyle = getComputedStyle(canvas).color;
+  wave.levels.forEach((level, i) => {
+    const height = Math.max(scale, level * canvas.height * 0.9);
+    draw.fillRect(i * step, (canvas.height - height) / 2, Math.max(scale, step - scale * 0.5), height);
+  });
+}
+new ResizeObserver(() => renderWave()).observe($('trim'));
+
+$('loudest').onclick = async () => {
+  const s = current();
+  const wave = s && await waveFor(s.file);
+  if (!wave?.levels?.length) return;
+  let loudest = 0;
+  wave.levels.forEach((level, i) => { if (level > wave.levels[loudest]) loudest = i; });
+  // A couple of seconds before, so what leads up to it plays too.
+  video.currentTime = Math.max(0, ((loudest + 0.5) / wave.levels.length) * wave.seconds - 2);
+  renderPlayhead();
+};
 
 function renderTrim() {
   const s = current();

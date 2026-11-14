@@ -43,6 +43,20 @@ pub struct Webhook {
     pub url: String,
 }
 
+/// A hotkey that marks a moment with a name, such as "clutch". During a recording it adds a chapter with
+/// that name. Otherwise it saves a clip tagged with it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MarkerKey {
+    pub label: String,
+    pub hotkey: String,
+}
+
+const MAX_MARKER_KEYS: usize = 8;
+/// What libobs supports, including the main mix.
+const MAX_AUDIO_TRACKS: usize = 6;
+const MAX_MARKER_LABEL_CHARS: usize = 30;
+pub const AUTO_CLIP_SOURCES: [&str; 2] = ["mic", "game"];
+
 const MAX_WEBHOOKS: usize = 10;
 const MAX_WEBHOOK_NAME_CHARS: usize = 40;
 
@@ -143,6 +157,8 @@ pub struct Settings {
     pub storage_limit_gb: f64,
     /// Moves clips, recordings and screenshots to the Recycle Bin after this many days. 0 keeps them.
     pub delete_after_days: i64,
+    /// The storage limit and age cleanup also leave alone clips you tagged (the automatic "auto" tag doesn't count).
+    pub keep_tagged: bool,
     pub game_profiles: Vec<GameProfile>,
     /// Checks for updates and installs them when it's safe to.
     pub auto_update: bool,
@@ -191,6 +207,30 @@ pub struct Settings {
     pub remote_port: i64,
     /// Replaces screen and audio capture with a colour card. Used by the tests.
     pub test_pattern: bool,
+    /// Which corner notes such as Clip saved appear in, on the monitor you're using.
+    pub toast_corner: String,
+    /// Hotkeys that mark a moment with a name.
+    pub marker_keys: Vec<MarkerKey>,
+    /// How much a named marker key saves when no recording is running. 0 means the whole buffer.
+    pub marker_clip_seconds: i64,
+    /// Saves a clip by itself when your mic or the game gets loud, during a game.
+    pub auto_clip: bool,
+    /// What it listens to: mic or game.
+    pub auto_clip_source: String,
+    /// How loud, in dB below full scale, counts as a moment. Closer to 0 needs more.
+    pub auto_clip_level_db: f64,
+    /// How much an automatic clip keeps, ending a few seconds after the moment.
+    pub auto_clip_seconds: i64,
+    /// Keeps the buffer in files beside the clips instead of in RAM, apart from its last few seconds.
+    pub disk_buffer: bool,
+    /// When memory runs low during a game, moves the buffer to disk without losing what's in it.
+    pub free_memory_in_games: bool,
+    /// Captures in HDR, as 10-bit HEVC or AV1, while Windows HDR is on for the main monitor.
+    pub hdr_capture: bool,
+    /// Once a week, joins the week's favourites, or clips with weekly_reel_tag, into one video.
+    pub weekly_reel: bool,
+    /// The tag a clip needs to go in the weekly reel. Empty means favourites.
+    pub weekly_reel_tag: String,
 }
 
 /// Where the webcam sits on the picture, in pixels: x, y, width, height.
@@ -252,6 +292,7 @@ impl Settings {
             run_as_admin: false,
             storage_limit_gb: 0.0,
             delete_after_days: 0,
+            keep_tagged: false,
             game_profiles: Vec::new(),
             auto_update: true,
             skipped_update: String::new(),
@@ -278,6 +319,18 @@ impl Settings {
             remote_stream_deck: false,
             remote_port: crate::api::REMOTE_PORT as i64,
             test_pattern: false,
+            toast_corner: "top-right".into(),
+            marker_keys: Vec::new(),
+            marker_clip_seconds: 30,
+            auto_clip: false,
+            auto_clip_source: "mic".into(),
+            auto_clip_level_db: -6.0,
+            auto_clip_seconds: 30,
+            disk_buffer: false,
+            free_memory_in_games: true,
+            hdr_capture: false,
+            weekly_reel: false,
+            weekly_reel_tag: String::new(),
         }
     }
 
@@ -298,6 +351,28 @@ impl Settings {
         let x = if self.camera_corner.ends_with("left") { margin } else { canvas_width - width - margin };
         let y = if self.camera_corner.starts_with("top") { margin } else { canvas_height - height - margin };
         Some((x, y, width, height))
+    }
+
+    /// What each audio track is called, in the order the engine fills them: the main mix, then each source with
+    /// a track of its own, then game audio. Keep in step with createAudioSources in afterclip-engine.cpp.
+    pub fn track_names(&self) -> Vec<String> {
+        let clean = |name: &str| {
+            let name = name.replace('|', "/").chars().filter(|c| !c.is_control()).collect::<String>();
+            let name = name.trim();
+            // Windows adds the driver in brackets, such as "CABLE-D Output (VB-Audio Cable D)", which editors cut off.
+            let short = name.strip_suffix(')').and_then(|rest| rest.rfind(" (").map(|at| rest[..at].trim())).unwrap_or(name);
+            if short.is_empty() { name.to_string() } else { short.to_string() }
+        };
+        let mut names = vec!["Main mix".to_string()];
+        for (i, source) in self.audio_sources.iter().enumerate().filter(|(_, s)| s.own_track) {
+            let label = clean(&source.label);
+            names.push(if label.is_empty() { format!("Source {}", i + 1) } else { label });
+        }
+        if self.game_audio && self.game_audio_own_track {
+            names.push("Game".into());
+        }
+        names.truncate(MAX_AUDIO_TRACKS);
+        names
     }
 
     /// The size of what's captured. Vertical mode keeps the height and narrows the picture to 9:16, so
@@ -386,6 +461,20 @@ impl Settings {
         self.clip_after_seconds = self.clip_after_seconds.clamp(0, 30);
         self.camera_size = self.camera_size.clamp(CAMERA_SIZES.0, CAMERA_SIZES.1);
         self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
+        if !["top-right", "top-left", "bottom-right", "bottom-left"].contains(&self.toast_corner.as_str()) {
+            self.toast_corner = "top-right".into();
+        }
+        for key in &mut self.marker_keys {
+            key.label = key.label.trim().trim_start_matches('#').chars().filter(|c| !c.is_control()).take(MAX_MARKER_LABEL_CHARS).collect::<String>().trim().to_string();
+        }
+        self.marker_keys.truncate(MAX_MARKER_KEYS);
+        self.marker_clip_seconds = self.marker_clip_seconds.clamp(0, MAX_BUFFER_SECONDS);
+        if !AUTO_CLIP_SOURCES.contains(&self.auto_clip_source.as_str()) {
+            self.auto_clip_source = "mic".into();
+        }
+        self.auto_clip_level_db = if self.auto_clip_level_db.is_finite() { self.auto_clip_level_db.clamp(-40.0, -1.0) } else { -6.0 };
+        self.auto_clip_seconds = self.auto_clip_seconds.clamp(10, 120);
+        self.weekly_reel_tag = crate::library::clean_tags(&[self.weekly_reel_tag.clone()]).into_iter().next().unwrap_or_default();
         // Below 1024 needs administrator rights on some systems, and this PC's own port is taken.
         if !(1024..=65535).contains(&self.remote_port) || self.remote_port == crate::api::LOCAL_PORT as i64 {
             self.remote_port = crate::api::REMOTE_PORT as i64;
@@ -452,6 +541,8 @@ impl Settings {
             || self.width != other.width
             || self.height != other.height
             || self.vertical_mode != other.vertical_mode
+            || self.disk_buffer != other.disk_buffer
+            || self.hdr_capture != other.hdr_capture
             || self.bitrate_kbps != other.bitrate_kbps
             // Volume changes live, so it alone never needs a restart.
             || without_volume(&self.audio_sources) != without_volume(&other.audio_sources)
@@ -540,6 +631,35 @@ mod tests {
         assert!(sample().needs_engine_restart(&s));
         let profile = GameProfile { exe: "game.exe".into(), name: "Game".into(), quality: None, frame_rate: None, buffer_seconds: None, game_audio: None, vertical: Some(true), auto_record: false, capture_privacy: false };
         assert_eq!(sample().with_profile(&profile, (1920, 1080, 60)).canvas(), (606, 1080));
+    }
+
+    #[test]
+    fn audio_tracks_are_named_in_the_engines_order() {
+        let mut s = sample();
+        assert_eq!(s.track_names(), vec!["Main mix"], "sources only in the mix have no track of their own");
+        s.audio_sources[1].own_track = true;
+        s.audio_sources.push(AudioSource { kind: "app".into(), device: "discord".into(), label: "Disc|ord".into(), mix: false, own_track: true, mute_with_key: None, volume: 1.0 });
+        s.game_audio_own_track = true;
+        assert_eq!(s.track_names(), vec!["Main mix", "Microphone", "Disc/ord", "Game"], "a bar would split the --names list");
+        s.audio_sources[1].label = "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)".into();
+        s.audio_sources[2].label = "(Unnamed)".into();
+        assert_eq!(s.track_names()[1..3], ["Voicemeeter Out B1", "(Unnamed)"], "the driver in brackets goes, unless it's all there is");
+        for i in 0..6 {
+            s.audio_sources.push(AudioSource { kind: "app".into(), device: format!("app{i}"), label: String::new(), mix: false, own_track: true, mute_with_key: None, volume: 1.0 });
+        }
+        let names = s.track_names();
+        assert_eq!(names.len(), MAX_AUDIO_TRACKS, "libobs has six tracks at most");
+        assert_eq!(names[3], "Source 4", "an unlabelled source still gets a name");
+    }
+
+    #[test]
+    fn disk_buffer_and_hdr_restart_capture_but_the_others_dont() {
+        let base = sample();
+        assert!(base.needs_engine_restart(&Settings { disk_buffer: true, ..sample() }));
+        assert!(base.needs_engine_restart(&Settings { hdr_capture: true, ..sample() }));
+        assert!(!base.needs_engine_restart(&Settings { free_memory_in_games: false, weekly_reel: true, weekly_reel_tag: "funny".into(), ..sample() }));
+        let tidy = Settings { weekly_reel_tag: "  #Funny ".into(), ..sample() }.sanitized();
+        assert_eq!(tidy.weekly_reel_tag, "Funny");
     }
 
     #[test]

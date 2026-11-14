@@ -20,6 +20,9 @@ pub struct LibraryData {
     /// Where the webcam sat, as fractions of the picture: x, y, width, height.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cameras: BTreeMap<String, [f64; 4]>,
+    /// Pairs of overlapping clips someone chose to keep both of, so they aren't suggested again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub kept_overlaps: BTreeSet<String>,
 }
 
 impl LibraryData {

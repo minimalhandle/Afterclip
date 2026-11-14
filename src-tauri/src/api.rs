@@ -184,7 +184,7 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
             handlers.test_free_space(space.trim_start_matches("/test/free-space/").parse().ok());
             Ok(json!({}))
         }
-        (Method::Post, "/test/engine/crash" | "/test/engine/stop-replay") if is_test_instance() => {
+        (Method::Post, "/test/engine/crash" | "/test/engine/stop-replay" | "/test/engine/buffer-to-disk") if is_test_instance() => {
             handlers.test_engine(url.trim_start_matches("/test/engine/"));
             Ok(json!({}))
         }

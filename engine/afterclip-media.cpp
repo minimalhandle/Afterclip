@@ -6,6 +6,9 @@
 //   afterclip-media join <out> <in> <start> <end> [<in> <start> <end>...]
 //                                            joins ranges of clips losslessly. An end below 0 means the end of the file.
 //   afterclip-media tracks <in>               prints how many audio tracks it has
+//   afterclip-media probe <in>                prints what must match for join to merge it, then its duration
+//   afterclip-media png <raw> <out> <w> <h> [p010]
+//                                            turns a frame from the engine into a PNG, HDR ones into SDR
 //   afterclip-media shrink <in> <out> <bytes> re-encodes a smaller copy to fit that size, as H.264 with the main mix
 //   afterclip-media compress <in> <out> <bytes>
 //                                            aims for that size at up to 1080p60, stopping at a good quality, and prints the final size
@@ -17,6 +20,8 @@
 // shrink, compress and vertical also take these, anywhere after the command:
 //   --tracks=0,2                             mixes these audio tracks, counted from 0, instead of only the main mix
 //   --even                                   evens out the volume, so a quiet clip comes out as loud as a loud one
+// trim, join and retrack also take:
+//   --names=Main mix|Discord                 names the audio tracks, in order. Without it, names in the input are kept.
 #define _USE_MATH_DEFINES
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -99,6 +104,37 @@ static uint32_t mp4Tag(const AVCodecParameters *par)
 	return par->codec_id == AV_CODEC_ID_HEVC ? MKTAG('h', 'v', 'c', '1') : 0;
 }
 
+/** Audio track names from --names, in track order. The replay buffer's files don't carry them. */
+static std::vector<std::string> g_names;
+
+/** Names that say nothing about the track, which muxers write when they're given none. */
+static bool genericTrackName(const char *name)
+{
+	return !name || !*name || strstr(name, "Handler") || strcmp(name, "SoundHandler") == 0;
+}
+
+/**
+ * Names a copied audio track, so editors and players show "Discord" instead of "Track 3". MP4 only keeps
+ * handler_name, and FFmpeg reads the name OBS's own recordings use as title, so it takes either.
+ */
+static void nameTrack(AVStream *to, const AVStream *from, size_t audioIndex)
+{
+	std::string name = audioIndex < g_names.size() ? g_names[audioIndex] : "";
+	if (name.empty() && from) {
+		for (const char *key : {"handler_name", "title"}) {
+			const AVDictionaryEntry *entry = av_dict_get(from->metadata, key, nullptr, 0);
+			if (entry && !genericTrackName(entry->value)) {
+				name = entry->value;
+				break;
+			}
+		}
+	}
+	if (name.empty())
+		return;
+	av_dict_set(&to->metadata, "handler_name", name.c_str(), 0);
+	av_dict_set(&to->metadata, "title", name.c_str(), 0);
+}
+
 static int cmdDuration(const std::string &path)
 {
 	AVFormatContext *in = openInput(path);
@@ -125,6 +161,7 @@ static int cmdTrim(const std::string &input, const std::string &output, double s
 		return fail("Could not create output", err);
 	std::vector<int> outIndex(in->nb_streams, -1);
 	int next = 0;
+	size_t audioIndex = 0;
 	for (unsigned i = 0; i < in->nb_streams; i++) {
 		AVStream *from = in->streams[i];
 		const AVMediaType type = from->codecpar->codec_type;
@@ -135,6 +172,8 @@ static int cmdTrim(const std::string &input, const std::string &output, double s
 			return fail("Could not copy stream", err);
 		to->codecpar->codec_tag = mp4Tag(to->codecpar);
 		to->time_base = from->time_base;
+		if (type == AVMEDIA_TYPE_AUDIO)
+			nameTrack(to, from, audioIndex++);
 		outIndex[i] = next++;
 	}
 	if ((err = avio_open(&out->pb, output.c_str(), AVIO_FLAG_WRITE)) < 0)
@@ -372,12 +411,15 @@ static int cmdJoin(const std::string &output, const std::vector<Segment> &segmen
 			first = in;
 			if ((err = avformat_alloc_output_context2(&out, nullptr, "mp4", output.c_str())) < 0)
 				return fail("Could not create output", err);
+			size_t audioIndex = 0;
 			for (unsigned i = 0; i < in->nb_streams; i++) {
 				AVStream *to = avformat_new_stream(out, nullptr);
 				if (!to || (err = avcodec_parameters_copy(to->codecpar, in->streams[i]->codecpar)) < 0)
 					return fail("Could not copy stream", err);
 				to->codecpar->codec_tag = mp4Tag(to->codecpar);
 				to->time_base = in->streams[i]->time_base;
+				if (to->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+					nameTrack(to, in->streams[i], audioIndex++);
 			}
 			lastDts.assign(in->nb_streams, INT64_MIN);
 			if ((err = avio_open(&out->pb, output.c_str(), AVIO_FLAG_WRITE)) < 0)
@@ -466,6 +508,160 @@ static int cmdJoin(const std::string &output, const std::vector<Segment> &segmen
 	avio_closep(&out->pb);
 	avformat_free_context(out);
 	avformat_close_input(&first);
+	return 0;
+}
+
+/**
+ * Turns HDR (BT.2100 PQ) pictures into SDR, for thumbnails, screenshots and shared copies, which are all 8-bit
+ * BT.709. Without it they come out grey and washed out. Brightness up to SDR white stays as it is, and brighter
+ * highlights roll off smoothly up to the peak, keeping their colour. Tables do the costly curves, so it's cheap.
+ */
+class ToneMapper {
+public:
+	explicit ToneMapper(double sdrWhiteNits = 203.0, double peakNits = 1000.0)
+	{
+		const double m1 = 2610.0 / 16384.0, m2 = 2523.0 / 4096.0 * 128.0;
+		const double c1 = 3424.0 / 4096.0, c2 = 2413.0 / 4096.0 * 32.0, c3 = 2392.0 / 4096.0 * 32.0;
+		for (int i = 0; i < SIZE; i++) {
+			const double e = pow((double)i / (SIZE - 1), 1.0 / m2);
+			const double nits = 10000.0 * pow(FFMAX(e - c1, 0.0) / (c2 - c3 * e), 1.0 / m1);
+			linear[i] = (float)(nits / sdrWhiteNits);
+			gamma[i] = (float)pow((double)i / (SIZE - 1), 1.0 / 2.4);
+		}
+		white = (float)(peakNits / sdrWhiteNits);
+	}
+
+	/** y is 0 to 1, and cb and cr -0.5 to 0.5, in BT.2020. Writes gamma-encoded BT.709 red, green and blue, 0 to 1. */
+	void pixel(float y, float cb, float cr, float rgb[3]) const
+	{
+		const float r = lookup(linear, y + 1.4746f * cr);
+		const float g = lookup(linear, y - 0.16455f * cb - 0.57135f * cr);
+		const float b = lookup(linear, y + 1.8814f * cb);
+		// BT.2020 colours into BT.709, in linear light.
+		float out[3] = {1.6605f * r - 0.5876f * g - 0.0728f * b, -0.1246f * r + 1.1329f * g - 0.0083f * b,
+				-0.0182f * r - 0.1006f * g + 1.1187f * b};
+		const float most = FFMAX(out[0], FFMAX(out[1], out[2]));
+		const float scale = most > KNEE ? roll(most) / most : 1.0f;
+		for (int i = 0; i < 3; i++)
+			rgb[i] = lookup(gamma, FFMAX(out[i], 0.0f) * scale);
+	}
+
+private:
+	static const int SIZE = 4096;
+	static constexpr float KNEE = 0.75f;
+	float linear[SIZE];
+	float gamma[SIZE];
+	float white = 4.9f;
+
+	static float lookup(const float *table, float x)
+	{
+		const int i = (int)(FFMIN(FFMAX(x, 0.0f), 1.0f) * (SIZE - 1) + 0.5f);
+		return table[i];
+	}
+
+	/** Above the knee, an extended Reinhard curve that meets the line below it smoothly and reaches 1 at the peak. */
+	float roll(float x) const
+	{
+		const float room = 1.0f - KNEE;
+		const float u = (x - KNEE) / room, top = FFMAX((white - KNEE) / room, 1.01f);
+		return KNEE + room * FFMIN(u * (1.0f + u / (top * top)) / (1.0f + u), 1.0f);
+	}
+};
+
+static bool isPq(const AVFrame *frame)
+{
+	return frame->color_trc == AVCOL_TRC_SMPTE2084 &&
+	       (frame->format == AV_PIX_FMT_YUV420P10LE || frame->format == AV_PIX_FMT_P010LE);
+}
+
+/** One 10-bit 4:2:0 picture's samples, as video-level codes from 0 to 1023, whichever of the two layouts it uses. */
+struct TenBit {
+	const uint8_t *const *data;
+	const int *linesize;
+	bool p010;
+	int luma(int x, int y) const
+	{
+		const uint16_t v = ((const uint16_t *)(data[0] + (size_t)y * linesize[0]))[x];
+		return p010 ? v >> 6 : v & 1023;
+	}
+	void chroma(int x, int y, int &cb, int &cr) const
+	{
+		if (p010) {
+			const uint16_t *row = (const uint16_t *)(data[1] + (size_t)y * linesize[1]);
+			cb = row[x * 2] >> 6;
+			cr = row[x * 2 + 1] >> 6;
+		} else {
+			cb = ((const uint16_t *)(data[1] + (size_t)y * linesize[1]))[x] & 1023;
+			cr = ((const uint16_t *)(data[2] + (size_t)y * linesize[2]))[x] & 1023;
+		}
+	}
+};
+
+static const ToneMapper &toneMapper()
+{
+	static const ToneMapper mapper;
+	return mapper;
+}
+
+/** Converts each 2x2 block of an HDR picture, calling put(x, y, rgb) for each pixel with its SDR colour. */
+template<typename Put> static void eachSdrPixel(const TenBit &in, int width, int height, Put put)
+{
+	const ToneMapper &mapper = toneMapper();
+	for (int by = 0; by < height / 2; by++) {
+		for (int bx = 0; bx < width / 2; bx++) {
+			int cbCode, crCode;
+			in.chroma(bx, by, cbCode, crCode);
+			const float cb = (cbCode - 512) / 896.0f, cr = (crCode - 512) / 896.0f;
+			for (int dy = 0; dy < 2; dy++) {
+				for (int dx = 0; dx < 2; dx++) {
+					const int x = bx * 2 + dx, y = by * 2 + dy;
+					float rgb[3];
+					mapper.pixel((in.luma(x, y) - 64) / 876.0f, cb, cr, rgb);
+					put(x, y, rgb);
+				}
+			}
+		}
+	}
+}
+
+/** Replaces an HDR picture with an SDR one, 8-bit BT.709 4:2:0 at video levels. Anything else is left alone. */
+static int toSdr(AVFrame *frame)
+{
+	if (!isPq(frame))
+		return 0;
+	AVFrame *sdr = av_frame_alloc();
+	sdr->format = AV_PIX_FMT_YUV420P;
+	sdr->width = frame->width & ~1;
+	sdr->height = frame->height & ~1;
+	int err = av_frame_get_buffer(sdr, 0);
+	if (err < 0 || (err = av_frame_copy_props(sdr, frame)) < 0) {
+		av_frame_free(&sdr);
+		return err;
+	}
+	const TenBit in{frame->data, frame->linesize, frame->format == AV_PIX_FMT_P010LE};
+	// Chroma is the average of each block's four pixels, worked out after tone mapping.
+	std::vector<float> cbSum((size_t)(sdr->width / 2) * (sdr->height / 2)), crSum(cbSum.size());
+	eachSdrPixel(in, sdr->width, sdr->height, [&](int x, int y, const float *rgb) {
+		const float luma = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
+		sdr->data[0][(size_t)y * sdr->linesize[0] + x] = (uint8_t)(16.0f + 219.0f * luma + 0.5f);
+		const size_t block = (size_t)(y / 2) * (sdr->width / 2) + x / 2;
+		cbSum[block] += (rgb[2] - luma) / 1.8556f;
+		crSum[block] += (rgb[0] - luma) / 1.5748f;
+	});
+	for (int by = 0; by < sdr->height / 2; by++) {
+		for (int bx = 0; bx < sdr->width / 2; bx++) {
+			const size_t block = (size_t)by * (sdr->width / 2) + bx;
+			sdr->data[1][(size_t)by * sdr->linesize[1] + bx] = (uint8_t)FFMIN(FFMAX(128.0f + 224.0f * cbSum[block] / 4.0f + 0.5f, 16.0f), 240.0f);
+			sdr->data[2][(size_t)by * sdr->linesize[2] + bx] = (uint8_t)FFMIN(FFMAX(128.0f + 224.0f * crSum[block] / 4.0f + 0.5f, 16.0f), 240.0f);
+		}
+	}
+	sdr->color_range = AVCOL_RANGE_MPEG;
+	sdr->color_primaries = AVCOL_PRI_BT709;
+	sdr->color_trc = AVCOL_TRC_BT709;
+	sdr->colorspace = AVCOL_SPC_BT709;
+	av_frame_unref(frame);
+	av_frame_move_ref(frame, sdr);
+	av_frame_free(&sdr);
 	return 0;
 }
 
@@ -594,7 +790,7 @@ static int cmdStrip(const std::string &input, const std::string &output, int cou
 			else if (err != AVERROR(EAGAIN))
 				break;
 		}
-		if (!got)
+		if (!got || toSdr(frame) < 0)
 			continue;
 		sws = sws_getCachedContext(sws, frame->width, frame->height, (AVPixelFormat)frame->format, FRAME_WIDTH, height,
 					   AV_PIX_FMT_YUVJ420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
@@ -661,7 +857,7 @@ static int cmdThumb(const std::string &input, const std::string &output)
 			return fail("No frame could be decoded", err);
 		// Use the first frame at or past the seek point, for a picture that isn't the fade-in.
 		if (frame->pts == AV_NOPTS_VALUE || frame->pts >= wanted || draining) {
-			const int result = writeJpeg(frame, output);
+			const int result = toSdr(frame) < 0 ? fail("Could not convert HDR") : writeJpeg(frame, output);
 			av_frame_free(&frame);
 			av_packet_free(&pkt);
 			avcodec_free_context(&dec);
@@ -670,6 +866,32 @@ static int cmdThumb(const std::string &input, const std::string &output)
 		}
 		av_frame_unref(frame);
 	}
+}
+
+/**
+ * Prints a line that's the same for two clips exactly when join can merge them losslessly, the way sameFormat
+ * decides, then the duration in seconds on the next line.
+ */
+static int cmdProbe(const std::string &path)
+{
+	AVFormatContext *in = openInput(path);
+	if (!in)
+		return fail("Could not open input");
+	std::string signature;
+	for (unsigned i = 0; i < in->nb_streams; i++) {
+		const AVCodecParameters *par = in->streams[i]->codecpar;
+		uint64_t hash = 1469598103934665603ULL;
+		for (int b = 0; b < par->extradata_size; b++)
+			hash = (hash ^ par->extradata[b]) * 1099511628211ULL;
+		char part[160];
+		snprintf(part, sizeof(part), "%d:%d:%dx%d:%d:%016llx;", (int)par->codec_type, (int)par->codec_id, par->width, par->height,
+			 par->sample_rate, (unsigned long long)hash);
+		signature += part;
+	}
+	printf("%s\n%.3f\n", signature.c_str(), in->duration > 0 ? (double)in->duration / AV_TIME_BASE : 0.0);
+	fflush(stdout);
+	avformat_close_input(&in);
+	return 0;
 }
 
 static int cmdTracks(const std::string &path)
@@ -1356,6 +1578,7 @@ static int cmdRetrack(const std::string &input, const std::string &output, const
 		const AVMediaType type = from->codecpar->codec_type;
 		if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO)
 			continue;
+		const size_t thisAudio = audioIndex;
 		const double gain = type == AVMEDIA_TYPE_AUDIO && audioIndex < gains.size() ? gains[audioIndex] : 1.0;
 		if (type == AVMEDIA_TYPE_AUDIO)
 			audioIndex++;
@@ -1367,6 +1590,8 @@ static int cmdRetrack(const std::string &input, const std::string &output, const
 				return fail("Could not copy stream", err);
 			to->codecpar->codec_tag = mp4Tag(to->codecpar);
 			to->time_base = from->time_base;
+			if (type == AVMEDIA_TYPE_AUDIO)
+				nameTrack(to, from, thisAudio);
 			copyTo[i] = to->index;
 			continue;
 		}
@@ -1374,6 +1599,7 @@ static int cmdRetrack(const std::string &input, const std::string &output, const
 		tracks.emplace_back();
 		if ((err = openAudioTrack(tracks.back(), from, out, bitrate, FFMIN(gain, 2.0), 0)) < 0)
 			return fail("Could not set up an audio track", err);
+		nameTrack(out->streams[out->nb_streams - 1], from, thisAudio);
 		encodeTo[i] = (int)tracks.size() - 1;
 	}
 	if ((err = beginMp4(out, output)) < 0)
@@ -1594,6 +1820,9 @@ static int encodeShrunk(const std::string &input, const std::string &output, int
 		while ((result = avcodec_receive_frame(dec, frame)) >= 0) {
 			const int64_t micro = av_rescale_q(frame->pts, source->time_base, {1, AV_TIME_BASE}) - startMicro;
 			const int64_t index = (micro * fps + AV_TIME_BASE / 2) / AV_TIME_BASE;
+			// Shared copies are 8-bit H.264, so HDR is turned into SDR first, only for the frames kept.
+			if (micro >= 0 && index > lastIndex && (result = toSdr(frame)) < 0)
+				return result;
 			// Lowering the frame rate means leaving frames out.
 			if (micro >= 0 && index > lastIndex && vertical && camera) {
 				if ((result = av_frame_make_writable(scaled)) < 0 || (result = drawFaceCam(frame, camera, scaled, camSws, sws)) < 0)
@@ -1837,10 +2066,13 @@ static int cmdVertical(const std::string &input, const std::string &output, cons
 	return encodeShrunk(input, output, FFMAX(MIN_KBPS, FFMIN(kbps, MAX_KBPS)), AUDIO_KBPS, height, fps, true, camera);
 }
 
-/** Turns the frame the engine saved, as raw NV12 in video levels, into a PNG. */
-static int cmdPng(const std::string &input, const std::string &output, int width, int height)
+/**
+ * Turns the frame the engine saved, as raw NV12 in video levels, into a PNG. An HDR frame is raw P010 in
+ * BT.2100 PQ, and is turned into SDR, because a PNG viewer would show it grey and washed out.
+ */
+static int cmdPng(const std::string &input, const std::string &output, int width, int height, bool p010 = false)
 {
-	const int64_t expected = (int64_t)width * height * 3 / 2;
+	const int64_t expected = (int64_t)width * height * 3 / 2 * (p010 ? 2 : 1);
 	std::vector<uint8_t> raw((size_t)FFMAX(expected, 0));
 	FILE *in = _wfopen(toWide(input).c_str(), L"rb");
 	if (!in)
@@ -1871,15 +2103,26 @@ static int cmdPng(const std::string &input, const std::string &output, int width
 	picture->pts = 0;
 	if ((err = av_frame_get_buffer(picture, 0)) < 0)
 		return fail("Could not allocate frame", err);
-	SwsContext *sws = sws_getContext(width, height, AV_PIX_FMT_NV12, width, height, AV_PIX_FMT_RGB24, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, nullptr, nullptr, nullptr);
-	if (!sws)
-		return fail("Could not create scaler");
-	// The engine captures in BT.709 with video levels, and a picture needs full levels.
-	sws_setColorspaceDetails(sws, sws_getCoefficients(SWS_CS_ITU709), 0, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
-	const uint8_t *planes[4] = {raw.data(), raw.data() + (size_t)width * height, nullptr, nullptr};
-	const int strides[4] = {width, width, 0, 0};
-	sws_scale(sws, planes, strides, 0, height, picture->data, picture->linesize);
-	sws_freeContext(sws);
+	if (p010) {
+		const uint8_t *planes[2] = {raw.data(), raw.data() + (size_t)width * height * 2};
+		const int strides[2] = {width * 2, width * 2};
+		const TenBit in{planes, strides, true};
+		eachSdrPixel(in, width & ~1, height & ~1, [&](int x, int y, const float *rgb) {
+			uint8_t *to = picture->data[0] + (size_t)y * picture->linesize[0] + (size_t)x * 3;
+			for (int i = 0; i < 3; i++)
+				to[i] = (uint8_t)(rgb[i] * 255.0f + 0.5f);
+		});
+	} else {
+		SwsContext *sws = sws_getContext(width, height, AV_PIX_FMT_NV12, width, height, AV_PIX_FMT_RGB24, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, nullptr, nullptr, nullptr);
+		if (!sws)
+			return fail("Could not create scaler");
+		// The engine captures in BT.709 with video levels, and a picture needs full levels.
+		sws_setColorspaceDetails(sws, sws_getCoefficients(SWS_CS_ITU709), 0, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+		const uint8_t *planes[4] = {raw.data(), raw.data() + (size_t)width * height, nullptr, nullptr};
+		const int strides[4] = {width, width, 0, 0};
+		sws_scale(sws, planes, strides, 0, height, picture->data, picture->linesize);
+		sws_freeContext(sws);
+	}
 
 	AVPacket *pkt = av_packet_alloc();
 	if ((err = avcodec_send_frame(enc, picture)) < 0 || (err = avcodec_receive_packet(enc, pkt)) < 0)
@@ -1912,6 +2155,16 @@ static std::vector<wchar_t *> readOptions(int count, wchar_t **all)
 			if (g_pins.size() < 2 && swscanf(arg.c_str() + 6, L"%lf,%lf,%lf,%lf", &pin.x, &pin.y, &pin.w, &pin.h) == 4 &&
 			    pin.x >= 0 && pin.y >= 0 && pin.w >= 0.01 && pin.h >= 0.01 && pin.x + pin.w <= 1.000001 && pin.y + pin.h <= 1.000001)
 				g_pins.push_back(pin);
+		} else if (arg.rfind(L"--names=", 0) == 0) {
+			const std::string list = toUtf8(arg.c_str() + 8);
+			size_t at = 0;
+			for (;;) {
+				const size_t bar = list.find('|', at);
+				g_names.push_back(list.substr(at, bar == std::string::npos ? std::string::npos : bar - at));
+				if (bar == std::string::npos)
+					break;
+				at = bar + 1;
+			}
 		} else if (arg.rfind(L"--tracks=", 0) == 0) {
 			const std::string list = toUtf8(arg.c_str() + 9);
 			size_t at = 0;
@@ -1954,6 +2207,8 @@ int main()
 			return cmdThumb(in, toUtf8(argv[3]));
 		if (cmd == L"tracks")
 			return cmdTracks(in);
+		if (cmd == L"probe")
+			return cmdProbe(in);
 		if (cmd == L"shrink" && argc >= 5)
 			return cmdShrink(in, toUtf8(argv[3]), _wtoi64(argv[4]));
 		if (cmd == L"compress" && argc >= 5)
@@ -1969,7 +2224,7 @@ int main()
 			return cmdStrip(in, toUtf8(argv[3]), _wtoi(argv[4]));
 
 		if (cmd == L"png" && argc >= 6)
-			return cmdPng(in, toUtf8(argv[3]), _wtoi(argv[4]), _wtoi(argv[5]));
+			return cmdPng(in, toUtf8(argv[3]), _wtoi(argv[4]), _wtoi(argv[5]), argc >= 7 && std::wstring(argv[6]) == L"p010");
 		if (cmd == L"retrack" && argc >= 5) {
 			std::vector<double> gains;
 			for (int i = 4; i < argc; i++)

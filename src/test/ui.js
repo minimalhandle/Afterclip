@@ -137,7 +137,7 @@ async function main() {
       check('Sleekmeeter aliases display without changing the capture source', sourceLabels.names.join('|') === 'Discord|USB microphone' && sourceLabels.savedLabel === 'Cable-A Output' && sourceLabels.id === 'cable-a');
       await panel.eval("document.querySelector('#media .item .more').click()");
       const options = await panel.eval("[...document.querySelectorAll('.menu button')].map((button) => button.textContent)");
-      check('the clip menu has four entries', options.join('|') === 'Edit and share|Rename|Tags|Show in folder', options.join(', '));
+      check('the clip menu has five entries', options.join('|') === 'Edit and share|Rename|Tags|Show in folder|Delete', options.join(', '));
       await panel.eval("[...document.querySelectorAll('.menu button')].find((button) => button.textContent === 'Edit and share').click()");
       const sharePage = await Page.open(/share\.html/);
       try {
@@ -358,6 +358,27 @@ async function main() {
     await sleep(6000);
     await api.clip(2);
 
+    // A game session that saves a clip leaves a card on the home page, which opens just that session's clips.
+    await api.call('/test/game/pretend.exe', 'POST');
+    await sleep(5000); // The game watcher looks every 2 seconds.
+    await api.clip(2);
+    await api.call('/test/game/', 'POST');
+    await waitFor(() => panel.eval("window.afterclip.invoke('state').then((s) => !!s.lastSession)"), 20000, 'the game session to end');
+    check('the session card stays out of View all', await panel.eval("document.getElementById('session').hidden"));
+    await panel.eval("document.getElementById('library-back').click()");
+    await waitFor(() => panel.eval("!document.getElementById('session').hidden"), 5000, 'the session card');
+    await panel.shot('2c-session-card');
+    const sessionText = await panel.eval("document.getElementById('session-text').textContent");
+    check('a game session that saved clips leaves a card', /: 1 clip$/.test(sessionText), sessionText);
+    await panel.eval("document.getElementById('session-review').click()");
+    const reviewed = await panel.eval("document.querySelectorAll('#media .item').length");
+    check('Review shows only that session\'s clips', reviewed === 1 && !(await panel.eval("document.getElementById('session-filter').hidden")), String(reviewed));
+    await panel.eval("document.getElementById('session-filter').click()");
+    check('clearing the session filter shows every clip', (await panel.eval("document.querySelectorAll('#media .item').length")) > 1);
+    await panel.eval("document.getElementById('library-back').click(); document.getElementById('session-dismiss').click()");
+    await sleep(300);
+    check('the session card can be dismissed', (await panel.eval("document.getElementById('session').hidden")) && (await panel.eval("window.afterclip.invoke('state').then((s) => s.lastSession ?? null)")) === null);
+
     // A controller report through the real path: off does nothing, Create + R3 saves a clip, in either order.
     const clipCount = () => panel.eval("window.afterclip.invoke('state').then((s) => s.media.filter((m) => m.kind === 'clip').length)");
     const padUsb = (face, rest) => `01000000000000${'00'}${face}${rest}${'00'.repeat(54)}`;
@@ -457,6 +478,10 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     await waitFor(async () => (await panel.eval("document.getElementById('selection').hidden")) && (await listed()) === clipFiles().length, 5000, 'the selection to clear');
     check('the list updates and the selection clears', true);
     check('it confirms in the panel', /Recycle Bin/.test(await panel.eval('document.body.innerText')));
+    await panel.eval("document.querySelector('#banner .banner-action').click()");
+    await waitFor(() => chosenFiles.every((f) => clipFiles().includes(f)), 10000, 'the deleted clips to come back');
+    check('Undo puts deleted clips back from the Recycle Bin', true);
+    await waitFor(async () => (await listed()) === clipFiles().length, 5000, 'the restored clips in the list');
     await panel.eval(`${picks}[0].click()`);
     const oneBefore = clipFiles().length;
     await panel.eval("document.getElementById('delete-selected').click()");
@@ -464,6 +489,26 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('one selected clip deletes straight away, like its menu item', true);
     await api.clip(2);
     await waitFor(async () => (await listed()) === clipFiles().length && clipFiles().length === oneBefore, 10000, 'a replacement clip');
+
+    // The Delete key deletes the selection, and right-clicking a clip opens its menu, whose Delete can be undone.
+    await panel.eval(`${picks}[0].click()`);
+    await panel.eval("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))");
+    await waitFor(() => clipFiles().length === oneBefore - 1, 10000, 'the Delete key to delete');
+    check('the Delete key deletes the selected clip', true);
+    await waitFor(async () => (await listed()) === clipFiles().length, 5000, 'the list after the Delete key');
+    await panel.eval("document.querySelector('#media .item').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))");
+    const rightMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
+    check('right-clicking a clip opens its menu', /Rename/.test(rightMenu) && /Delete/.test(rightMenu), rightMenu);
+    const beforeMenuDelete = clipFiles();
+    await panel.eval("[...document.querySelectorAll('.menu button')].find((b) => b.textContent === 'Delete').click()");
+    await waitFor(() => clipFiles().length === beforeMenuDelete.length - 1, 10000, 'the menu Delete');
+    const menuDeleted = beforeMenuDelete.find((f) => !clipFiles().includes(f));
+    await waitFor(() => panel.eval("!!document.querySelector('#banner .banner-action')"), 5000, 'the Undo button');
+    await panel.eval("document.querySelector('#banner .banner-action').click()");
+    await waitFor(() => clipFiles().includes(menuDeleted), 10000, 'the clip to come back');
+    check('Undo after the menu Delete puts the clip back', true);
+    await api.clip(2);
+    await waitFor(async () => (await listed()) === clipFiles().length && clipFiles().length === oneBefore, 10000, 'the list to settle');
 
     // Favourites, renaming, search, sort and the game filter, through the real panel.
     const items = () => panel.eval("[...document.querySelectorAll('#media .item-title')].map((t) => t.textContent)");
@@ -708,7 +753,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a screenshot shows no video length', await panel.eval("document.querySelector('#media .item .length').hidden"));
     await panel.eval("document.querySelector('#media .item .more').click()");
     const shotMenu = await panel.eval("[...document.querySelectorAll('.menu button')].map((b) => b.textContent).join()");
-    check('a screenshot has no video actions', shotMenu === 'Rename,Tags,Show in folder', shotMenu);
+    check('a screenshot has no video actions', shotMenu === 'Rename,Tags,Show in folder,Delete', shotMenu);
     await panel.eval("document.body.click(); document.querySelector('.tab[data-kind=clip]').click()");
 
     // A vertical copy, chosen from Edit and share.

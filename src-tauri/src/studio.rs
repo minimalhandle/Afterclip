@@ -745,7 +745,7 @@ pub fn watch_tools(core: Shared) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn studio_state(core: tauri::State<Shared>) -> Value {
     let state = &core.studio;
     let recovery = restorable_replay()

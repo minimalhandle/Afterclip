@@ -3,6 +3,27 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.5.0
+
+- Clip loud moments: during a game, Afterclip can save a clip by itself when your mic or the game stays loud for a moment, tagged #auto. Turn it on in Settings > Controls, and set how loud with the live meter.
+- Named markers: give a hotkey a name, such as clutch. During a recording it adds a chapter with that name, and otherwise it saves a clip tagged with it.
+- Make a reel: in View all, filter to your favourites or a tag, then Make a reel opens them in the editor, oldest first, to trim and merge into one video.
+- The editor draws how loud each part of a clip is under the trim handles, and Loudest moment jumps to the loudest part.
+- Find overlapping clips: in View all, finds clips saved so close together that they show the same moment, and offers to remove the shorter one. Favourites are never suggested.
+- The Clip saved popup appears on the monitor you're using, which during a game is the game's monitor, in the corner you choose in Settings > General.
+- Thumbnails you've already seen in View all load straight away, instead of waiting for new ones to be made.
+- Delete is back in the clip menu, and right-clicking a clip opens the same menu.
+- Undo after deleting puts clips back from the Recycle Bin, with their favourite star, game and tags.
+- The Delete key deletes the clips you've selected.
+- After a game closes, the home page says how many clips that session saved, and Review shows just those.
+- Keep tagged clips, in Settings > Clips and sharing, stops the storage limit and cleanup removing clips you've tagged. Clips tagged #auto still get cleaned up.
+- Keep the buffer on disk, in Settings > Video: a long buffer is written to your save drive as it goes, so it uses almost no memory. The last 40 seconds stay in memory, so short clips still save at once.
+- When memory runs low during a game, Afterclip moves the buffer to disk so the game keeps its memory. Nothing in the buffer is lost, and it goes back into memory when the game closes. Turn this off in Settings > Video.
+- HDR, in Settings > Video: while Windows HDR is on, captures HDR games in HDR, as HEVC or AV1. Thumbnails, screenshots and shared copies are turned into SDR, so they never look washed out. On an HDR monitor, the desktop and SDR games are also captured at the brightness Windows shows them.
+- A game whose anti-cheat keeps refusing game capture, such as Call of Duty, is no longer retried every 2 seconds all session, which could make it stutter. After a minute, Afterclip records its monitor instead, until the game opens again.
+- Audio tracks are named after their sources, such as Microphone or Discord, so video editors show the names instead of Track 2.
+- Weekly reel, in Settings > Clips and sharing: once a week, the last 30 seconds of each of the week's favourites, or clips with a tag you choose, are joined into one video tagged #reel.
+
 ## 1.4.0
 
 - The clip menu is down to Edit and share, Rename, Tags and Show in folder. Trimming and every video export live in Edit and share.

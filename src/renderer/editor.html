@@ -18,6 +18,7 @@
       <div id="player-empty" class="player-empty">Click a clip on the left to add it, then drag the handles to trim it.</div>
     </div>
     <div id="trim" class="trim" hidden aria-label="Trim">
+      <canvas id="wave" class="trim-wave" aria-hidden="true"></canvas>
       <div id="kept" class="trim-kept"></div>
       <div id="playhead" class="trim-play"></div>
       <button id="handle-start" class="trim-handle" aria-label="Trim start" title="Start"></button>
@@ -27,6 +28,7 @@
       <button id="play" class="small" disabled>Play</button>
       <button id="play-all" class="small" disabled>Play all</button>
       <span id="time" class="time">0:00.0</span>
+      <button id="loudest" class="small" disabled title="Jump to the loudest part of this clip">Loudest moment</button>
       <span class="spacer"></span>
       <button id="set-start" class="small" disabled title="Set start to the current position">Set start</button>
       <button id="set-end" class="small" disabled title="Set end to the current position">Set end</button>

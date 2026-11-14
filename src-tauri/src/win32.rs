@@ -501,6 +501,36 @@ const TOAST_SHINE: (f64, f64, f64) = (0xA9 as f64, 0x9D as f64, 0xFF as f64);
 static TOAST_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static TOAST_TEXT: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 static TOAST_CLASS_READY: Once = Once::new();
+/// Which corner of the screen notes appear in: top-right, top-left, bottom-right or bottom-left.
+static TOAST_CORNER: Mutex<String> = Mutex::new(String::new());
+
+pub fn set_toast_corner(corner: &str) {
+    *TOAST_CORNER.lock().unwrap() = corner.to_string();
+}
+
+/// Where a note of this size goes: in the chosen corner of the monitor you're looking at, which during a game
+/// is the game's monitor, rather than always the primary one.
+fn toast_position(width: i32, height: i32, margin: i32) -> (i32, i32) {
+    let (left, top, right, bottom) = unsafe {
+        let hwnd = GetForegroundWindow();
+        let monitor = if hwnd.is_invalid() { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTONEAREST) } else { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        // A fullscreen game covers the taskbar, so the work area would leave a gap: use the whole monitor then.
+        let fullscreen = !hwnd.is_invalid() && {
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect).is_ok() && rect.left <= info.rcMonitor.left && rect.top <= info.rcMonitor.top
+                && rect.right >= info.rcMonitor.right && rect.bottom >= info.rcMonitor.bottom
+        };
+        let area = if fullscreen { info.rcMonitor } else { info.rcWork };
+        (area.left, area.top, area.right, area.bottom)
+    };
+    let corner = TOAST_CORNER.lock().unwrap().clone();
+    let x = if corner.ends_with("left") { left + margin } else { right - width - margin };
+    let y = if corner.starts_with("bottom") { bottom - height - margin } else { top + margin };
+    (x, y)
+}
+
 thread_local! {
     // Each toast runs on its own thread.
     static TOAST_SHOWN_AT: Cell<Option<Instant>> = const { Cell::new(None) };
@@ -631,14 +661,14 @@ pub fn show_toast(message: &str) {
         let scale = GetDpiForSystem() as i32;
         let px = |v: i32| v * scale / 96;
         let (width, height, margin, corner) = (px(290), px(54), px(16), px(22));
-        let (_, top, right, _) = work_area_at(0, 0);
+        let (x, y) = toast_position(width, height, margin);
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
             TOAST_CLASS,
             windows::core::w!("Afterclip"),
             WS_POPUP,
-            right - width - margin,
-            top + margin,
+            x,
+            y,
             width,
             height,
             None,
@@ -685,6 +715,65 @@ pub fn primary_display_mode() -> (u32, u32, u32) {
         let (w, h) = primary_monitor_size();
         (w as u32, h as u32, 60)
     }
+}
+
+/// The primary monitor's HDR state: whether Windows HDR is on for it, and the brightness Windows shows
+/// ordinary SDR content at, in nits, which the SDR content brightness slider sets. None if Windows can't say.
+pub fn primary_hdr() -> Option<(bool, f64)> {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_MODE_INFO,
+        DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL, QDC_ONLY_ACTIVE_PATHS,
+    };
+    unsafe {
+        let (mut path_count, mut mode_count) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count).is_err() {
+            return None;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut path_count, paths.as_mut_ptr(), &mut mode_count, modes.as_mut_ptr(), None).is_err() {
+            return None;
+        }
+        paths.truncate(path_count as usize);
+        modes.truncate(mode_count as usize);
+        // The primary monitor is the one whose desktop starts at 0,0.
+        let primary = paths.iter().find(|path| {
+            let index = path.sourceInfo.Anonymous.modeInfoIdx as usize;
+            modes.get(index).is_some_and(|mode| {
+                mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE
+                    && mode.Anonymous.sourceMode.position.x == 0
+                    && mode.Anonymous.sourceMode.position.y == 0
+            })
+        })?;
+        let target = &primary.targetInfo;
+        let mut color = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO::default();
+        color.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+        color.header.size = std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32;
+        color.header.adapterId = target.adapterId;
+        color.header.id = target.id;
+        if DisplayConfigGetDeviceInfo(&mut color.header) != 0 {
+            return None;
+        }
+        // The second bit is advancedColorEnabled, which is what the Use HDR switch turns on.
+        let enabled = color.Anonymous.value & 0x2 != 0;
+        let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
+        white.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        white.header.size = std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32;
+        white.header.adapterId = target.adapterId;
+        white.header.id = target.id;
+        // Thousandths of 80 nits.
+        let nits = if DisplayConfigGetDeviceInfo(&mut white.header) == 0 { white.SDRWhiteLevel as f64 * 80.0 / 1000.0 } else { 0.0 };
+        Some((enabled, nits))
+    }
+}
+
+/// How much physical memory is free, and how much there is, in bytes.
+pub fn memory_status() -> Option<(u64, u64)> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some((status.ullAvailPhys, status.ullTotalPhys))
 }
 
 pub fn primary_monitor_size() -> (i64, i64) {
@@ -849,5 +938,18 @@ mod tests {
         assert_eq!(shine_progress(1100), None);
         assert!(shine_progress(1800).is_some());
         assert_eq!(shine_progress(SHINE_END_MS), None);
+    }
+}
+
+#[cfg(test)]
+mod hdr_tests {
+    #[test]
+    fn hdr_and_memory_are_read() {
+        let hdr = super::primary_hdr();
+        println!("primary monitor HDR: {hdr:?}");
+        assert!(hdr.is_some(), "Windows reports the main monitor's colour state");
+        let (free, total) = super::memory_status().expect("memory status");
+        println!("memory: {} MB free of {} MB", free / 1_000_000, total / 1_000_000);
+        assert!(free > 0 && free <= total);
     }
 }

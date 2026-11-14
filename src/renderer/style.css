@@ -88,6 +88,14 @@ html:has(body.panel), body.panel { background: transparent; }
 #home:has(#selection:not([hidden])) .banner { bottom: 58px; }
 .banner.good { color: var(--ok); }
 .banner.bad { color: var(--rec); }
+.banner:has(.banner-action) { display: flex; align-items: center; gap: 10px; }
+.banner-action { margin-left: auto; padding: 4px 12px; border-radius: var(--r-s); background: rgb(255 255 255 / .12); color: var(--text); font-size: 12px; font-weight: 600; }
+.banner-action:hover { background: rgb(255 255 255 / .2); }
+.session-card { display: flex; align-items: center; gap: 8px; margin: 10px 12px 0; padding: 8px 8px 8px 12px; border-radius: var(--r-m); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); font-size: 12px; }
+.session-card span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-card .small { background: var(--accent); color: var(--accent-ink); }
+.session-close { width: 26px; height: 26px; font-size: 16px; color: var(--muted); }
+.session-chip { color: var(--accent-text); }
 
 .media { list-style: none; margin: 0; padding: 0 12px 8px; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
 .empty { flex: 1; margin: 0; padding: 32px 28px; color: var(--muted); text-align: center; }
@@ -358,3 +366,26 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 #phone-link { overflow-wrap: anywhere; user-select: text; }
 .share-tools { flex: none; max-height: 65vh; overflow-y: auto; padding: 3px 4px; }
 .share-preview { min-height: 96px; }
+
+/* Named markers and Clip loud moments */
+.preset.marker-key { grid-template-columns: 1fr 1fr 26px; }
+.card-note { margin: 0 0 6px; }
+.loud-meter { display: grid; grid-template-columns: 1fr 48px; gap: 6px 10px; align-items: center; }
+.loud-track { grid-column: 1 / -1; position: relative; height: 8px; border-radius: 6px; background: var(--surface-3); overflow: hidden; }
+.loud-fill { height: 100%; width: 0; background: var(--accent-2); transition: width 0.2s linear; }
+.loud-fill.over { background: var(--warn); }
+.loud-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); }
+.loud-meter output { font-size: 12px; color: var(--muted); text-align: right; }
+
+/* Library reel and overlapping clips */
+.library-actions { gap: 6px; }
+.library-actions .small { flex: 1; }
+.overlaps { display: grid; gap: 6px; padding: 8px; border-radius: var(--r-s); background: var(--surface-2); font-size: 12px; }
+.overlaps-head { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.overlaps-head span { flex: 1; }
+.overlap { display: flex; align-items: center; gap: 6px; }
+.overlap-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overlaps .small { background: var(--surface-3); }
+
+/* Editor waveform */
+.trim-wave { position: absolute; inset: 0; width: 100%; height: 100%; color: color-mix(in srgb, var(--accent-text) 55%, transparent); pointer-events: none; }

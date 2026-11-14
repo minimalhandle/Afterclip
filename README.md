@@ -30,7 +30,13 @@ A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-
 
 Press a hotkey, click the panel or tap a Stream Deck key. Set your buffer in minutes, then save the last 15 seconds, 30 minutes, the whole buffer, or any custom length up to its size. **Keep recording after you save** can wait a few seconds before saving, so what happens just after you press is in the clip too.
 
-The glass card at the top of the panel shows your buffer. The timer shows how much has filled, and in the thin line along its bottom edge, the white part is what saving would keep. That part turns red while recording, the glass shines when a clip saves, and the card warns you if frames are being lost. A short tone and a popup confirm each save, so you know it worked mid-game.
+**Keep the buffer on disk**, in **Settings > Video**, writes a long buffer to your save drive as it goes, in one-minute files, instead of holding it in memory. A 30-minute buffer at High quality would otherwise take about 9 GB of RAM. The last 40 seconds stay in memory, so short clips still save at once, and longer ones are joined from the files without re-encoding. Older files are deleted as they fall out of the buffer. Even with it off, when memory runs low during a game, Afterclip moves the buffer to disk by itself so the game keeps its memory. Nothing in the buffer is lost, and it goes back into memory when the game closes.
+
+**Clip loud moments**, in **Settings > Controls**, saves a clip by itself during a game when your mic or the game stays loud for a moment, such as when you shout. Each one ends 3 seconds after the moment, is tagged #auto, and never overlaps the last one. A live meter shows how loud it hears you, so you can set the line just above your normal talking. It reads the levels Windows already measures, so it adds nothing to capture, and it never listens to a mic that's muted in clips.
+
+**Named markers** give a hotkey a name, such as clutch or fail. During a recording, it adds a chapter with that name. Otherwise, it saves a clip tagged with it.
+
+The glass card at the top of the panel shows your buffer. The timer shows how much has filled, and in the thin line along its bottom edge, the white part is what saving would keep. That part turns red while recording, the glass shines when a clip saves, and the card warns you if frames are being lost. A short tone and a popup confirm each save, so you know it worked mid-game. The popup appears on the monitor you're using, which during a game is the game's monitor, in the corner you choose in **Settings > General**.
 
 ### Automatic game capture
 
@@ -57,7 +63,7 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 
 - **Game audio** follows the game to whichever device or mixer channel it plays through, including Voicemeeter and SleekMeeter.
 - **Any source** can be an output, an input, or a single app such as Discord.
-- **Separate tracks:** put each source in the main mix, on its own track (up to 5), or both. Own tracks survive trimming and merging.
+- **Separate tracks:** put each source in the main mix, on its own track (up to 5), or both. Own tracks survive trimming and merging, and are named after their sources, such as Discord, so video editors show the names instead of Track 2.
 - **Live control:** every source has a volume slider up to 200% that applies straight away, plus a level meter.
 - **Clean Mic** removes background noise and keyboard sound with one click.
 - **Mic mute** silences your mic in clips and recordings only, so calls aren't affected.
@@ -69,13 +75,13 @@ Drag a clip straight into Discord or any other app, the same way you would from 
 
 Choose **Edit and share** from a clip's menu to pick a range, choose recorded audio tracks, make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or **Send to Discord**. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Even out volume** levels the audio in share copies.
 
-**Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone.
+**Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone. Turn on **Keep tagged clips** to protect the clips you've tagged too.
 
 Clips this good are big, so **Compress** re-encodes a smaller H.264 copy, using your GPU where it can, with the main audio mix. It aims for 100 MB at up to 1080p and 60 FPS. A clip too long to look good at that size (over about 3 minutes) keeps its 1080p60 and goes over, and Afterclip tells you the size it reached. Your original stays as it is.
 
 ### A library that stays tidy
 
-**View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, rename clips to something you'll recognise, and tag them, such as #funny, to find them by tag later. Move the mouse across a video's thumbnail to scrub through it without opening it. Afterclip can also save into a folder for each game. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched. When your drive runs low, Afterclip warns you, and a recording stops safely before the drive fills.
+**View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, rename clips to something you'll recognise, and tag them, such as #funny, to find them by tag later. Move the mouse across a video's thumbnail to scrub through it without opening it. Afterclip can also save into a folder for each game. **Make a reel** opens everything the filters show, such as your favourites or one tag, in the editor, oldest first, ready to trim and merge into one video. **Weekly reel**, in **Settings > Clips and sharing**, does this by itself once a week: it joins the last 30 seconds of each of the week's favourites, or clips with a tag you choose, into one video tagged #reel, without re-encoding and only while no game is open. **Find overlapping clips** finds clips saved so close together that they show the same moment, such as pressing the clip key twice, and offers to move the shorter one to the Recycle Bin. Favourites are never suggested. Right-click a clip, or use its ⋯ button, for its menu. Deleting moves files to the Recycle Bin, with an **Undo** that puts them back, favourite star and tags included, and the Delete key deletes whatever you've selected. After a game closes, the home page says how many clips that **session** saved, and Review shows just those. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched. When your drive runs low, Afterclip warns you, and a recording stops safely before the drive fills.
 
 ### Settings for each game
 
@@ -87,7 +93,7 @@ Give any game its own quality, frame rate, buffer length and game audio setting,
 
 ### A lossless editor
 
-Trim with drag handles, reorder clips, and merge them into one video. Nothing is re-encoded, your originals are never changed, and separate audio tracks are kept. Turn any track up, down or off before saving, and only that track is re-encoded.
+Trim with drag handles, reorder clips, and merge them into one video. The trim bar shows how loud each part of the clip is, and **Loudest moment** jumps to the loudest part, so the moment is easy to find. Nothing is re-encoded, your originals are never changed, and separate audio tracks are kept. Turn any track up, down or off before saving, and only that track is re-encoded.
 
 ### Automatic updates
 
@@ -168,7 +174,9 @@ You can change these and add more clip lengths in Settings.
 ### Good to know
 
 - **Run as administrator:** some games, such as Call of Duty, need this for game capture. Turn it on in General. Windows asks once, then Afterclip starts without a prompt through a scheduled task. Turning it off removes the task the next time Afterclip runs elevated, and uninstalling always does.
-- **Buffer size:** the buffer lives in RAM, so a longer one or a higher bitrate uses more memory. Settings shows an estimate.
+- **A game that refuses capture:** some anti-cheat blocks game capture every time, even as administrator. After a minute without it, Afterclip stops trying and records the game's monitor instead, because each try reaches into the game and can make it stutter. It tries again the next time the game opens.
+- **Buffer size:** the buffer lives in RAM, so a longer one or a higher bitrate uses more memory. Settings shows an estimate. With **Keep the buffer on disk**, it shows the disk space instead, which is the buffer plus a minute. That writes all the time, at your bitrate, so use an SSD.
+- **Buffer moved to disk:** this happens when free memory drops below 1.5 GB, or 8% of your RAM if that's more, during a game, and only for a buffer over 500 MB. Where the memory part meets the disk part, up to a second can repeat.
 - **Changing settings:** buffer, audio and video changes restart capture, which clears the buffer. Volume changes don't.
 - **Trim accuracy:** keyframes are 1 second apart, so a clip or trim can start up to about 1 second early, but never late. Only clips with matching video settings can merge.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
@@ -190,6 +198,7 @@ You can change these and add more clip lengths in Settings.
 - **Updates:** installing by itself needs Run as administrator, because otherwise Windows would show a UAC prompt out of nowhere. Without it, updates wait for you to click **Update now**. Turn **Automatic updates** off in General to stop Afterclip checking GitHub.
 - **Reporting a problem:** in General, **Save diagnostics** saves your logs and settings in one zip file to attach to a GitHub issue. Your Discord webhook and Windows user folder are left out, and nothing is sent anywhere. The logs do show your hardware, monitors, audio devices and game names.
 - **HEVC and AV1:** these give smaller files, but not every app can play them, and the editor's preview may not.
+- **HDR:** it follows Windows' **Use HDR** switch for your main monitor, checked when capture starts. It needs a graphics card that encodes 10-bit HEVC or AV1. Without one, capture starts in SDR and says so. HDR clips only look right in players and on screens that support HDR, so for sharing, use the copies Afterclip makes, which are SDR.
 
 ## How it works
 
@@ -226,6 +235,12 @@ npm run test:media
 ```
 
 The others hook fullscreen apps, take focus, move the mouse or press keys, and refuse to run while a fullscreen app is in the foreground. **Close your game first.**
+
+Checks the buffer on disk, and moving the buffer from memory to disk, on a colour card. It takes about five minutes:
+
+```bash
+npm run test:disk
+```
 
 Drives the real app on a colour card, so nothing from your screen or microphone is captured:
 

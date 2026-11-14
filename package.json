@@ -1,6 +1,6 @@
 {
   "name": "afterclip",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "license": "GPL-2.0-or-later",
   "description": "Clip game moments with hotkeys or Stream Deck, powered by libobs",
   "private": true,
@@ -14,6 +14,7 @@
     "test:capture": "node src/test/capture.js",
     "test:ui": "node src/test/ui.js",
     "test:plugin": "node src/test/plugin-test.js",
+    "test:disk": "node src/test/disk-buffer.js",
     "plugin": "node scripts/build-plugin.js && npx -y @elgato/cli@1.10.4 pack streamdeck/com.afterclip.clips.sdPlugin --output streamdeck/dist --force --no-update-check",
     "brand": "node scripts/build-brand.js && tauri icon branding/afterclip-icon-1024.png -o src-tauri/icons"
   },
