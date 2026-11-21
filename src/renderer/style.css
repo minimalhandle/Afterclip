@@ -234,6 +234,12 @@ kbd { padding: 1px 6px; border-radius: 5px; background: var(--surface-2); font: 
 .patch-details summary:hover { color: var(--text); }
 .patch-details[open] summary { margin-bottom: 6px; }
 .card .patch-details { padding: 10px 0; border-top: 1px solid rgb(255 255 255 / .05); }
+.shortcut-help { display: grid; gap: 6px; }
+.shortcut-help p { margin: 0; }
+.shortcut-help b { color: var(--text); font-weight: 600; }
+.shortcut-paths { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 4px 0; font-size: 12px; }
+.shortcut-paths dt { font-family: ui-monospace, Consolas, monospace; color: var(--text); }
+.shortcut-paths dd { margin: 0; color: var(--muted); }
 .library-tools { padding: 0 12px 8px; display: grid; gap: 6px; }
 .library-tools select { flex: 1; min-width: 0; }
 #library-search { background: var(--glass); box-shadow: var(--edge-soft); }

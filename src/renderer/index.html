@@ -540,7 +540,7 @@
     <div class="card">
       <div class="card-title">Stream Deck</div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Allow a Stream Deck on another PC</div><div class="setting-desc">For two-PC setups. Afterclip listens on your home network, and only answers requests that carry the key in the address below. Nothing is sent to the internet.</div></div>
+        <div class="setting-text"><div class="setting-name">Allow a Stream Deck on another PC</div><div class="setting-desc">For two-PC setups, or iPhone Shortcuts. Afterclip listens on your home network, and only answers requests that carry the key in the address below. Nothing is sent to the internet.</div></div>
         <input id="remoteStreamDeck" class="switch" type="checkbox" aria-label="Allow a Stream Deck on another PC">
       </div>
       <div id="remote-details" hidden>
@@ -556,6 +556,25 @@
           <div class="setting-text"><div class="setting-name">New key</div><div class="setting-desc">Stops the old address working, such as if someone else has seen it. Paste the new address on the other PC.</div></div>
           <button id="new-remote-key" class="small">New key</button>
         </div>
+        <details id="iphone-shortcuts" class="patch-details">
+          <summary>iPhone Shortcuts</summary>
+          <div class="shortcut-help">
+            <p class="setting-desc">Clip or record from your iPhone while it's on the same Wi-Fi as this PC. In the Shortcuts app, make a shortcut with the action <b>Get Contents of URL</b>. Paste the address below into URL, then add a path from the list to the end. Set Method to <b>POST</b>, and add a header named <b>Authorization</b> with the value below.</p>
+            <div class="setting-name">URL</div>
+            <div class="row"><input id="shortcut-url" type="text" readonly aria-label="Address for iPhone Shortcuts"><button id="copy-shortcut-url" class="small">Copy</button></div>
+            <div class="setting-name">Authorization</div>
+            <div class="row"><input id="shortcut-header" type="password" readonly aria-label="Authorization header for iPhone Shortcuts"><button id="copy-shortcut-header" class="small">Copy</button></div>
+            <dl class="shortcut-paths">
+              <dt>/clip/60</dt><dd>Clip the last minute. Use 120 for 2 minutes, 300 for 5.</dd>
+              <dt>/clip/60/star</dt><dd>Clip it and star it</dd>
+              <dt>/record/toggle</dt><dd>Start or stop recording</dd>
+              <dt>/marker</dt><dd>Add a marker</dd>
+              <dt>/screenshot</dt><dd>Take a screenshot</dd>
+              <dt>/mic/toggle</dt><dd>Mute or unmute your mic</dd>
+            </dl>
+            <p class="setting-desc">Then run it with Siri, or from the Home Screen, Back Tap or the Action button. Away from home it won't reach this PC. Don't open the port on your router, because the key would cross the internet unencrypted. If you make a new key, update the header in each shortcut.</p>
+          </div>
+        </details>
       </div>
     </div>
     <p class="note">A Stream Deck on this PC needs no address. The first time, Windows may ask whether Afterclip can use your network: allow it on private networks.</p>

@@ -1386,6 +1386,10 @@ function renderRemote() {
   const problem = remote.error ?? (remote.on && !remote.address ? 'This PC isn\'t on a network, so there\'s no address yet.' : '');
   note.textContent = problem || 'On the other PC, open any Afterclip key\'s settings in the Stream Deck app, and paste this into Address.';
   note.classList.toggle('warn', !!problem);
+  // iPhone Shortcuts take the key as a header, not in the address as the Stream Deck does.
+  const address = remote.address ? new URL(remote.address) : null;
+  $('shortcut-url').value = address ? address.origin : '';
+  $('shortcut-header').value = address ? `Bearer ${address.searchParams.get('k') ?? ''}` : '';
 }
 
 /* Storage */
@@ -1980,6 +1984,10 @@ $('remoteStreamDeck').onchange = () => { remote.on = $('remoteStreamDeck').check
 $('remotePort').oninput = () => scheduleSave(TYPING_DELAY_MS);
 $('copy-remote').onclick = () => navigator.clipboard.writeText($('remote-address').value)
   .then(() => { $('save-note').textContent = 'Address copied. Paste it into the Stream Deck app on the other PC.'; }, (e) => { $('save-note').textContent = errorText(e); });
+for (const [id, field, what] of [['copy-shortcut-url', 'shortcut-url', 'Address'], ['copy-shortcut-header', 'shortcut-header', 'Header value']]) {
+  $(id).onclick = () => navigator.clipboard.writeText($(field).value)
+    .then(() => { $('save-note').textContent = `${what} copied. Paste it into your shortcut.`; }, (e) => { $('save-note').textContent = errorText(e); });
+}
 $('new-remote-key').onclick = async () => {
   remote = await api.invoke('new-api-key');
   renderRemote();

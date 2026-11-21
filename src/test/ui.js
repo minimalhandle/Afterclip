@@ -1229,6 +1229,8 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const remoteOn = await waitFor(async () => { const r = await remoteState(); return r.address && r; }, 8000, 'the remote address');
     const farUrl = new URL(remoteOn.address);
     check('Settings shows the address, with this PC\'s network address, the port and the key', farUrl.port === '4569' && farUrl.searchParams.get('k') === session.token && !['127.0.0.1', 'localhost'].includes(farUrl.hostname), `${farUrl.hostname}:${farUrl.port}`);
+    const shortcutFields = `document.getElementById('shortcut-url').value === ${JSON.stringify(farUrl.origin)} && document.getElementById('shortcut-header').value === ${JSON.stringify(`Bearer ${session.token}`)}`;
+    check('Settings shows iPhone Shortcuts the address and the key as a header', await waitFor(() => panel.eval(`refresh().then(() => ${shortcutFields})`), 8000, 'the iPhone Shortcuts fields').catch(() => false));
     // With a time limit, so a connection nobody answers fails the check instead of stopping the suite.
     const askFar = (host, key) => fetch(`http://${host}:4569/status`, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(5000) }).then((r) => r.status, (e) => e.cause?.code ?? e.name ?? e.message);
     check('another PC can reach Afterclip with the key', (await askFar(farUrl.hostname, session.token)) === 200);
