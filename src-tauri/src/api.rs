@@ -56,6 +56,8 @@ pub trait ApiHandlers: Send + Sync + 'static {
     fn star_last_clip(&self) -> Result<Value, String>;
     fn recipe_last_clip(&self, name: &str) -> Result<Value, String>;
     fn toggle_camera(&self) -> Result<Value, String>;
+    /// Switches between recording this PC and the capture card.
+    fn toggle_card(&self) -> Result<Value, String>;
     /// The Stream Deck's Hold to Talk key going down or up.
     fn deck_talk(&self, held: bool) -> Result<Value, String>;
     /// Turns every mute-key source up or down by this many percent.
@@ -140,7 +142,10 @@ fn serve(server: Arc<Server>, key: Arc<RwLock<String>>, handlers: Arc<dyn ApiHan
                     (401, json!({ "error": "unauthorized" }))
                 };
                 let header = Header::from_bytes("Content-Type", "application/json").expect("valid header");
-                let response = Response::from_string(body.to_string()).with_status_code(code).with_header(header);
+                // No connection is kept open between requests. The library reads further requests off a kept
+                // connection by itself, even after the API is stopped, and nothing would ever answer them.
+                let close = Header::from_bytes("Connection", "close").expect("valid header");
+                let response = Response::from_string(body.to_string()).with_status_code(code).with_header(header).with_header(close);
                 let _ = request.respond(response);
             });
         }
@@ -173,6 +178,7 @@ fn route(method: &Method, url: &str, handlers: &dyn ApiHandlers) -> (u16, Value)
             }
         }
         (Method::Post, "/camera/toggle") => handlers.toggle_camera(),
+        (Method::Post, "/card/toggle") => handlers.toggle_card(),
         (Method::Post, "/talk/on") => handlers.deck_talk(true),
         (Method::Post, "/talk/off") => handlers.deck_talk(false),
 

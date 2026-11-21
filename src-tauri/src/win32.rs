@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Interface, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+    eCapture, eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ};
@@ -432,6 +432,17 @@ unsafe fn take_pwstr(value: PWSTR) -> windows::core::Result<String> {
     let text = value.to_string().map_err(|_| windows::core::Error::empty());
     CoTaskMemFree(Some(value.0 as *const core::ffi::c_void));
     text
+}
+
+/// The name of Windows' default recording device, such as "Microphone (Yeti)".
+pub fn default_input_name() -> Option<String> {
+    init_com_for_thread();
+    unsafe {
+        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let device = devices.GetDefaultAudioEndpoint(eCapture, eConsole).ok()?;
+        let store = device.OpenPropertyStore(STGM_READ).ok()?;
+        Some(store.GetValue(&PKEY_Device_FriendlyName).ok()?.to_string()).filter(|name| !name.is_empty())
+    }
 }
 
 /// The output devices this process is playing sound through right now. Empty while it's silent or inactive.

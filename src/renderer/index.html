@@ -286,6 +286,15 @@
         <div class="setting-text"><div class="setting-name">Card visual quality</div><div class="setting-desc">4K needs more than 1080p to look as sharp. HEVC, under Codec, keeps more detail at the same size.</div></div>
         <select id="cardBitrateKbps" aria-label="Capture card visual quality"></select>
       </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Card volume</div><div class="setting-desc">How loud the card's sound is in clips. The meter moves while it plays.</div></div>
+      </div>
+      <div id="card-level"></div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Card audio on its own track</div><div class="setting-desc">Also puts the card's sound on a track named Capture card, so a video editor can change it apart from your mic.</div></div>
+        <input id="cardAudioOwnTrack" class="switch" type="checkbox" aria-label="Card audio on its own track">
+      </div>
+      <p id="card-doubled" class="note warn" hidden></p>
     </div>
     <div class="card">
       <div class="setting">
@@ -446,6 +455,10 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Screenshot</div><div class="setting-desc">Save a picture of what's being captured.</div></div>
         <input id="screenshotHotkey" readonly aria-label="Screenshot hotkey" class="key-field">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Switch to the capture card</div><div class="setting-desc">Switches between recording this PC and your capture card. Capture restarts, which clears the buffer.</div></div>
+        <input id="cardHotkey" readonly aria-label="Capture card hotkey" class="key-field">
       </div>
     </div>
     <div class="card">

@@ -467,7 +467,7 @@ impl Engine {
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
             "noMonitorFallback": card.is_none() && s.game_profiles.iter().any(|profile| profile.capture_privacy),
-            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio })),
+            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio, "volume": s.card_audio_volume, "ownTrack": s.card_audio_own_track })),
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
@@ -926,7 +926,7 @@ impl Engine {
 
     /// The audio devices and running apps that can be recorded right now.
     pub fn audio_choices(&self) -> Result<Value, String> {
-        self.rpc("audioChoices", json!({}))
+        self.choices("audioChoices")
     }
 
     /// Switches the webcam on or off straight away, without restarting capture.
@@ -937,12 +937,75 @@ impl Engine {
     /// The webcams that can be shown.
 
     pub fn camera_choices(&self) -> Result<Value, String> {
-        self.rpc("cameraChoices", json!({})).map(|m| m["cameras"].clone())
+        self.choices("cameraChoices").map(|m| m["cameras"].clone())
     }
 
     /// The capture cards that can be recorded, and the audio devices their sound can come from.
     pub fn card_choices(&self) -> Result<Value, String> {
-        self.rpc("cardChoices", json!({})).map(|m| json!({ "cards": m["cards"], "audio": m["audio"] }))
+        self.choices("cardChoices").map(|m| json!({ "cards": m["cards"], "audio": m["audio"] }))
+    }
+
+    /// Whether the capture card is sending pictures, or None when no card is being recorded. A card that
+    /// another app holds never sends one.
+    pub fn card_has_picture(&self) -> Option<bool> {
+        let reply = self.rpc("cardStatus", json!({})).ok()?;
+        reply["card"].as_bool().unwrap_or(false).then(|| reply["width"].as_i64().unwrap_or(0) > 0)
+    }
+
+    /// Asks the running engine for a list of devices, or a short-lived one when capture is stopped, such as
+    /// while waiting for a game, so devices can still be chosen.
+    fn choices(&self, cmd: &str) -> Result<Value, String> {
+        if self.running.lock().unwrap().is_some() {
+            if let Ok(reply) = self.rpc(cmd, json!({})) {
+                return Ok(reply);
+            }
+        }
+        self.list_without_capture(cmd)
+    }
+
+    fn list_without_capture(&self, cmd: &str) -> Result<Value, String> {
+        // Its own folder, so its log never replaces the capture engine's.
+        let config = self.home.join("engine-list");
+        fs::create_dir_all(&config).map_err(|e| e.to_string())?;
+        let bin = self.bin_dir();
+        let mut child = Command::new(bin.join("afterclip-engine.exe"))
+            .arg(&self.root)
+            .arg(&config)
+            .current_dir(&bin)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("Could not list devices: {e}"))?;
+        let mut stdin = child.stdin.take().ok_or("No engine stdin")?;
+        let stdout = child.stdout.take().ok_or("No engine stdout")?;
+        let commands = [json!({ "id": 1, "cmd": "listDevices", "root": self.root }), json!({ "id": 2, "cmd": cmd }), json!({ "id": 3, "cmd": "shutdown" })];
+        for command in commands {
+            let _ = writeln!(stdin, "{command}");
+        }
+        let _ = stdin.flush();
+        let (tx, rx) = channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(reply) = serde_json::from_str::<Value>(&line) {
+                    if reply["id"] == 2 {
+                        let _ = tx.send(reply);
+                    }
+                }
+            }
+        });
+        let reply = rx.recv_timeout(Duration::from_secs(20));
+        drop(stdin);
+        if reply.is_err() {
+            let _ = child.kill();
+        }
+        thread::spawn(move || { let _ = child.wait(); });
+        let reply = reply.map_err(|_| "Devices couldn't be listed".to_string())?;
+        if reply["ok"].as_bool() == Some(false) {
+            return Err(reply["error"].as_str().unwrap_or("Devices couldn't be listed").to_string());
+        }
+        Ok(reply)
     }
 
     /// Joins ranges of clips into a new file in Clips, losslessly. Originals are never changed.

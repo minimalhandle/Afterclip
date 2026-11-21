@@ -33,7 +33,7 @@ const dial = (name, title, tooltip, triggers) => action(name, title, tooltip, {
 });
 const manifestFile = path.join(plugin, 'manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.Version = '0.12.0.0';
+manifest.Version = '0.13.0.0';
 // Every key's settings show the address it connects to, so a Stream Deck can control Afterclip on another PC.
 manifest.PropertyInspectorPath = 'ui/connection.html';
 manifest.Actions = [
@@ -55,6 +55,7 @@ manifest.Actions = [
   action('vertical-last', 'Vertical Copy of Last Clip', 'Make a 9:16 copy of your newest clip for phones, with your webcam on top if it has one.'),
   action('save-star', 'Save and Star', "Save a clip of the length you choose in the key's settings, and add it to your favourites.", { PropertyInspectorPath: 'ui/clip.html' }),
   action('star-last', 'Star Last Clip', 'Add your newest clip to your favourites, so clean-up never removes it. Press again to take the star off.'),
+  action('capture-card', 'Capture Card', 'Switch between recording this PC and your capture card. Capture restarts, which clears the buffer. Choose the card in Afterclip first.'),
   action('webcam', 'Show Your Webcam', 'Turn your webcam in clips on or off, without restarting capture. Choose the webcam in Afterclip first.'),
   action('talk', 'Hold to Talk', 'Hold to put your mic in clips, with Push to talk turned on in Afterclip.', { SupportedInMultiActions: false }),
   dial('mic-dial', 'Mic Volume', 'Turn to change your mic volume in clips. Press to mute your mic in clips.', { Rotate: 'Mic volume', Push: 'Mute mic in clips', Touch: 'Mute mic in clips' }),
@@ -85,6 +86,7 @@ for (const [name, list, face] of [
   ['vertical-last', 'Y', { symbol: 'vertical', small: 'VERTICAL' }],
   ['save-star', 'B', { big: '30', small: 'SEC STAR' }],
   ['star-last', 'A', { symbol: 'star', small: 'STAR LAST' }],
+  ['capture-card', 'V', { symbol: 'card', small: 'PC' }],
   ['webcam', 'W', { symbol: 'webcamOff', small: 'CAM OFF' }],
   ['talk', 'H', { symbol: 'mic', small: 'HOLD' }],
 

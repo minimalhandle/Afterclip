@@ -6,6 +6,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_secs(1);
+/// What clips, recordings, screenshots and their game folder are named while a capture card is recorded.
+pub const CARD_NAME: &str = "CaptureCard";
+// A card normally sends its first picture within a few seconds of opening. After this, say it isn't.
+const NO_PICTURE_AFTER: Duration = Duration::from_secs(10);
 // Hooking a game normally takes a few seconds. After this, say capture has fallen back.
 const HOOK_GRACE: Duration = Duration::from_secs(10);
 // A game whose anti-cheat blocks the hook, such as Call of Duty, refuses it every time, and each try reaches into
@@ -30,6 +34,8 @@ pub struct CaptureState {
     /// The hook failed for an unknown reason, and running as administrator is worth trying.
     pub suggest_admin: bool,
     pub elevated: bool,
+    /// The capture card has sent no picture, usually because another app has it open.
+    pub no_picture: bool,
 }
 
 /// What the watcher looks for.
@@ -59,12 +65,13 @@ impl CaptureManager {
                 needs_admin: false,
                 suggest_admin: false,
                 elevated: is_self_elevated(),
+                no_picture: false,
             }),
         });
         let me = Arc::clone(&manager);
         thread::spawn(move || {
             init_com_for_thread();
-            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false };
+            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false, card_since: None };
             loop {
                 thread::sleep(POLL);
                 if engine.status().state != "ready" {
@@ -72,7 +79,7 @@ impl CaptureManager {
                 }
                 match watch() {
                     Watch::Games => me.tick(&engine, &mut watcher, &added_games(), &on_change),
-                    Watch::Card => me.show_card(&mut watcher, &on_change),
+                    Watch::Card => me.show_card(&engine, &mut watcher, &on_change),
                     Watch::Off => {}
                 }
             }
@@ -94,8 +101,15 @@ impl CaptureManager {
     }
 
     /// Says the card is being recorded. Leaving card mode restarts the engine, so game detection starts afresh then.
-    fn show_card(&self, w: &mut Watcher, on_change: &impl Fn(&CaptureState)) {
-        w.generation = 0;
+    fn show_card(&self, engine: &Engine, w: &mut Watcher, on_change: &impl Fn(&CaptureState)) {
+        // Any device can be behind a card, so its files are named for the card, not a console.
+        if w.generation != engine.generation() || w.current.is_some() {
+            engine.set_game(Some(CARD_NAME.into()));
+            w.card_since = Some(Instant::now());
+        }
+        let waited = w.card_since.is_some_and(|since| since.elapsed() > NO_PICTURE_AFTER);
+        let no_picture = waited && engine.card_has_picture() == Some(false);
+        w.generation = engine.generation();
         w.current = None;
         w.candidate = None;
         self.publish(on_change, |s| {
@@ -104,6 +118,7 @@ impl CaptureManager {
             s.exe = None;
             s.needs_admin = false;
             s.suggest_admin = false;
+            s.no_picture = no_picture;
         });
     }
 
@@ -116,6 +131,7 @@ impl CaptureManager {
             w.display_hidden = false;
             w.game_mix = None;
             w.privacy = None;
+            w.card_since = None;
             engine.set_game(None);
             self.publish(on_change, |s| {
                 s.mode = "desktop";
@@ -123,6 +139,7 @@ impl CaptureManager {
                 s.exe = None;
                 s.needs_admin = false;
                 s.suggest_admin = false;
+                s.no_picture = false;
             });
         }
         let found = foreground_game_app(added_games);
@@ -234,4 +251,6 @@ struct Watcher {
     hooked_once: bool,
     /// The current game kept refusing the hook, so it's no longer tried until it's opened again.
     gave_up: bool,
+    /// When the capture card was opened, to give it time to send its first picture.
+    card_since: Option<Instant>,
 }

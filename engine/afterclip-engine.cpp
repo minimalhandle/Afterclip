@@ -70,6 +70,8 @@ obs_source_t *g_privacyCard = nullptr;
 // A capture card, such as an Elgato 4K X, recorded instead of the display and game.
 obs_source_t *g_captureCard = nullptr;
 obs_sceneitem_t *g_captureCardItem = nullptr;
+bool g_captureCardHasAudio = false;
+const int CARD_AUDIO_INDEX = -2;
 obs_sceneitem_t *g_privacyItem = nullptr;
 std::atomic<DWORD> g_privatePid{0};
 bool g_noMonitorFallback = false;
@@ -185,6 +187,21 @@ bool loadModules(const std::string &root)
 	}
 	obs_post_load_modules();
 	return any;
+}
+
+/** Loads just the audio and DirectShow modules, for a short-lived engine that only lists devices. */
+bool loadListingModules(const std::string &root)
+{
+	bool all = true;
+	for (const char *name : {"win-dshow", "win-wasapi"}) {
+		const std::string dir = root + "/core/" + name;
+		obs_module_t *module = nullptr;
+		if (obs_open_module(&module, (dir + "/" + name + ".dll").c_str(), (dir + "/data").c_str()) != MODULE_SUCCESS ||
+		    !obs_init_module(module))
+			all = false;
+	}
+	obs_post_load_modules();
+	return all;
 }
 
 void fitToCanvas(obs_sceneitem_t *item, uint32_t width, uint32_t height)
@@ -426,6 +443,8 @@ void setMeters(bool on)
 			add(g_sourceByIndex[i], (int)i);
 	if (g_gameAudio)
 		add(g_gameAudio, GAME_AUDIO_INDEX);
+	if (g_captureCard && g_captureCardHasAudio)
+		add(g_captureCard, CARD_AUDIO_INDEX);
 }
 
 void addStats(obs_data_t *reply)
@@ -529,6 +548,19 @@ void listChoices(obs_data_t *reply, const char *key, const char *sourceId, const
 }
 
 /**
+ * Opens or closes a DirectShow device. Its "active" setting is only read when the source is made: an update
+ * with it off reopens the device, and one with it on does nothing while closed. The activate call does both.
+ */
+void setDeviceOpen(obs_source_t *source, bool open)
+{
+	calldata_t cd;
+	calldata_init(&cd);
+	calldata_set_bool(&cd, "active", open);
+	proc_handler_call(obs_source_get_proc_handler(source), "activate", &cd);
+	calldata_free(&cd);
+}
+
+/**
  * Switches the webcam on or off without restarting anything. Off also lets go of the device, so its light
  * goes out. Returns false if no webcam was set up when capture started.
  */
@@ -538,12 +570,8 @@ bool showCamera(bool on)
 		return false;
 	obs_sceneitem_set_visible(g_cameraItem, on);
 	layoutGame(on);
-	if (strcmp(obs_source_get_id(g_camera), "dshow_input") == 0) {
-		obs_data_t *s = obs_data_create();
-		obs_data_set_bool(s, "active", on);
-		obs_source_update(g_camera, s);
-		obs_data_release(s);
-	}
+	if (strcmp(obs_source_get_id(g_camera), "dshow_input") == 0)
+		setDeviceOpen(g_camera, on);
 	blog(LOG_INFO, "Webcam %s", on ? "on" : "off");
 	return true;
 }
@@ -703,8 +731,11 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
 		error = "Could not open the capture card. Check it's plugged in, and closed in other apps such as OBS or 4K Capture Utility.";
 		return false;
 	}
+	g_captureCardHasAudio = !audio.empty();
+	// Its own track, if wanted, is added once the other sources have theirs.
 	obs_source_set_audio_mixers(g_captureCard, audio.empty() ? 0 : 1);
 	obs_source_set_muted(g_captureCard, audio.empty());
+	obs_source_set_volume(g_captureCard, obs_data_has_user_value(card, "volume") ? (float)obs_data_get_double(card, "volume") : 1.0f);
 	g_captureCardItem = obs_scene_add(g_scene, g_captureCard);
 	fitToCanvas(g_captureCardItem, width, height);
 	return true;
@@ -825,7 +856,13 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
 	g_cpuInfo = os_cpu_usage_info_start();
-	const int tracks = createAudioSources(c);
+	int tracks = createAudioSources(c);
+	if (g_captureCard && g_captureCardHasAudio && tracks < MAX_AUDIO_TRACKS) {
+		obs_data_t *card = obs_data_get_obj(c, "card");
+		if (obs_data_get_bool(card, "ownTrack"))
+			obs_source_set_audio_mixers(g_captureCard, 1u | (1u << tracks++));
+		obs_data_release(card);
+	}
 	// Recordings name each audio track after its encoder, so editors show "Discord" instead of "Track 3".
 	obs_data_array_t *trackNames = obs_data_get_array(c, "trackNames");
 	for (int track = 0; track < tracks; track++) {
@@ -1151,6 +1188,16 @@ bool handle(const std::string &line)
 	} else if (cmd == "cameraChoices") {
 
 		listChoices(reply, "cameras", "dshow_input", "video_device_id");
+	} else if (cmd == "cardStatus") {
+		// A card that another app holds, or that was unplugged, never sends a frame, so its size stays 0.
+		obs_data_set_bool(reply, "card", g_captureCard != nullptr);
+		obs_data_set_int(reply, "width", g_captureCard ? obs_source_get_width(g_captureCard) : 0);
+		obs_data_set_int(reply, "height", g_captureCard ? obs_source_get_height(g_captureCard) : 0);
+	} else if (cmd == "listDevices") {
+		// Only what listing needs, so devices can be chosen while capture is stopped.
+		ok = loadListingModules(obs_data_get_string(c, "root"));
+		if (!ok)
+			error = "Could not load the device modules";
 	} else if (cmd == "cardChoices") {
 		listChoices(reply, "cards", "dshow_input", "video_device_id");
 		listChoices(reply, "audio", "dshow_input", "audio_device_id");
@@ -1221,6 +1268,7 @@ bool handle(const std::string &line)
 	} else if (cmd == "volume") {
 		const int index = (int)obs_data_get_int(c, "index");
 		obs_source_t *source = index == GAME_AUDIO_INDEX ? g_gameAudio
+				       : index == CARD_AUDIO_INDEX ? (g_captureCardHasAudio ? g_captureCard : nullptr)
 				       : index >= 0 && index < (int)g_sourceByIndex.size() ? g_sourceByIndex[index]
 											   : nullptr;
 		if (source)

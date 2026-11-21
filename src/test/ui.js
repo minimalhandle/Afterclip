@@ -832,7 +832,8 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const savedTo = await panel.eval(`window.afterclip.invoke('save-diagnostics', ${JSON.stringify(diagnosticsZip)})`);
     const unpacked = path.join(session.home, 'diagnostics');
     fs.mkdirSync(unpacked);
-    execFileSync('tar', ['-xf', diagnosticsZip, '-C', unpacked], { windowsHide: true });
+    // Windows' own tar, since another one first on the PATH, such as Git's, reads "C:" as a network host.
+    execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', diagnosticsZip, '-C', unpacked], { windowsHide: true });
     const inZip = fs.readdirSync(unpacked).sort();
     check('diagnostics hold the logs, settings and version', savedTo === diagnosticsZip && ['about.txt', 'engine.log', 'settings.json'].every((n) => inZip.includes(n)) && !inZip.includes('api-token.txt'), inZip.join());
     const zipped = inZip.map((n) => fs.readFileSync(path.join(unpacked, n), 'utf8')).join('\n');
@@ -1228,7 +1229,8 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     const remoteOn = await waitFor(async () => { const r = await remoteState(); return r.address && r; }, 8000, 'the remote address');
     const farUrl = new URL(remoteOn.address);
     check('Settings shows the address, with this PC\'s network address, the port and the key', farUrl.port === '4569' && farUrl.searchParams.get('k') === session.token && !['127.0.0.1', 'localhost'].includes(farUrl.hostname), `${farUrl.hostname}:${farUrl.port}`);
-    const askFar = (host, key) => fetch(`http://${host}:4569/status`, { headers: key ? { Authorization: `Bearer ${key}` } : {} }).then((r) => r.status, (e) => e.cause?.code ?? e.message);
+    // With a time limit, so a connection nobody answers fails the check instead of stopping the suite.
+    const askFar = (host, key) => fetch(`http://${host}:4569/status`, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(5000) }).then((r) => r.status, (e) => e.cause?.code ?? e.name ?? e.message);
     check('another PC can reach Afterclip with the key', (await askFar(farUrl.hostname, session.token)) === 200);
     const guessStarted = Date.now();
     const guessed = await askFar(farUrl.hostname, 'not-the-key');

@@ -39,7 +39,17 @@ fn refusal(status: StatusCode) -> String {
 }
 
 /// The webhook is a secret, and network errors quote the address they failed on, so they're never passed on.
+///
+/// It runs on a thread of its own. reqwest's blocking client panics on an async runtime's thread, which is
+/// where Tauri runs async commands such as Edit and share, and the command then never answers.
 pub fn send(webhook: &str, file: &Path) -> Result<(), String> {
+    let (webhook, file) = (webhook.to_string(), file.to_path_buf());
+    std::thread::spawn(move || send_here(&webhook, &file))
+        .join()
+        .unwrap_or_else(|_| Err("Couldn't reach Discord. Check your connection and try again.".into()))
+}
+
+fn send_here(webhook: &str, file: &Path) -> Result<(), String> {
     let unreachable = |_| "Couldn't reach Discord. Check your connection and try again.".to_string();
     let part = multipart::Part::file(file).map_err(|e| format!("Couldn't read this file: {e}"))?.mime_str(content_type(file)).map_err(unreachable)?;
     let client = Client::builder().timeout(UPLOAD_TIMEOUT).redirect(redirect::Policy::none()).build().map_err(unreachable)?;
@@ -87,6 +97,28 @@ mod tests {
         let _ = std::fs::remove_file(&file);
         assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
         assert!(!sent.unwrap_err().contains("secret-token"));
+    }
+
+    #[test]
+    fn it_answers_when_called_from_an_async_command() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        // A pretend Discord that accepts one upload.
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+            let mut buffer = [0u8; 65536];
+            while stream.read(&mut buffer).is_ok_and(|n| n > 0) {}
+            let _ = stream.write_all(b"HTTP/1.1 204 No Content
+
+");
+        });
+        let file = std::env::temp_dir().join(format!("afterclip-discord-async-{port}.mp4"));
+        std::fs::write(&file, vec![0u8; 4096]).unwrap();
+        let sent = tauri::async_runtime::block_on(async { send(&format!("http://127.0.0.1:{port}/api/webhooks/1/token"), &file) });
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(sent, Ok(()));
     }
 
     #[test]

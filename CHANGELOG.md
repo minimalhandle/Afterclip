@@ -3,6 +3,18 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.6.0
+
+- Capture cards: record a console or a second PC through a capture card, such as an Elgato 4K X, instead of this PC. Turn on Record a capture card in Settings > Video.
+- The card has its own resolution, frame rate and quality, up to 4K whatever your monitor is, so your settings for PC games stay as they are.
+- Switch between this PC and the card from the tray, a hotkey or the new Capture Card Stream Deck key.
+- The card's sound has its own volume, level meter and optional track. Afterclip warns if a mic source is really the card, which would record it twice.
+- Clips, recordings and screenshots from the card are named CaptureCard, and go in a CaptureCard folder with game folders on.
+- The panel and a popup say when the card sends no picture, usually because another app has it open.
+- Webcams and capture cards can be chosen while capture is stopped, such as while waiting for a game.
+- Fixed turning the webcam on when Afterclip started with it off, and turning it off now turns its light off.
+- Fixed Send to Discord from Edit and share never finishing.
+
 ## 1.5.0
 
 - Clip loud moments: during a game, Afterclip can save a clip by itself when your mic or the game stays loud for a moment, tagged #auto. Turn it on in Settings > Controls, and set how loud with the live meter.

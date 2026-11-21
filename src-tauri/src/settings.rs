@@ -238,6 +238,11 @@ pub struct Settings {
     pub card_resolution: String,
     pub card_fps: i64,
     pub card_bitrate_kbps: i64,
+    /// The card's sound: how loud, and whether it also gets an audio track of its own.
+    pub card_audio_volume: f64,
+    pub card_audio_own_track: bool,
+    /// Switches between this PC and the capture card.
+    pub card_hotkey: String,
     /// Once a week, joins the week's favourites, or clips with weekly_reel_tag, into one video.
     pub weekly_reel: bool,
     /// The tag a clip needs to go in the weekly reel. Empty means favourites.
@@ -346,6 +351,9 @@ impl Settings {
             card_resolution: "2160".into(),
             card_fps: 60,
             card_bitrate_kbps: 60000,
+            card_audio_volume: 1.0,
+            card_audio_own_track: false,
+            card_hotkey: String::new(),
             weekly_reel: false,
             weekly_reel_tag: String::new(),
         }
@@ -365,8 +373,15 @@ impl Settings {
             self.width = (self.height * 16 / 9 + 1) / 2 * 2;
             self.fps = self.card_fps;
             self.bitrate_kbps = self.card_bitrate_kbps;
+            // Game audio follows a game on this PC, and the card's games aren't on it.
+            self.game_audio = false;
         }
         self
+    }
+
+    /// Whether the card's sound is recorded on a track of its own.
+    pub fn card_track(&self) -> bool {
+        self.card().is_some_and(|(_, audio)| !audio.is_empty()) && self.card_audio_own_track
     }
 
     /// Whether the buffer stops while no game is open. A capture card's games run on another device, so it never does.
@@ -410,6 +425,9 @@ impl Settings {
         }
         if self.game_audio && self.game_audio_own_track {
             names.push("Game".into());
+        }
+        if self.card_track() {
+            names.push("Capture card".into());
         }
         names.truncate(MAX_AUDIO_TRACKS);
         names
@@ -507,6 +525,7 @@ impl Settings {
             self.card_fps = 60;
         }
         self.card_bitrate_kbps = self.card_bitrate_kbps.clamp(2000, 150000);
+        self.card_audio_volume = self.card_audio_volume.clamp(0.0, 2.0);
         self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
         if !["top-right", "top-left", "bottom-right", "bottom-left"].contains(&self.toast_corner.as_str()) {
             self.toast_corner = "top-right".into();
@@ -598,6 +617,7 @@ impl Settings {
             || self.test_pattern != other.test_pattern
             || self.game_profiles.iter().any(|profile| profile.capture_privacy) != other.game_profiles.iter().any(|profile| profile.capture_privacy)
             || self.card() != other.card()
+            || self.card_track() != other.card_track()
             || self.camera_box() != other.camera_box()
             || (self.camera_box().is_some() && self.camera_device != other.camera_device)
     }
@@ -677,6 +697,11 @@ mod tests {
         let card = Settings { card_resolution: "1440".into(), card_fps: 120, ..card }.with_card();
         assert_eq!((card.width, card.height, card.fps), (2560, 1440, 120));
         assert!(pc.needs_engine_restart(&card), "switching to the card restarts capture");
+        assert!(!card.game_audio, "no game on this PC to follow");
+        let tracked = Settings { capture_card_audio: "Elgato 4K X (Elgato 4K X):".into(), card_audio_own_track: true, ..card.clone() };
+        assert_eq!(tracked.track_names().last().map(String::as_str), Some("Capture card"));
+        assert!(card.needs_engine_restart(&tracked), "a new track needs a restart");
+        assert!(!tracked.needs_engine_restart(&Settings { card_audio_volume: 0.5, ..tracked.clone() }), "volume changes live");
     }
 
     #[test]

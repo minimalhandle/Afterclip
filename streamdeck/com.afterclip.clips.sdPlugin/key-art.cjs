@@ -27,6 +27,8 @@ const SYMBOLS = {
   alert: (fill) => `<rect x="67.5" y="38" width="9" height="30" rx="4.5" fill="${fill}"/><circle cx="72" cy="79" r="5.5" fill="${fill}"/>`,
   // Four corners pointing in: the same picture, smaller.
   compress: (fill) => `<path d="M50 42l13 13M63 45v10H53M94 42L81 55M81 45v10h10M50 86l13-13M63 83V73H53M94 86L81 73M81 83V73h10" fill="none" stroke="${fill}" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // A capture box with a cable into it, for a capture card.
+  card: (fill, background) => `<rect x="46" y="48" width="44" height="30" rx="6" fill="${fill}"/><rect x="54" y="57" width="16" height="10" rx="2" fill="${background}"/><path d="M90 63h10" stroke="${fill}" stroke-width="5" stroke-linecap="round"/>`,
   // A webcam on its stand.
   webcam: (fill, background) => `<circle cx="72" cy="58" r="19" fill="${fill}"/><circle cx="72" cy="58" r="7.5" fill="${background}"/><path d="M72 77v8M58 87h28" stroke="${fill}" stroke-width="4.5" stroke-linecap="round"/>`,
   webcamOff: (fill, background) => `${SYMBOLS.webcam(fill, background)}<path d="M50 38l44 48" stroke="${background}" stroke-width="9"/><path d="M50 38l44 48" stroke="${fill}" stroke-width="4.5" stroke-linecap="round"/>`,

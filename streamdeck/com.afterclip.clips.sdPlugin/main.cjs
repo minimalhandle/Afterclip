@@ -40,6 +40,8 @@ const STAR_LAST = 'com.afterclip.clips.star-last';
 // Saves a clip of its chosen length and stars it.
 const SAVE_STAR = 'com.afterclip.clips.save-star';
 const WEBCAM = 'com.afterclip.clips.webcam';
+// Switches between recording the PC and a capture card.
+const CARD = 'com.afterclip.clips.capture-card';
 // Held rather than pressed: the mic is in clips while it's down.
 const TALK = 'com.afterclip.clips.talk';
 const DISCORD_LAST = 'com.afterclip.clips.discord-last';
@@ -161,6 +163,11 @@ function faceFor(key) {
     if (!status) return { symbol: 'webcam', small: 'OFF', tone: 'off' };
     if (!status.cameraChosen) return { symbol: 'webcam', small: 'NO CAM', tone: 'off' };
     return status.cameraOn ? { symbol: 'webcam', small: 'CAM ON', tone: 'active' } : { symbol: 'webcamOff', small: 'CAM OFF' };
+  }
+  if (key.action === CARD) {
+    if (!status) return { symbol: 'card', small: 'OFF', tone: 'off' };
+    if (!status.cardChosen) return { symbol: 'card', small: 'NO CARD', tone: 'off' };
+    return status.cardOn ? { symbol: 'card', small: 'CARD', tone: 'active' } : { symbol: 'card', small: 'PC' };
   }
   if (key.action === TALK) {
     if (!status) return { symbol: 'mic', small: 'OFF', tone: 'off' };
@@ -355,8 +362,8 @@ async function press(context, action, settings) {
       // The key may have come up before Afterclip answered.
       if (key && !key.holding) await call('POST', '/talk/off');
       return;
-    } else if (action === RECORD || action === MIC || action === CLEAN || action === WEBCAM) {
-      await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean', [WEBCAM]: '/camera/toggle' }[action]);
+    } else if (action === RECORD || action === MIC || action === CLEAN || action === WEBCAM || action === CARD) {
+      await call('POST', { [RECORD]: '/record/toggle', [MIC]: '/mic/toggle', [CLEAN]: '/mic/clean', [WEBCAM]: '/camera/toggle', [CARD]: '/card/toggle' }[action]);
       finish = () => pulsed(context);
     } else if (action === MARKER) {
       await call('POST', '/marker');
@@ -381,7 +388,8 @@ async function press(context, action, settings) {
     if (key) key.holding = false;
     await poll();
     const reason = /No clips/.test(error.message) ? 'NO CLIPS' : /webhook/i.test(error.message) ? 'NO HOOK'
-      : /Push to talk/.test(error.message) ? 'PTT OFF' : /Choose a webcam/.test(error.message) ? 'NO CAM' : 'FAILED';
+      : /Push to talk/.test(error.message) ? 'PTT OFF' : /Choose a webcam/.test(error.message) ? 'NO CAM'
+      : /Choose a capture card/.test(error.message) ? 'NO CARD' : /Stop recording/.test(error.message) ? 'RECORDING' : 'FAILED';
     finish = () => failed(context, action, reason);
   }
   if (key) key.saving = false;

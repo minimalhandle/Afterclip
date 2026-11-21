@@ -72,7 +72,8 @@ function renderStatus() {
   const card = $('capture-card');
   const ready = status.state === 'ready' && status.buffering;
   const shining = card.classList.contains('saved');
-  card.className = `capture-card ${status.recording ? 'recording' : ready ? 'live' : status.state === 'error' ? 'bad' : ''}`;
+  const dark = capture.mode === 'card' && capture.noPicture;
+  card.className = `capture-card ${status.recording ? 'recording' : ready && !dark ? 'live' : status.state === 'error' || dark ? 'bad' : ''}`;
   card.classList.toggle('saved', shining);
   renderSummary();
   const labels = {
@@ -85,7 +86,7 @@ function renderStatus() {
   };
   let title = labels[capture.mode] ?? 'Recording';
   let detail = capture.mode === 'game' ? 'Game capture' : capture.mode === 'fallback' ? 'Recording its monitor' : capture.mode === 'detecting' ? 'Recording its monitor for now' : 'Waiting for a game';
-  if (capture.mode === 'card') detail = 'Recording your capture card';
+  if (capture.mode === 'card') detail = capture.noPicture ? 'No picture from the card. Close it in other apps, such as OBS.' : 'Recording your capture card';
   else if (capture.mode === 'private') detail = 'Video hidden by Capture privacy';
   else if (capture.mode !== 'game' && settings?.gameProfiles.some((game) => game.capturePrivacy)) detail = 'Monitor capture disabled by Capture privacy';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }
@@ -699,6 +700,12 @@ async function refresh() {
     settings.micMuted = state.settings.micMuted;
     settings.cleanMic = state.settings.cleanMic;
     // The Stream Deck can switch the webcam too.
+    if (settings.captureCard !== state.settings.captureCard) {
+      settings.captureCard = state.settings.captureCard;
+      $('captureCard').checked = settings.captureCard;
+      renderCard();
+      renderSummary();
+    }
     if (settings.cameraEnabled !== state.settings.cameraEnabled) {
       settings.cameraEnabled = state.settings.cameraEnabled;
       $('cameraEnabled').checked = settings.cameraEnabled;
@@ -806,7 +813,7 @@ function renderCamera() {
   if (settings.cameraDevice && !choices.some((c) => c.id === settings.cameraDevice)) {
     select.add(new Option(cameraChoices ? 'Saved camera (not connected)' : 'Saved camera', settings.cameraDevice));
   }
-  const none = cameraChoices ? 'No webcam found' : cameraChoices === undefined ? 'Looking for webcams' : status.waitingForGame ? 'Start a game to list webcams' : 'Webcams can be listed once capture starts';
+  const none = cameraChoices ? 'No webcam found' : cameraChoices === undefined ? 'Looking for webcams' : "Webcams couldn't be listed";
   if (!select.options.length) select.add(new Option(none, ''));
 
   select.value = settings.cameraDevice;
@@ -818,6 +825,8 @@ function renderCamera() {
 }
 
 /* Capture card */
+
+const CARD_AUDIO_INDEX = -2; // The engine's index for the card's sound, beside -1 for game audio.
 
 async function loadCardChoices() {
   try {
@@ -855,8 +864,7 @@ function renderCard() {
   if (settings.captureCardDevice && !cards.some((c) => c.id === settings.captureCardDevice)) {
     device.add(new Option(cardChoices ? 'Saved card (not connected)' : 'Saved card', settings.captureCardDevice));
   }
-  const none = cardChoices ? 'No capture card found' : cardChoices === undefined ? 'Looking for capture cards'
-    : status.waitingForGame ? 'Start a game to list capture cards' : 'Capture cards can be listed once capture starts';
+  const none = cardChoices ? 'No capture card found' : cardChoices === undefined ? 'Looking for capture cards' : "Capture cards couldn't be listed";
   if (!device.options.length) device.add(new Option(none, ''));
   // Never chosen: suggest a card that looks like one, since webcams are listed too.
   const suggested = cards.find((c) => /4k x|game capture|elgato|capture|hdmi/i.test(c.name))?.id ?? cards[0]?.id ?? '';
@@ -879,7 +887,15 @@ function renderCard() {
   const on = $('captureCard').checked;
   device.disabled = !on || !device.value;
   sound.disabled = !on || !device.value;
-  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).disabled = !on;
+  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps', 'cardAudioOwnTrack']) $(id).disabled = !on;
+  $('cardAudioOwnTrack').checked = settings.cardAudioOwnTrack;
+  if (!$('card-level').childElementCount) {
+    $('card-level').append(levelControl(CARD_AUDIO_INDEX, settings.cardAudioVolume, (v) => { settings.cardAudioVolume = v; }));
+  }
+  const doubled = on && cardChoices?.doubled;
+  $('card-doubled').hidden = !doubled;
+  $('card-doubled').textContent = doubled ? `Your audio source ${doubled} is the capture card's sound too, so it would be recorded twice. Choose your real mic in Settings, under Audio.` : '';
+  updateLiveViews();
 }
 
 function renderPresets(failures = []) {
@@ -1070,7 +1086,8 @@ let lastStats = null;
 /** Meters and stats run only while on screen, so they cost nothing during play. */
 function updateLiveViews() {
   const visible = !document.hidden && document.hasFocus();
-  const metersWanted = visible && currentPane === 'audio' && !$('settings').hidden;
+  const cardMeter = currentPane === 'video' && $('captureCard').checked;
+  const metersWanted = visible && (currentPane === 'audio' || cardMeter) && !$('settings').hidden;
   if (metersWanted && !meterTimer) {
     api.invoke('set-meters', true).catch(() => undefined);
     meterTimer = setInterval(pollLevels, METER_MS);
@@ -1312,10 +1329,12 @@ function fillNotes(box, text) {
 }
 
 function renderPatchNotes() {
-  const unseen = Boolean(patchNotes && appVersion && seenVersion !== appVersion);
+  // A local test build, such as 1.6.0-dev, has the notes of the release it becomes.
+  const release = appVersion.replace(/-dev$/, '');
+  const unseen = Boolean(patchNotes && appVersion && seenVersion !== release);
   $('whats-new').hidden = !unseen;
   if (unseen) {
-    $('whats-new-title').textContent = `What's new in ${appVersion}`;
+    $('whats-new-title').textContent = `What's new in ${release}`;
     fillNotes($('whats-new-notes'), patchNotes);
   }
   $('version-notes').hidden = !patchNotes;
@@ -1667,6 +1686,7 @@ function fillForm() {
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
   bindHotkey($('markerHotkey'), () => settings.markerHotkey, (v) => { settings.markerHotkey = v; scheduleSave(); });
   bindHotkey($('screenshotHotkey'), () => settings.screenshotHotkey, (v) => { settings.screenshotHotkey = v; scheduleSave(); });
+  bindHotkey($('cardHotkey'), () => settings.cardHotkey, (v) => { settings.cardHotkey = v; scheduleSave(); });
   ensureOption($('recordSplit'), settings.recordSplitSeconds, `Every ${settings.recordSplitSeconds} seconds`);
   $('recordSplit').value = settings.recordSplitSeconds;
   $('game-level').replaceChildren(levelControl(-1, settings.gameAudioVolume, (v) => { settings.gameAudioVolume = v; }));
@@ -1745,6 +1765,7 @@ function readForm() {
   settings.cardResolution = $('cardResolution').value;
   settings.cardFps = Number($('cardFps').value);
   settings.cardBitrateKbps = Number($('cardBitrateKbps').value);
+  settings.cardAudioOwnTrack = $('cardAudioOwnTrack').checked;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
   settings.weeklyReelTag = $('weeklyReelTag').value.trim().replace(/^#/, '');
@@ -1867,6 +1888,8 @@ api.on('feedback', (f) => {
   } else if (f.kind === 'reel' && f.ok) {
     const total = Math.round(f.seconds);
     showBanner(`Your weekly reel is ready: ${f.clips} clips, ${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}. It's tagged #reel.`, 'good');
+  } else if (f.kind === 'card' && f.ok) {
+    showBanner(f.cardOn ? 'Recording the capture card' : 'Recording this PC', 'good');
   } else if (f.kind === 'camera' && f.ok) {
     showBanner(f.cameraOn ? 'Webcam is on' : 'Webcam is off', 'good');
   } else if (f.kind === 'favourite' && f.ok) {
@@ -1906,7 +1929,7 @@ $('update-skip').onclick = () => api.invoke('skip-update').then(() => {
 }).catch((e) => showBanner(errorText(e), 'bad'));
 $('check-update').onclick = () => api.invoke('check-update');
 $('whats-new-close').onclick = () => api.invoke('dismiss-patch-notes').then(() => {
-  seenVersion = appVersion;
+  seenVersion = appVersion.replace(/-dev$/, '');
   renderPatchNotes();
 }).catch((e) => showBanner(errorText(e), 'bad'));
 $('autoUpdate').onchange = () => scheduleSave();
@@ -1973,6 +1996,7 @@ $('captureCardDevice').onchange = () => {
 };
 $('captureCardAudio').onchange = () => { settings.captureCardAudio = $('captureCardAudio').value; scheduleSave(); };
 for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderSummary(); renderEstimate(); scheduleSave(); };
+$('cardAudioOwnTrack').onchange = () => scheduleSave();
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
   const on = $('runAsAdmin').checked;

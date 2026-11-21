@@ -41,7 +41,7 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afterclip-plugin-'));
   const tokenFile = path.join(dir, 'token.txt');
   fs.writeFileSync(tokenFile, 'secret-token');
-  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, micVolume: 100, bufferingSince: Date.now() - 30000, bufferSeconds: 120, clipDelay: 0, fail: false, noClips: false, noWebhook: false, cameraOn: false, cameraChosen: true, pushToTalk: false, starred: false };
+  const state = { buffering: true, recording: false, micMuted: false, cleanMic: false, micVolume: 100, bufferingSince: Date.now() - 30000, bufferSeconds: 120, clipDelay: 0, fail: false, noClips: false, noWebhook: false, cameraOn: false, cameraChosen: true, cardOn: false, cardChosen: true, pushToTalk: false, starred: false };
   const routes = [];
   const api = http.createServer(async (req, res) => {
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -59,6 +59,11 @@ async function main() {
       return send(200, { micVolume: state.micVolume });
     }
     if (req.url === '/last-clip/discord' && state.noWebhook) return send(500, { error: 'Add your Discord webhook in Settings, under Clips and sharing.' });
+    if (req.url === '/card/toggle') {
+      if (!state.cardChosen) return send(500, { error: 'Choose a capture card in Settings, under Video.' });
+      state.cardOn = !state.cardOn;
+      return send(200, { cardOn: state.cardOn });
+    }
     if (req.url === '/camera/toggle') {
       if (!state.cameraChosen) return send(500, { error: 'Choose a webcam in Settings, under Video.' });
       state.cameraOn = !state.cameraOn;
@@ -283,6 +288,23 @@ async function main() {
     await waitFor(() => results('cam', 'showAlert') === 1, 3000, 'no webcam alert');
     check('the webcam key says when no webcam is chosen', svgOf(lastImage('cam')).includes('>NO CAM<'));
     state.cameraChosen = true;
+
+    // The capture card key switches between the PC and the card, and shows which is recorded.
+    event('willAppear', ACTION('capture-card'), 'card');
+    await waitFor(() => lastImage('card') && svgOf(lastImage('card')).includes('>PC<'), 4000, 'card off face');
+    routes.length = 0;
+    event('keyDown', ACTION('capture-card'), 'card');
+    await waitFor(() => svgOf(lastImage('card')).includes('>CARD<'), 3000, 'card on face');
+    check('the capture card key switches to the card, and shows it lit', routes.join() === 'POST /card/toggle' && state.cardOn && svgOf(lastImage('card')).includes('#3a2bb8'), routes.join());
+    event('keyDown', ACTION('capture-card'), 'card');
+    await waitFor(() => svgOf(lastImage('card')).includes('>PC<'), 3000, 'card off again');
+    check('pressing it again goes back to the PC', !state.cardOn);
+    state.cardChosen = false;
+    await waitFor(() => svgOf(lastImage('card')).includes('>NO CARD<'), 4000, 'no card face');
+    event('keyDown', ACTION('capture-card'), 'card');
+    await waitFor(() => results('card', 'showAlert') === 1, 3000, 'no card alert');
+    check('the capture card key says when no card is chosen', svgOf(lastImage('card')).includes('>NO CARD<'));
+    state.cardChosen = true;
 
     // Hold to Talk: the mic is in clips while the key is down, and only with Push to talk on.
     event('willAppear', ACTION('talk'), 'talk');

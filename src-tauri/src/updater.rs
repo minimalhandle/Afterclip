@@ -18,9 +18,10 @@ const TICK: Duration = Duration::from_secs(15);
 const INSTALL_COUNTDOWN: Duration = Duration::from_secs(5 * 60);
 const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
-/// One version's patch notes from CHANGELOG.md, without its heading.
+/// One version's patch notes from CHANGELOG.md, without its heading. A local test build, such as 1.6.0-dev,
+/// shows the notes of the release it becomes.
 pub fn patch_notes(version: &str) -> Option<String> {
-    let heading = format!("## {version}");
+    let heading = format!("## {}", version.trim_end_matches("-dev"));
     let start = CHANGELOG.lines().position(|line| line.trim() == heading)?;
     let body: Vec<&str> = CHANGELOG.lines().skip(start + 1).take_while(|line| !line.starts_with("## ")).collect();
     let notes = body.join("\n").trim().to_string();
@@ -223,6 +224,11 @@ pub fn start(core: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dev_build_shows_its_release_notes() {
+        assert_eq!(patch_notes(&format!("{}-dev", env!("CARGO_PKG_VERSION"))), patch_notes(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn patch_notes_cover_this_version() {

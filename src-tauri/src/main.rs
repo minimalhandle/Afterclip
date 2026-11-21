@@ -696,6 +696,9 @@ impl ApiHandlers for Api {
     fn toggle_camera(&self) -> Result<Value, String> {
         self.0.toggle_camera().map(|on| json!({ "cameraOn": on }))
     }
+    fn toggle_card(&self) -> Result<Value, String> {
+        toggle_card(&self.0).map(|on| json!({ "cardOn": on }))
+    }
     fn deck_talk(&self, held: bool) -> Result<Value, String> {
         if !self.0.settings.lock().unwrap().push_to_talk {
             return Err("Turn on Push to talk in Settings, under Audio.".into());
@@ -759,6 +762,8 @@ impl ApiHandlers for Api {
         let settings = self.0.settings.lock().unwrap();
         status["cameraOn"] = json!(settings.camera_enabled);
         status["cameraChosen"] = json!(!settings.camera_device.is_empty());
+        status["cardOn"] = json!(settings.card().is_some());
+        status["cardChosen"] = json!(!settings.capture_card_device.is_empty());
         drop(settings);
         status
     }
@@ -810,6 +815,10 @@ fn register_hotkeys(core: &Shared) {
     register(&settings.screenshot_hotkey, Box::new(|core| {
         let core = Arc::clone(core);
         thread::spawn(move || { let _ = core.screenshot(); });
+    }));
+    register(&settings.card_hotkey, Box::new(|core| {
+        let core = Arc::clone(core);
+        thread::spawn(move || { let _ = toggle_card(&core); });
     }));
     for key in settings.marker_keys.iter().filter(|k| !k.label.is_empty()) {
         let label = key.label.clone();
@@ -2060,7 +2069,7 @@ fn skip_update(core: tauri::State<Shared>) -> Result<(), String> {
 fn dismiss_patch_notes(core: tauri::State<Shared>) -> Result<(), String> {
     let saved = {
         let mut settings = core.settings.lock().unwrap();
-        settings.seen_version = core.app.package_info().version.to_string();
+        settings.seen_version = release_version(&core.app.package_info().version.to_string());
         settings.clone()
     };
     saved.save(&core.settings_file).map_err(|e| e.to_string())
@@ -2291,7 +2300,10 @@ fn camera_choices(core: tauri::State<Shared>) -> Result<Value, String> {
 
 #[tauri::command(async)]
 fn card_choices(core: tauri::State<Shared>) -> Result<Value, String> {
-    core.engine.card_choices()
+    let mut choices = core.engine.card_choices()?;
+    let settings = core.settings.lock().unwrap().clone();
+    choices["doubled"] = json!(doubled_card_audio(&settings));
+    Ok(choices)
 }
 
 #[tauri::command(async)]
@@ -2369,6 +2381,49 @@ fn save_settings(core: tauri::State<Shared>, payload: Settings) -> Result<Value,
     apply_settings(&core, payload)
 }
 
+/// Switches between recording this PC and the capture card, and remembers it. Capture restarts, which
+/// empties the buffer. Returns whether the card is now recorded.
+fn toggle_card(core: &Shared) -> Result<bool, String> {
+    let current = core.settings.lock().unwrap().clone();
+    if current.capture_card_device.is_empty() {
+        return Err(core.fail("card", "Choose a capture card in Settings, under Video.".into()));
+    }
+    if core.engine.status().recording {
+        return Err(core.fail("card", "Stop recording before switching to or from the capture card.".into()));
+    }
+    let on = !current.capture_card;
+    let toast = current.toast_enabled;
+    apply_settings(core, Settings { capture_card: on, ..current }).map_err(|message| core.fail("card", message))?;
+    refresh_tray(core);
+    core.tone(if on { &[440.0, 660.0] } else { &[660.0, 440.0] });
+    if toast {
+        win32::show_toast(if on { "Recording the capture card" } else { "Recording this PC" });
+    }
+    let _ = core.app.emit("feedback", json!({ "kind": "card", "ok": true, "cardOn": on }));
+    Ok(on)
+}
+
+/// The name of a capture card device from its id, which is its name, a colon, then its path.
+fn device_name(id: &str) -> &str {
+    id.split(':').next().unwrap_or(id).trim()
+}
+
+/// A mic source that is really the capture card's audio, which would record the card's sound twice. A source
+/// on Default counts when Windows' default recording device is the card.
+fn doubled_card_audio(settings: &Settings) -> Option<String> {
+    let (video, audio) = settings.card()?;
+    if audio.is_empty() {
+        return None;
+    }
+    let squash = |name: &str| name.to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect::<String>();
+    let (card, card_audio) = (squash(device_name(video)), squash(device_name(audio)));
+    settings.audio_sources.iter().filter(|s| s.kind == "input").find_map(|source| {
+        let name = if source.device.is_empty() || source.device == "default" { win32::default_input_name()? } else { source.label.clone() };
+        let heard = squash(&name);
+        (heard == card_audio || (!card.is_empty() && heard.contains(&card))).then(|| source.label.clone())
+    })
+}
+
 /// Saves new settings and applies them, restarting capture only if something needs it.
 fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     let core: Shared = Arc::clone(core);
@@ -2439,6 +2494,12 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     }
     let failures = core.hotkey_failures.lock().unwrap().clone();
     Ok(json!({ "restarted": restart, "hotkeyFailures": failures, "width": clean_size.0, "height": clean_size.1, "fps": clean_size.2 }))
+}
+
+/// The release a version belongs to: a local test build such as 1.6.0-dev belongs to 1.6.0, so its patch
+/// notes, once read there, aren't shown again when the release installs over it.
+fn release_version(version: &str) -> String {
+    version.trim_end_matches("-dev").to_string()
 }
 
 /// The panel's X button: back to the tray, or a full exit if that setting is off.
@@ -2977,15 +3038,29 @@ fn tray_icon() -> Image<'static> {
     }
 }
 
-fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
-    let menu = MenuBuilder::new(app)
+/// The tray's menu. With a capture card chosen, it can switch between the card and this PC.
+fn tray_menu(app: &AppHandle, settings: &Settings) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let mut menu = MenuBuilder::new(app)
         .text("show", "Open Afterclip")
         .text("editor", "Open editor")
         .text("clip", "Clip whole buffer")
-        .text("record", "Start / stop recording")
-        .separator()
-        .text("quit", "Quit")
-        .build()?;
+        .text("record", "Start / stop recording");
+    if !settings.capture_card_device.is_empty() {
+        menu = menu.text("card", if settings.capture_card { "Record this PC instead" } else { "Record the capture card" });
+    }
+    menu.separator().text("quit", "Quit").build()
+}
+
+/// Brings the tray's menu up to date after the capture card is switched on or off.
+fn refresh_tray(core: &Shared) {
+    let settings = core.settings.lock().unwrap().clone();
+    if let (Some(tray), Ok(menu)) = (core.app.tray_by_id("afterclip"), tray_menu(&core.app, &settings)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
+    let menu = tray_menu(app, &core.settings.lock().unwrap().clone())?;
     let menu_core = Arc::clone(&core);
     TrayIconBuilder::with_id("afterclip")
         .icon(tray_icon())
@@ -3009,6 +3084,10 @@ fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
                 let core = Arc::clone(&menu_core);
                 thread::spawn(move || { let _ = core.toggle_record(); });
             }
+            "card" => {
+                let core = Arc::clone(&menu_core);
+                thread::spawn(move || { let _ = toggle_card(&core); });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -3027,6 +3106,21 @@ fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mic_that_is_really_the_capture_card_is_found() {
+        let source = |label: &str| settings::AudioSource { kind: "input".into(), device: format!("{{{label}}}"), label: label.into(), mix: true, own_track: false, mute_with_key: None, volume: 1.0 };
+        let mut s = Settings::defaults(Path::new(r"C:\Videos"), 1920, 1080);
+        s.capture_card = true;
+        s.capture_card_device = r"Elgato 4K X:\\?\usb#22vid_0fd9".into();
+        s.capture_card_audio = "Elgato 4K X (Elgato 4K X):".into();
+        s.audio_sources = vec![source("Microphone (Yeti)")];
+        assert_eq!(doubled_card_audio(&s), None);
+        s.audio_sources.push(source("Elgato 4K X (Elgato 4K X)"));
+        assert_eq!(doubled_card_audio(&s).as_deref(), Some("Elgato 4K X (Elgato 4K X)"));
+        s.capture_card_audio.clear();
+        assert_eq!(doubled_card_audio(&s), None, "no sound from the card, so nothing is doubled");
+    }
 
     /// Read-only: lists where a running process plays sound. Run with AFTERCLIP_TEST_PID set and --ignored --nocapture.
     #[test]
@@ -3141,7 +3235,7 @@ fn main() {
                 .resolved_for(win32::primary_display_mode());
             // Patch notes are for people who updated, not for a fresh install.
             if first_start {
-                settings.seen_version = app.package_info().version.to_string();
+                settings.seen_version = release_version(&app.package_info().version.to_string());
             }
             let open_at_start = !settings.start_minimized;
             win32::set_toast_corner(&settings.toast_corner);
@@ -3233,6 +3327,8 @@ fn main() {
             let capture_events = handle.clone();
             let detection_settings = Arc::clone(&shared_settings);
             let profile_settings = Arc::clone(&shared_settings);
+            let toast_settings = Arc::clone(&shared_settings);
+            let warned_no_picture = Arc::new(AtomicBool::new(false));
             let manager = CaptureManager::start(
                 Arc::clone(&engine),
                 move || {
@@ -3240,7 +3336,17 @@ fn main() {
                     if s.test_pattern { Watch::Off } else if s.card().is_some() { Watch::Card } else { Watch::Games }
                 },
                 move || profile_settings.lock().unwrap().game_profiles.iter().map(|p| p.exe.clone()).collect(),
-                move |state| { let _ = capture_events.emit("capture", state); },
+                move |state| {
+                    let _ = capture_events.emit("capture", state);
+                    // Said once each time it happens, since the panel is usually closed while playing.
+                    if state.no_picture && !warned_no_picture.swap(true, Ordering::SeqCst) {
+                        if toast_settings.lock().unwrap().toast_enabled {
+                            win32::show_toast("No picture from your capture card. Close it in other apps, such as OBS.");
+                        }
+                    } else if !state.no_picture {
+                        warned_no_picture.store(false, Ordering::SeqCst);
+                    }
+                },
             );
             let _ = core.capture.set(manager);
             app.manage(Arc::clone(&core));
