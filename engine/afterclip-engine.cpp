@@ -17,6 +17,7 @@
 #include <tuple>
 
 #include <cstdarg>
+#include <climits>
 #include <cstdio>
 #include <deque>
 #include <iostream>
@@ -66,6 +67,9 @@ uint32_t g_gameAudioTrackBit = 0;
 std::string g_gameAudioWindow;
 obs_sceneitem_t *g_displayItem = nullptr, *g_gameItem = nullptr, *g_cardItem = nullptr, *g_cameraItem = nullptr;
 obs_source_t *g_privacyCard = nullptr;
+// A capture card, such as an Elgato 4K X, recorded instead of the display and game.
+obs_source_t *g_captureCard = nullptr;
+obs_sceneitem_t *g_captureCardItem = nullptr;
 obs_sceneitem_t *g_privacyItem = nullptr;
 std::atomic<DWORD> g_privatePid{0};
 bool g_noMonitorFallback = false;
@@ -222,7 +226,7 @@ void layoutGame(bool cameraShowing)
 		obs_sceneitem_get_bounds(g_cameraItem, &bounds);
 		top = pos.y + bounds.y;
 	}
-	for (obs_sceneitem_t *item : {g_displayItem, g_gameItem}) {
+	for (obs_sceneitem_t *item : {g_displayItem, g_gameItem, g_captureCardItem}) {
 		if (!item)
 			continue;
 		if (g_vertical)
@@ -588,6 +592,124 @@ void addCamera(obs_data_t *camera, bool testPattern)
 	obs_sceneitem_set_visible(g_cameraItem, on);
 }
 
+/** The value of a dshow_input list property whose name contains the text, or fallback if none does. */
+long long dshowListValue(obs_properties_t *props, const char *property, const char *text, long long fallback)
+{
+	obs_property_t *list = obs_properties_get(props, property);
+	const size_t count = list ? obs_property_list_item_count(list) : 0;
+	for (size_t i = 0; i < count; i++) {
+		const char *name = obs_property_list_item_name(list, i);
+		if (name && strstr(name, text))
+			return obs_property_list_item_int(list, i);
+	}
+	return fallback;
+}
+
+/**
+ * Chooses the card's largest picture that fits the canvas, at the frame rate nearest the canvas's, and puts
+ * them in its settings. A card lists what it can send for the signal coming in, so this is read from the card
+ * rather than assumed. With HDR on it asks for 10-bit P010, which is how HDR arrives, and the colour space
+ * follows the format. It asks a closed copy, because each change to an open card reopens it, which takes seconds.
+ */
+void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint32_t fps, bool hdr)
+{
+	obs_data_t *closed = obs_data_create();
+	obs_data_apply(closed, settings);
+	obs_data_set_bool(closed, "active", false);
+	obs_source_t *probe = obs_source_create_private("dshow_input", "Capture card check", closed);
+	if (!probe) {
+		obs_data_release(closed);
+		return;
+	}
+	obs_properties_t *props = obs_source_properties(probe);
+	obs_property_t *list = props ? obs_properties_get(props, "resolution") : nullptr;
+	const size_t count = list ? obs_property_list_item_count(list) : 0;
+	std::string best, largest;
+	long long bestArea = 0, largestArea = 0;
+	for (size_t i = 0; i < count; i++) {
+		const char *value = obs_property_list_item_string(list, i);
+		int w = 0, h = 0;
+		if (!value || sscanf(value, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0)
+			continue;
+		const long long area = (long long)w * h;
+		if ((uint32_t)w <= width && (uint32_t)h <= height && area > bestArea) {
+			best = value;
+			bestArea = area;
+		}
+		if (area > largestArea) {
+			largest = value;
+			largestArea = area;
+		}
+	}
+	obs_properties_destroy(props);
+	if (best.empty())
+		best = largest; // Bigger than the canvas, so it's scaled down.
+	if (best.empty()) {
+		blog(LOG_WARNING, "The capture card listed no sizes, so it sends its own choice");
+		obs_source_release(probe);
+		obs_data_release(closed);
+		return;
+	}
+
+	// The frame rates and formats on offer depend on the size, so they're read after it's chosen.
+	obs_data_set_int(closed, "res_type", 1);
+	obs_data_set_string(closed, "resolution", best.c_str());
+	obs_source_update(probe, closed);
+	props = obs_source_properties(probe);
+	list = props ? obs_properties_get(props, "frame_interval") : nullptr;
+	const long long wanted = 10000000LL / (fps ? fps : 60);
+	long long interval = -1; // Match the canvas, if the card lists nothing better.
+	long long nearest = LLONG_MAX;
+	for (size_t i = 0, n = list ? obs_property_list_item_count(list) : 0; i < n; i++) {
+		const long long value = obs_property_list_item_int(list, i);
+		if (value <= 0) // Match output and Highest, which aren't real rates.
+			continue;
+		const long long distance = value > wanted ? value - wanted : wanted - value;
+		if (distance < nearest) {
+			nearest = distance;
+			interval = value;
+		}
+	}
+	const long long format = hdr ? dshowListValue(props, "video_format", "P010", 0) : 0;
+	obs_properties_destroy(props);
+	obs_source_release(probe);
+	obs_data_release(closed);
+
+	obs_data_set_int(settings, "res_type", 1); // Custom, so the size and frame rate below apply.
+	obs_data_set_string(settings, "resolution", best.c_str());
+	obs_data_set_int(settings, "frame_interval", interval);
+	obs_data_set_int(settings, "video_format", format); // 0 lets the card choose.
+	blog(LOG_INFO, "Capture card at %s, frame interval %lld, format %lld", best.c_str(), interval, format);
+}
+
+/** Records a capture card's picture, filling the canvas, and its sound in the main mix. */
+bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t fps, bool hdr, std::string &error)
+{
+	const std::string device = obs_data_get_string(card, "device");
+	const std::string audio = obs_data_get_string(card, "audio");
+	obs_data_t *s = obs_data_create();
+	obs_data_set_string(s, "video_device_id", device.c_str());
+	obs_data_set_bool(s, "active", true);
+	obs_data_set_bool(s, "deactivate_when_not_showing", false);
+	obs_data_set_int(s, "res_type", 0);
+	// Cards such as the 4K X are USB video devices whose sound is a separate audio device.
+	obs_data_set_bool(s, "use_custom_audio_device", !audio.empty());
+	obs_data_set_string(s, "audio_device_id", audio.c_str());
+	obs_data_set_int(s, "audio_output_mode", 0); // Into the recording, not out of the speakers.
+	tuneCaptureCard(s, width, height, fps, hdr);
+	g_captureCard = createSource("dshow_input", "Capture card", s);
+	obs_data_release(s);
+	if (!g_captureCard) {
+		error = "Could not open the capture card. Check it's plugged in, and closed in other apps such as OBS or 4K Capture Utility.";
+		return false;
+	}
+	obs_source_set_audio_mixers(g_captureCard, audio.empty() ? 0 : 1);
+	obs_source_set_muted(g_captureCard, audio.empty());
+	g_captureCardItem = obs_scene_add(g_scene, g_captureCard);
+	fitToCanvas(g_captureCardItem, width, height);
+	return true;
+}
+
 bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 {
 	const uint32_t width = (uint32_t)obs_data_get_int(c, "width");
@@ -645,6 +767,11 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		g_card = createSource("color_source_v3", "Test Pattern", s);
 		obs_data_release(s);
 		g_cardItem = obs_scene_add(g_scene, g_card);
+	} else if (obs_data_t *card = obs_data_get_obj(c, "card")) {
+		const bool added = addCaptureCard(card, width, height, ovi.fps_num, g_hdr, error);
+		obs_data_release(card);
+		if (!added)
+			return false;
 	} else {
 		// Order matters: the game layer sits over the display, and is empty until it hooks.
 		g_display = createSource("monitor_capture", "Display");
@@ -665,6 +792,17 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		obs_sceneitem_set_visible(g_gameItem, false);
 	}
 	obs_data_t *camera = obs_data_get_obj(c, "camera");
+	// A device can only be opened once, so a card also chosen as the webcam is only the card.
+	if (camera && g_captureCard) {
+		obs_data_t *card = obs_data_get_obj(c, "card");
+		const bool same = strcmp(obs_data_get_string(card, "device"), obs_data_get_string(camera, "device")) == 0;
+		obs_data_release(card);
+		if (same) {
+			blog(LOG_WARNING, "The webcam is the capture card, so it isn't shown twice");
+			obs_data_release(camera);
+			camera = nullptr;
+		}
+	}
 	const bool cameraOn = camera && obs_data_get_bool(camera, "on");
 	if (camera) {
 		addCamera(camera, testPattern);
@@ -815,6 +953,8 @@ void shutdownAll()
 		obs_sceneitem_remove(g_cardItem);
 	if (g_cameraItem)
 		obs_sceneitem_remove(g_cameraItem);
+	if (g_captureCardItem)
+		obs_sceneitem_remove(g_captureCardItem);
 	obs_output_release(g_record);
 	obs_output_release(g_disk);
 	obs_output_release(g_replay);
@@ -827,6 +967,7 @@ void shutdownAll()
 		obs_source_release(source);
 	obs_source_release(g_card);
 	obs_source_release(g_camera);
+	obs_source_release(g_captureCard);
 	obs_scene_release(g_scene);
 	// Sources are destroyed on a background queue, and shutting down before it drains destroys them twice.
 	obs_wait_for_destroy_queue();
@@ -1010,6 +1151,9 @@ bool handle(const std::string &line)
 	} else if (cmd == "cameraChoices") {
 
 		listChoices(reply, "cameras", "dshow_input", "video_device_id");
+	} else if (cmd == "cardChoices") {
+		listChoices(reply, "cards", "dshow_input", "video_device_id");
+		listChoices(reply, "audio", "dshow_input", "audio_device_id");
 	} else if (cmd == "camera") {
 		ok = showCamera(obs_data_get_bool(c, "on"));
 		if (!ok)

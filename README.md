@@ -46,6 +46,10 @@ Afterclip spots exclusive and borderless fullscreen games by itself and hooks th
 
 Turn on **Vertical mode** in **Settings > Video**, or for one game in **Settings > Games**, to capture in 9:16 for phones. Clips, recordings and screenshots then save vertical, straight away and without re-encoding. The picture is the middle of the game at your resolution's height, such as 810×1440 on a 1440p monitor. With your webcam on, it goes across the top and the game fills the space below. While it's on, the sides of the game aren't captured, and switching it on or off restarts capture, which clears the buffer.
 
+### Capture cards
+
+Turn on **Record a capture card** in **Settings > Video** to clip and record a console or a second PC through a capture card, such as an Elgato 4K X, instead of this PC's screen. Afterclip suggests the card and its audio, and picks the card's largest picture that fits your resolution, at the frame rate nearest yours. The card's sound goes in the main mix with your mic and other sources. The buffer runs all the time, even with **Only buffer during games** on. Close the card in other apps, such as OBS, first.
+
 ### Your webcam
 
 **Settings > Video** can put your webcam in any corner of every clip and recording, at three sizes. Turn on **Face cam in vertical copies** in **Settings > Clips and sharing** to put it above the game in a vertical copy, ready for TikTok or Shorts.

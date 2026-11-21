@@ -14,6 +14,7 @@ let activeBuffer = null; // The running game's profile can use a different buffe
 let renaming = null;
 let tagging = null;
 let cameraChoices; // Undefined until asked for, and null if capture couldn't list them.
+let cardChoices; // The same, as { cards, audio }.
 const strips = new Map(); // file|mtime -> { url, frames }, or a promise while one is being made
 let favouritesOnly = false;
 let update = { status: 'idle' };
@@ -80,10 +81,12 @@ function renderStatus() {
     game: capture.app ?? 'Game',
     fallback: capture.app ?? 'Fullscreen app',
     private: capture.app ?? 'Protected game',
+    card: 'Capture card',
   };
   let title = labels[capture.mode] ?? 'Recording';
   let detail = capture.mode === 'game' ? 'Game capture' : capture.mode === 'fallback' ? 'Recording its monitor' : capture.mode === 'detecting' ? 'Recording its monitor for now' : 'Waiting for a game';
-  if (capture.mode === 'private') detail = 'Video hidden by Capture privacy';
+  if (capture.mode === 'card') detail = 'Recording your capture card';
+  else if (capture.mode === 'private') detail = 'Video hidden by Capture privacy';
   else if (capture.mode !== 'game' && settings?.gameProfiles.some((game) => game.capturePrivacy)) detail = 'Monitor capture disabled by Capture privacy';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }
   else if (status.waitingForGame) { title = 'Waiting for a game'; detail = 'The buffer starts when a game opens'; }
@@ -157,6 +160,11 @@ function renderSummary() {
   if (!settings) return;
   const quality = settings.quality === 'full' ? 'Full' : settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
   const where = `${status.bufferOnDisk ? ' on disk' : ''}`;
+  if (settings.captureCard && settings.captureCardDevice) {
+    const height = Number(settings.cardResolution);
+    $('summary').textContent = `Capture card · ${height === 2160 ? '4K' : `${height}p`}${status.hdr ? ' · HDR' : ''}${settings.verticalMode ? ' · Vertical' : ''} · ${bufferLabel(settings.bufferSeconds)} buffer${where} · ${settings.cardFps} FPS`;
+    return;
+  }
   $('summary').textContent = activeProfile
     ? `${settings.gameProfiles.find((p) => p.exe === activeProfile)?.name ?? activeProfile} profile · ${bufferLabel(activeBuffer ?? settings.bufferSeconds)} buffer${where}`
     : `${quality}${status.hdr ? ' · HDR' : ''}${settings.verticalMode ? ' · Vertical' : ''} · ${bufferLabel(settings.bufferSeconds)} buffer${where} · ${settings.fps} FPS`;
@@ -809,6 +817,71 @@ function renderCamera() {
   for (const id of ['cameraCorner', 'cameraSize']) $(id).disabled ||= $('verticalMode').checked;
 }
 
+/* Capture card */
+
+async function loadCardChoices() {
+  try {
+    cardChoices = await api.invoke('card-choices');
+  } catch {
+    cardChoices = null;
+  }
+  renderCard();
+}
+
+/** A device name as letters and digits, so spacing and punctuation don't stop a match. */
+const squash = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * The card's own audio device, or none. Its name usually contains the card's, as in "Digital Audio Interface
+ * (Game Capture 4K X)", though DirectShow can cut it to 31 characters, leaving "(Game C".
+ */
+function matchingCardAudio(cardId) {
+  const card = cardChoices?.cards.find((c) => c.id === cardId);
+  if (!card) return '';
+  const cardName = squash(card.name);
+  const matches = (audio) => {
+    const whole = squash(audio.name);
+    const inside = squash(audio.name.split('(')[1] ?? '');
+    return whole.includes(cardName) || (inside.length >= 4 && (cardName.startsWith(inside) || inside.includes(cardName)));
+  };
+  return cardChoices.audio.find(matches)?.id ?? '';
+}
+
+function renderCard() {
+  const cards = cardChoices?.cards ?? [];
+  const audio = cardChoices?.audio ?? [];
+  const device = $('captureCardDevice');
+  device.replaceChildren(...cards.map((c) => new Option(c.name, c.id)));
+  if (settings.captureCardDevice && !cards.some((c) => c.id === settings.captureCardDevice)) {
+    device.add(new Option(cardChoices ? 'Saved card (not connected)' : 'Saved card', settings.captureCardDevice));
+  }
+  const none = cardChoices ? 'No capture card found' : cardChoices === undefined ? 'Looking for capture cards'
+    : status.waitingForGame ? 'Start a game to list capture cards' : 'Capture cards can be listed once capture starts';
+  if (!device.options.length) device.add(new Option(none, ''));
+  // Never chosen: suggest a card that looks like one, since webcams are listed too.
+  const suggested = cards.find((c) => /4k x|game capture|elgato|capture|hdmi/i.test(c.name))?.id ?? cards[0]?.id ?? '';
+  device.value = settings.captureCardDevice || suggested;
+
+  const sound = $('captureCardAudio');
+  sound.replaceChildren(new Option('No sound from the card', ''), ...audio.map((a) => new Option(a.name, a.id)));
+  if (settings.captureCardAudio && !audio.some((a) => a.id === settings.captureCardAudio)) {
+    sound.add(new Option(cardChoices ? 'Saved audio (not connected)' : 'Saved audio', settings.captureCardAudio));
+  }
+  sound.value = settings.captureCardDevice ? settings.captureCardAudio : matchingCardAudio(device.value);
+
+  const bitrate = $('cardBitrateKbps');
+  bitrate.replaceChildren(...BITRATES.map(([kbps, label]) => new Option(label, kbps)));
+  ensureOption(bitrate, settings.cardBitrateKbps, `Custom (${settings.cardBitrateKbps / 1000} Mbps)`);
+  bitrate.value = settings.cardBitrateKbps;
+  $('cardResolution').value = settings.cardResolution;
+  $('cardFps').value = settings.cardFps;
+
+  const on = $('captureCard').checked;
+  device.disabled = !on || !device.value;
+  sound.disabled = !on || !device.value;
+  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).disabled = !on;
+}
+
 function renderPresets(failures = []) {
   $('presets').replaceChildren(...settings.presets.map((p, i) => {
     const row = document.createElement('div');
@@ -1120,7 +1193,8 @@ function addAudio(addKind) {
 
 async function renderEstimate() {
   const seconds = Number($('bufferMinutes').value) * 60;
-  const bitrateKbps = Number($('bitrateKbps').value);
+  // The card has its own quality, so the memory it needs follows that while it's on.
+  const bitrateKbps = Number($($('captureCard').checked ? 'cardBitrateKbps' : 'bitrateKbps').value);
   const mb = await api.invoke('estimate', { bufferSeconds: seconds, bitrateKbps });
   const size = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
   const note = $('estimate');
@@ -1587,6 +1661,7 @@ function fillForm() {
   bindTalkKey($('pushToTalkKey'));
   $('remotePort').value = settings.remotePort;
   renderCamera();
+  renderCard();
   bindHotkey($('starClipHotkey'), () => settings.starClipHotkey, (v) => { settings.starClipHotkey = v; scheduleSave(); });
   bindHotkey($('recordHotkey'), () => settings.recordHotkey, (v) => { settings.recordHotkey = v; scheduleSave(); });
   bindHotkey($('micHotkey'), () => settings.micHotkey, (v) => { settings.micHotkey = v; scheduleSave(); });
@@ -1599,7 +1674,7 @@ function fillForm() {
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
   'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode', 'evenAudio', 'autoClip', 'keepTagged',
-  'diskBuffer', 'freeMemoryInGames', 'hdrCapture', 'weeklyReel'];
+  'diskBuffer', 'freeMemoryInGames', 'hdrCapture', 'weeklyReel', 'captureCard'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1662,6 +1737,14 @@ function readForm() {
   for (const k of ['clipAfterSeconds', 'cameraSize', 'lowSpaceWarnGb']) settings[k] = Number($(k).value);
   settings.remotePort = Math.round(Number($('remotePort').value)) || settings.remotePort;
   settings.cameraDevice = $('cameraDevice').value || settings.cameraDevice;
+  // Only once a card is chosen, so turning the switch on keeps the suggested card and its audio.
+  if (settings.captureCard || settings.captureCardDevice) {
+    settings.captureCardDevice = $('captureCardDevice').value || settings.captureCardDevice;
+    settings.captureCardAudio = $('captureCardAudio').value;
+  }
+  settings.cardResolution = $('cardResolution').value;
+  settings.cardFps = Number($('cardFps').value);
+  settings.cardBitrateKbps = Number($('cardBitrateKbps').value);
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
   settings.weeklyReelTag = $('weeklyReelTag').value.trim().replace(/^#/, '');
@@ -1705,7 +1788,7 @@ function showPane(id) {
   if (id === 'audio') loadAudioChoices();
   if (id === 'games') renderGamePicker();
   if (id === 'controls') fillController();
-  if (id === 'video') loadCameraChoices();
+  if (id === 'video') { loadCameraChoices(); loadCardChoices(); }
   updateLiveViews();
 }
 
@@ -1881,6 +1964,15 @@ $('new-remote-key').onclick = async () => {
 };
 
 $('cameraDevice').onchange = () => { settings.cameraDevice = $('cameraDevice').value; scheduleSave(); };
+$('captureCard').onchange = () => { renderCard(); renderSummary(); renderEstimate(); scheduleSave(); };
+$('captureCardDevice').onchange = () => {
+  settings.captureCardDevice = $('captureCardDevice').value;
+  settings.captureCardAudio = matchingCardAudio(settings.captureCardDevice);
+  renderCard();
+  scheduleSave();
+};
+$('captureCardAudio').onchange = () => { settings.captureCardAudio = $('captureCardAudio').value; scheduleSave(); };
+for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderSummary(); renderEstimate(); scheduleSave(); };
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
   const on = $('runAsAdmin').checked;

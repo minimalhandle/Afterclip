@@ -18,6 +18,7 @@ const AUDIO_CHECK_EVERY: u32 = 3;
 #[serde(rename_all = "camelCase")]
 pub struct CaptureState {
     /// desktop: primary monitor. detecting: game found, hooking. game: hooked. fallback: hook failed, recording its monitor.
+    /// card: a capture card, so this PC's games aren't looked for.
     pub mode: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
@@ -31,6 +32,17 @@ pub struct CaptureState {
     pub elevated: bool,
 }
 
+/// What the watcher looks for.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Watch {
+    /// Nothing, as for the tests' colour card.
+    Off,
+    /// Games on this PC.
+    Games,
+    /// Nothing on this PC, because a capture card is what's recorded.
+    Card,
+}
+
 /// Chooses what to record. It always tries the fullscreen app, or a game you've added in any window,
 /// with game capture while its monitor records underneath, so footage exists during the hook and if the hook never lands.
 pub struct CaptureManager {
@@ -38,7 +50,7 @@ pub struct CaptureManager {
 }
 
 impl CaptureManager {
-    pub fn start(engine: Arc<Engine>, enabled: impl Fn() -> bool + Send + 'static, added_games: impl Fn() -> Vec<String> + Send + 'static, on_change: impl Fn(&CaptureState) + Send + 'static) -> Arc<Self> {
+    pub fn start(engine: Arc<Engine>, watch: impl Fn() -> Watch + Send + 'static, added_games: impl Fn() -> Vec<String> + Send + 'static, on_change: impl Fn(&CaptureState) + Send + 'static) -> Arc<Self> {
         let manager = Arc::new(CaptureManager {
             state: Mutex::new(CaptureState {
                 mode: "desktop",
@@ -55,8 +67,13 @@ impl CaptureManager {
             let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false };
             loop {
                 thread::sleep(POLL);
-                if engine.status().state == "ready" && enabled() {
-                    me.tick(&engine, &mut watcher, &added_games(), &on_change);
+                if engine.status().state != "ready" {
+                    continue;
+                }
+                match watch() {
+                    Watch::Games => me.tick(&engine, &mut watcher, &added_games(), &on_change),
+                    Watch::Card => me.show_card(&mut watcher, &on_change),
+                    Watch::Off => {}
                 }
             }
         });
@@ -74,6 +91,20 @@ impl CaptureManager {
         if *state != before {
             on_change(&state);
         }
+    }
+
+    /// Says the card is being recorded. Leaving card mode restarts the engine, so game detection starts afresh then.
+    fn show_card(&self, w: &mut Watcher, on_change: &impl Fn(&CaptureState)) {
+        w.generation = 0;
+        w.current = None;
+        w.candidate = None;
+        self.publish(on_change, |s| {
+            s.mode = "card";
+            s.app = None;
+            s.exe = None;
+            s.needs_admin = false;
+            s.suggest_admin = false;
+        });
     }
 
     fn tick(&self, engine: &Engine, w: &mut Watcher, added_games: &[String], on_change: &impl Fn(&CaptureState)) {

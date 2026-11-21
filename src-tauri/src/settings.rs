@@ -227,6 +227,17 @@ pub struct Settings {
     pub free_memory_in_games: bool,
     /// Captures in HDR, as 10-bit HEVC or AV1, while Windows HDR is on for the main monitor.
     pub hdr_capture: bool,
+    /// Records a capture card, such as an Elgato 4K X, instead of this PC's screen and games.
+    pub capture_card: bool,
+    /// The card's video device id, from the engine's list.
+    pub capture_card_device: String,
+    /// The card's audio device id, from the engine's list. Empty records no sound from the card.
+    pub capture_card_audio: String,
+    /// The card's own video settings, used instead of the PC's while it's recorded, and never limited by this
+    /// PC's monitor: a picture height (2160, 1440, 1080 or 720), frames per second, and bitrate.
+    pub card_resolution: String,
+    pub card_fps: i64,
+    pub card_bitrate_kbps: i64,
     /// Once a week, joins the week's favourites, or clips with weekly_reel_tag, into one video.
     pub weekly_reel: bool,
     /// The tag a clip needs to go in the weekly reel. Empty means favourites.
@@ -329,9 +340,38 @@ impl Settings {
             disk_buffer: false,
             free_memory_in_games: true,
             hdr_capture: false,
+            capture_card: false,
+            capture_card_device: String::new(),
+            capture_card_audio: String::new(),
+            card_resolution: "2160".into(),
+            card_fps: 60,
+            card_bitrate_kbps: 60000,
             weekly_reel: false,
             weekly_reel_tag: String::new(),
         }
+    }
+
+    /// The capture card's video and audio devices while it's what's recorded, or None for the screen and games.
+    pub fn card(&self) -> Option<(&str, &str)> {
+        (self.capture_card && !self.capture_card_device.is_empty() && !self.test_pattern)
+            .then_some((self.capture_card_device.as_str(), self.capture_card_audio.as_str()))
+    }
+
+    /// These settings with the card's own resolution, frame rate and quality, while a card is recorded.
+    /// The picture is 16:9, the shape consoles send, whatever this PC's monitor is.
+    pub fn with_card(mut self) -> Settings {
+        if self.card().is_some() {
+            self.height = self.card_resolution.parse::<i64>().unwrap_or(2160);
+            self.width = (self.height * 16 / 9 + 1) / 2 * 2;
+            self.fps = self.card_fps;
+            self.bitrate_kbps = self.card_bitrate_kbps;
+        }
+        self
+    }
+
+    /// Whether the buffer stops while no game is open. A capture card's games run on another device, so it never does.
+    pub fn pauses_without_game(&self) -> bool {
+        self.buffer_only_in_games && self.card().is_none()
     }
 
     /// The webcam's place on the picture, in a 16:9 box with a small margin, or None with no webcam chosen.
@@ -460,6 +500,13 @@ impl Settings {
         self.star_clip_seconds = self.star_clip_seconds.clamp(0, MAX_BUFFER_SECONDS);
         self.clip_after_seconds = self.clip_after_seconds.clamp(0, 30);
         self.camera_size = self.camera_size.clamp(CAMERA_SIZES.0, CAMERA_SIZES.1);
+        if !["2160", "1440", "1080", "720"].contains(&self.card_resolution.as_str()) {
+            self.card_resolution = "2160".into();
+        }
+        if ![30, 60, 120].contains(&self.card_fps) {
+            self.card_fps = 60;
+        }
+        self.card_bitrate_kbps = self.card_bitrate_kbps.clamp(2000, 150000);
         self.low_space_warn_gb = self.low_space_warn_gb.max(0.0);
         if !["top-right", "top-left", "bottom-right", "bottom-left"].contains(&self.toast_corner.as_str()) {
             self.toast_corner = "top-right".into();
@@ -550,6 +597,7 @@ impl Settings {
             || self.game_audio_own_track != other.game_audio_own_track
             || self.test_pattern != other.test_pattern
             || self.game_profiles.iter().any(|profile| profile.capture_privacy) != other.game_profiles.iter().any(|profile| profile.capture_privacy)
+            || self.card() != other.card()
             || self.camera_box() != other.camera_box()
             || (self.camera_box().is_some() && self.camera_device != other.camera_device)
     }
@@ -618,6 +666,17 @@ mod tests {
         assert_eq!(s.camera_box(), Some((1920 - 480 - 26, 1080 - 270 - 26, 480, 270)));
         s.camera_corner = "top-left".into();
         assert_eq!(s.camera_box(), Some((26, 26, 480, 270)));
+    }
+
+    #[test]
+    fn a_capture_card_uses_its_own_video_settings() {
+        let pc = Settings { width: 2560, height: 1440, fps: 165, bitrate_kbps: 40000, ..sample() };
+        assert_eq!(pc.clone().with_card(), pc, "without a card, the PC's settings are used");
+        let card = Settings { capture_card: true, capture_card_device: "Elgato 4K X:path".into(), ..pc.clone() }.with_card();
+        assert_eq!((card.width, card.height, card.fps, card.bitrate_kbps), (3840, 2160, 60, 60000), "bigger than the monitor");
+        let card = Settings { card_resolution: "1440".into(), card_fps: 120, ..card }.with_card();
+        assert_eq!((card.width, card.height, card.fps), (2560, 1440, 120));
+        assert!(pc.needs_engine_restart(&card), "switching to the card restarts capture");
     }
 
     #[test]

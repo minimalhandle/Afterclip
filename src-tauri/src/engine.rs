@@ -375,7 +375,9 @@ impl Engine {
         let s = self.settings.lock().unwrap().clone();
         // HDR follows Windows' Use HDR switch for the main monitor, which is where games run.
         let (monitor_hdr, sdr_white) = crate::win32::primary_hdr().unwrap_or((false, 0.0));
-        let hdr = s.hdr_capture && monitor_hdr && !s.test_pattern && !self.hdr_blocked.load(Ordering::SeqCst);
+        // A capture card's picture comes from a console or another PC, so this PC's monitor has no say in it.
+        let card = s.card();
+        let hdr = s.hdr_capture && (monitor_hdr || card.is_some()) && !s.test_pattern && !self.hdr_blocked.load(Ordering::SeqCst);
         self.update(|status| {
             status.state = "starting";
             status.message = Some("Starting capture".into());
@@ -449,7 +451,7 @@ impl Engine {
             // HDR is 10-bit, and H.264 can't be, so it uses HEVC.
             "codec": if hdr && s.codec == "h264" { "hevc" } else { s.codec.as_str() },
             "hdr": hdr,
-            "sdrWhiteNits": if monitor_hdr { sdr_white } else { 0.0 },
+            "sdrWhiteNits": if monitor_hdr && card.is_none() { sdr_white } else { 0.0 },
             "trackNames": s.track_names().iter().map(|name| json!({ "name": name })).collect::<Vec<_>>(),
             "preset": s.encoder_preset,
             "multipass": s.multipass,
@@ -464,7 +466,8 @@ impl Engine {
             "gameAudioVolume": s.game_audio_volume,
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
-            "noMonitorFallback": s.game_profiles.iter().any(|profile| profile.capture_privacy),
+            "noMonitorFallback": card.is_none() && s.game_profiles.iter().any(|profile| profile.capture_privacy),
+            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio })),
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
@@ -935,6 +938,11 @@ impl Engine {
 
     pub fn camera_choices(&self) -> Result<Value, String> {
         self.rpc("cameraChoices", json!({})).map(|m| m["cameras"].clone())
+    }
+
+    /// The capture cards that can be recorded, and the audio devices their sound can come from.
+    pub fn card_choices(&self) -> Result<Value, String> {
+        self.rpc("cardChoices", json!({})).map(|m| json!({ "cards": m["cards"], "audio": m["audio"] }))
     }
 
     /// Joins ranges of clips into a new file in Clips, losslessly. Originals are never changed.

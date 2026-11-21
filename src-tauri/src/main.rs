@@ -22,7 +22,7 @@ mod win32;
 
 use api::{start_api, ApiHandlers};
 use base64::Engine as _;
-use capture::CaptureManager;
+use capture::{CaptureManager, Watch};
 use engine::{ClipResult, Engine, EngineEvent, ShareAudio};
 use library::{clean_file_stem, older_than, over_limit, LibraryData, StoredClip};
 use serde::{Deserialize, Serialize};
@@ -167,7 +167,7 @@ impl Core {
             None => base.clone(),
         };
         effective.mic_muted = self.mic_silenced(base);
-        effective
+        effective.with_card()
     }
 
     /// The mute key wins. With push-to-talk on, the mic is only heard while its key is held.
@@ -1488,7 +1488,7 @@ fn watch_games(core: Shared) {
 
         // The buffer stops a while after the game closes, so its last moments can still be clipped.
         if core.paused.load(Ordering::SeqCst) {
-            if !base.buffer_only_in_games || game_in_front(&core, &base) {
+            if !base.pauses_without_game() || game_in_front(&core, &base) {
                 if let Err(e) = core.wake_engine() {
                     core.log_ui(&format!("capture could not start again: {e}"));
                 }
@@ -1496,7 +1496,7 @@ fn watch_games(core: Shared) {
             }
             continue;
         }
-        if base.buffer_only_in_games && game.is_none() && !recording && last_seen.elapsed() >= profile_hold() && core.engine.status().state == "ready" {
+        if base.pauses_without_game() && game.is_none() && !recording && last_seen.elapsed() >= profile_hold() && core.engine.status().state == "ready" {
             core.pause_engine();
             continue;
         }
@@ -2287,6 +2287,11 @@ fn import_settings(core: tauri::State<Shared>, payload: Option<String>) -> Resul
 #[tauri::command(async)]
 fn camera_choices(core: tauri::State<Shared>) -> Result<Value, String> {
     core.engine.camera_choices()
+}
+
+#[tauri::command(async)]
+fn card_choices(core: tauri::State<Shared>) -> Result<Value, String> {
+    core.engine.card_choices()
 }
 
 #[tauri::command(async)]
@@ -3097,7 +3102,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             state, estimate, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, find_overlaps, keep_overlap, clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
- import_settings, running_apps, pick_game, audio_choices, camera_choices, display_info,
+ import_settings, running_apps, pick_game, audio_choices, camera_choices, card_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit,
             open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
             save_game_layout, pick_angle, sync_angle,
@@ -3230,7 +3235,10 @@ fn main() {
             let profile_settings = Arc::clone(&shared_settings);
             let manager = CaptureManager::start(
                 Arc::clone(&engine),
-                move || !detection_settings.lock().unwrap().test_pattern,
+                move || {
+                    let s = detection_settings.lock().unwrap();
+                    if s.test_pattern { Watch::Off } else if s.card().is_some() { Watch::Card } else { Watch::Games }
+                },
                 move || profile_settings.lock().unwrap().game_profiles.iter().map(|p| p.exe.clone()).collect(),
                 move |state| { let _ = capture_events.emit("capture", state); },
             );
@@ -3292,7 +3300,7 @@ fn main() {
             core.allow_media_folders();
             // With the buffer only running during games, it waits for one.
             let first = core.settings.lock().unwrap().clone();
-            if first.buffer_only_in_games && !game_in_front(&core, &first) {
+            if first.pauses_without_game() && !game_in_front(&core, &first) {
                 core.paused.store(true, Ordering::SeqCst);
                 engine.set_waiting_for_game(true);
             } else {
