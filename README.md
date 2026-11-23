@@ -126,7 +126,7 @@ Choose Low, Medium, High or Full quality, or set each option yourself: resolutio
 
 Download the installer from [afterclip.app](https://afterclip.app) or the [latest release](https://github.com/minimalhandle/Afterclip/releases/latest) and run it. It installs to `Program Files`, and Windows asks for permission once. The installer isn't code-signed yet, so Windows may show a SmartScreen warning: choose **More info**, then **Run anyway**.
 
-For Stream Deck keys, download the `.streamDeckPlugin` file from the same release and double-click it.
+For Stream Deck keys, Afterclip finds the Stream Deck app and offers to install its plugin, which the installer includes. It's also in **Settings > Controls > Stream Deck**, or download the `.streamDeckPlugin` file from the same release and double-click it.
 
 **Two PCs:** the Stream Deck can control Afterclip on another PC, such as your gaming PC from your streaming PC. On the PC that runs Afterclip, turn on **Allow a Stream Deck on another PC** in **Settings > Controls**, and copy the address it shows. On the PC with the Stream Deck, install the plugin, open any Afterclip key's settings, paste the address into **Address**, and press **Connect**. All the keys then control that PC. Install Afterclip on the PC that runs the game, because it records the game where it runs, not from a capture card.
 

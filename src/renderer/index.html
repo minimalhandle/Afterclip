@@ -49,6 +49,13 @@
     <div id="whats-new-notes" class="patch-notes scroll"></div>
     <div class="row"><button id="whats-new-close" class="small">Got it</button></div>
   </section>
+  <section id="deck-offer" class="update-card" hidden>
+    <div class="update-text"><b id="deck-offer-title">Stream Deck found</b><div id="deck-offer-text">Add Afterclip's keys to your Stream Deck to clip, record and mute your mic with a press.</div></div>
+    <div class="row">
+      <button id="deck-install" class="small primary">Install plugin</button>
+      <button id="deck-dismiss" class="small">Not now</button>
+    </div>
+  </section>
   <section id="capture-card" class="capture-card">
     <div class="capture-line">
       <span id="capture-dot" class="dot"></span>
@@ -293,6 +300,10 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Card audio on its own track</div><div class="setting-desc">Also puts the card's sound on a track named Capture card, so a video editor can change it apart from your mic.</div></div>
         <input id="cardAudioOwnTrack" class="switch" type="checkbox" aria-label="Card audio on its own track">
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Pause when there's no signal</div><div class="setting-desc">After a minute of the card's NO SIGNAL screen, or any still, plain picture, the buffer pauses so your graphics card isn't encoding a blank screen. It starts again within a few seconds of a picture arriving.</div></div>
+        <input id="cardPauseWithoutSignal" class="switch" type="checkbox" aria-label="Pause when there's no signal">
       </div>
       <p id="card-doubled" class="note warn" hidden></p>
     </div>
@@ -539,6 +550,10 @@
     </div>
     <div class="card">
       <div class="card-title">Stream Deck</div>
+      <div id="deck-plugin-row" class="setting" hidden>
+        <div class="setting-text"><div class="setting-name">Afterclip plugin</div><div id="deck-plugin-note" class="setting-desc">Adds Afterclip's keys to the Stream Deck app on this PC.</div></div>
+        <button id="deck-plugin-install" class="small">Install</button>
+      </div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Allow a Stream Deck on another PC</div><div class="setting-desc">For two-PC setups, or iPhone Shortcuts. Afterclip listens on your home network, and only answers requests that carry the key in the address below. Nothing is sent to the internet.</div></div>
         <input id="remoteStreamDeck" class="switch" type="checkbox" aria-label="Allow a Stream Deck on another PC">

@@ -66,6 +66,9 @@ pub struct EngineStatus {
     /// Stopped on purpose, because the buffer only runs during games and none is open.
     #[serde(rename = "waitingForGame")]
     pub waiting_for_game: bool,
+    /// Paused on purpose, because the capture card shows no picture, such as its NO SIGNAL screen.
+    #[serde(rename = "waitingForSignal")]
+    pub waiting_for_signal: bool,
     /// The buffer is kept on disk, by choice or because memory ran low.
     #[serde(rename = "bufferOnDisk")]
     pub buffer_on_disk: bool,
@@ -79,6 +82,15 @@ pub struct ClipResult {
     pub file: String,
     pub requested_seconds: i64,
     pub actual_seconds: f64,
+}
+
+/// What a capture card is sending.
+#[derive(Clone, Copy, Debug)]
+pub struct CardSignal {
+    /// Any picture at all. A card that another app holds never sends one.
+    pub picture: bool,
+    /// The picture is plain and still, such as the card's own NO SIGNAL screen. None until it's first judged.
+    pub blank: Option<bool>,
 }
 
 pub enum EngineEvent {
@@ -107,6 +119,8 @@ pub struct Engine {
     recording_file: Mutex<Option<PathBuf>>,
     game: Mutex<Option<String>>,
     encoder_in_use: Mutex<Option<String>>,
+    /// Capture started on Windows' software renderer, which happens while a graphics driver is being installed.
+    software_gpu: AtomicBool,
     marker_count: AtomicU64,
     next_id: AtomicU64,
     generation: AtomicU64,
@@ -125,7 +139,7 @@ impl Engine {
             home,
             root,
             settings: Mutex::new(settings),
-            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false, buffer_on_disk: false, hdr: false }),
+            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false, waiting_for_signal: false, buffer_on_disk: false, hdr: false }),
             running: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             saved: Mutex::new(None),
@@ -133,6 +147,7 @@ impl Engine {
             recording_file: Mutex::new(None),
             game: Mutex::new(None),
             encoder_in_use: Mutex::new(None),
+            software_gpu: AtomicBool::new(false),
             marker_count: AtomicU64::new(0),
             next_id: AtomicU64::new(1),
             generation: AtomicU64::new(0),
@@ -384,6 +399,7 @@ impl Engine {
             status.buffering = false;
             status.recording = false;
             status.waiting_for_game = false;
+            status.waiting_for_signal = false;
             status.buffer_on_disk = false;
             status.hdr = hdr;
         });
@@ -471,6 +487,7 @@ impl Engine {
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
+        self.software_gpu.store(started["softwareGpu"].as_bool().unwrap_or(false), Ordering::SeqCst);
 
         let deadline = Instant::now() + START_TIMEOUT;
         while !self.status().buffering {
@@ -661,6 +678,7 @@ impl Engine {
             s.buffering = false;
             s.recording = false;
             s.buffer_on_disk = false;
+            s.waiting_for_signal = false;
         });
     }
 
@@ -690,6 +708,9 @@ impl Engine {
     /// Saves a clip of the last `seconds`. 0 keeps the whole buffer. Saves run one at a time.
     pub fn clip(&self, seconds: i64) -> Result<ClipResult, String> {
         let _one_at_a_time = self.clip_lock.lock().unwrap();
+        if self.status().waiting_for_signal {
+            return Err("The capture card has no signal, so the buffer is paused until a picture arrives".into());
+        }
         if !self.status().buffering {
             return Err("Replay buffer is not running".into());
         }
@@ -881,6 +902,10 @@ impl Engine {
         self.encoder_in_use.lock().unwrap().clone()
     }
 
+    pub fn on_software_gpu(&self) -> bool {
+        self.software_gpu.load(Ordering::SeqCst)
+    }
+
     pub fn game_audio_enabled(&self) -> bool {
         self.settings.lock().unwrap().game_audio
     }
@@ -945,11 +970,69 @@ impl Engine {
         self.choices("cardChoices").map(|m| json!({ "cards": m["cards"], "audio": m["audio"] }))
     }
 
-    /// Whether the capture card is sending pictures, or None when no card is being recorded. A card that
-    /// another app holds never sends one.
-    pub fn card_has_picture(&self) -> Option<bool> {
+    /// What the capture card is sending, or None when no card is being recorded.
+    pub fn card_signal(&self) -> Option<CardSignal> {
         let reply = self.rpc("cardStatus", json!({})).ok()?;
-        reply["card"].as_bool().unwrap_or(false).then(|| reply["width"].as_i64().unwrap_or(0) > 0)
+        reply["card"].as_bool().unwrap_or(false).then(|| CardSignal {
+            picture: reply["width"].as_i64().unwrap_or(0) > 0,
+            blank: reply["blank"].as_bool(),
+        })
+    }
+
+    /// Pauses the buffer, in RAM and on disk, while the sources keep running, or starts it again. A capture card
+    /// with no signal costs no encoding this way, and its picture is still watched for. What the buffer held is lost.
+    pub fn set_buffer_paused(&self, paused: bool) -> Result<(), String> {
+        // Never in the middle of saving a clip, which reads the buffer.
+        let _one_at_a_time = self.clip_lock.lock().unwrap();
+        let status = self.status();
+        if paused == status.waiting_for_signal || status.state != "ready" {
+            return Ok(());
+        }
+        if paused {
+            if status.recording {
+                return Err("Recording".into());
+            }
+            if self.buffer_on_disk() {
+                let _ = self.rpc("diskStop", json!({}));
+                let deadline = Instant::now() + DISK_START_TIMEOUT;
+                while self.buffer_on_disk() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+            self.rpc("bufferPaused", json!({ "paused": true }))?;
+            *self.disk.lock().unwrap() = DiskBuffer::default();
+            let _ = fs::remove_dir_all(self.disk_dir());
+            self.update(|s| {
+                s.buffering = false;
+                s.buffering_since = None;
+                s.buffer_on_disk = false;
+                s.waiting_for_signal = true;
+            });
+            return Ok(());
+        }
+        self.rpc("bufferPaused", json!({ "paused": false }))?;
+        let deadline = Instant::now() + START_TIMEOUT;
+        while !self.status().buffering {
+            if Instant::now() > deadline {
+                return Err("The replay buffer did not start".into());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let ram_seconds = {
+            let mut ram = self.ram.lock().unwrap();
+            ram.0 = Instant::now();
+            ram.1
+        };
+        self.update(|s| s.waiting_for_signal = false);
+        // The disk carries the rest of a long buffer, whether chosen or moved there when memory ran low.
+        let s = self.settings.lock().unwrap().clone();
+        if s.disk_buffer || ram_seconds < s.buffer_seconds {
+            if let Err(e) = self.start_disk() {
+                (self.on_event)(EngineEvent::Warning(format!("The buffer couldn't be kept on disk, so it's in RAM: {e}")));
+                self.resize_ram(s.buffer_seconds)?;
+            }
+        }
+        Ok(())
     }
 
     /// Asks the running engine for a list of devices, or a short-lived one when capture is stopped, such as

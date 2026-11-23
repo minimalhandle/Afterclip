@@ -10,6 +10,11 @@ const POLL: Duration = Duration::from_secs(1);
 pub const CARD_NAME: &str = "CaptureCard";
 // A card normally sends its first picture within a few seconds of opening. After this, say it isn't.
 const NO_PICTURE_AFTER: Duration = Duration::from_secs(10);
+// The card has shown only a plain, still picture, such as its NO SIGNAL screen, for this long, so the buffer pauses.
+// Long enough that a black loading screen or fade never pauses it, and a console just switched off can still be clipped.
+const NO_SIGNAL_PAUSE_AFTER: Duration = Duration::from_secs(60);
+// Polls in a row with a real picture before a paused buffer starts again, so one odd frame doesn't start it.
+const SIGNAL_RESUME_POLLS: u32 = 2;
 // Hooking a game normally takes a few seconds. After this, say capture has fallen back.
 const HOOK_GRACE: Duration = Duration::from_secs(10);
 // A game whose anti-cheat blocks the hook, such as Call of Duty, refuses it every time, and each try reaches into
@@ -36,6 +41,8 @@ pub struct CaptureState {
     pub elevated: bool,
     /// The capture card has sent no picture, usually because another app has it open.
     pub no_picture: bool,
+    /// The capture card shows no signal, so the buffer is paused until a picture arrives.
+    pub no_signal: bool,
 }
 
 /// What the watcher looks for.
@@ -45,8 +52,9 @@ pub enum Watch {
     Off,
     /// Games on this PC.
     Games,
-    /// Nothing on this PC, because a capture card is what's recorded.
-    Card,
+    /// Nothing on this PC, because a capture card is what's recorded. With pause_without_signal, the buffer
+    /// pauses while the card shows no signal.
+    Card { pause_without_signal: bool },
 }
 
 /// Chooses what to record. It always tries the fullscreen app, or a game you've added in any window,
@@ -66,12 +74,13 @@ impl CaptureManager {
                 suggest_admin: false,
                 elevated: is_self_elevated(),
                 no_picture: false,
+                no_signal: false,
             }),
         });
         let me = Arc::clone(&manager);
         thread::spawn(move || {
             init_com_for_thread();
-            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false, card_since: None };
+            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false, card_since: None, blank_since: None, picture_polls: 0 };
             loop {
                 thread::sleep(POLL);
                 if engine.status().state != "ready" {
@@ -79,7 +88,7 @@ impl CaptureManager {
                 }
                 match watch() {
                     Watch::Games => me.tick(&engine, &mut watcher, &added_games(), &on_change),
-                    Watch::Card => me.show_card(&engine, &mut watcher, &on_change),
+                    Watch::Card { pause_without_signal } => me.show_card(&engine, &mut watcher, pause_without_signal, &on_change),
                     Watch::Off => {}
                 }
             }
@@ -101,14 +110,35 @@ impl CaptureManager {
     }
 
     /// Says the card is being recorded. Leaving card mode restarts the engine, so game detection starts afresh then.
-    fn show_card(&self, engine: &Engine, w: &mut Watcher, on_change: &impl Fn(&CaptureState)) {
+    fn show_card(&self, engine: &Engine, w: &mut Watcher, pause_without_signal: bool, on_change: &impl Fn(&CaptureState)) {
         // Any device can be behind a card, so its files are named for the card, not a console.
         if w.generation != engine.generation() || w.current.is_some() {
             engine.set_game(Some(CARD_NAME.into()));
             w.card_since = Some(Instant::now());
+            w.blank_since = None;
+            w.picture_polls = 0;
         }
         let waited = w.card_since.is_some_and(|since| since.elapsed() > NO_PICTURE_AFTER);
-        let no_picture = waited && engine.card_has_picture() == Some(false);
+        let signal = engine.card_signal();
+        let no_picture = waited && signal.is_some_and(|c| !c.picture);
+        // No picture at all, once the card has had time to send one, is as empty as a NO SIGNAL screen.
+        let blank = signal.is_some_and(|c| c.blank == Some(true) || (waited && !c.picture));
+        if blank {
+            w.blank_since.get_or_insert_with(Instant::now);
+            w.picture_polls = 0;
+        } else if signal.is_some_and(|c| c.blank == Some(false)) {
+            w.blank_since = None;
+            w.picture_polls += 1;
+        }
+        let status = engine.status();
+        let long_blank = w.blank_since.is_some_and(|since| since.elapsed() >= NO_SIGNAL_PAUSE_AFTER);
+        // A failure tries again on the next poll. A recording, which shares the encoder, starts the buffer too.
+        if !status.waiting_for_signal && pause_without_signal && long_blank && status.buffering && !status.recording {
+            let _ = engine.set_buffer_paused(true);
+        } else if status.waiting_for_signal && (!pause_without_signal || status.recording || w.picture_polls >= SIGNAL_RESUME_POLLS) {
+            let _ = engine.set_buffer_paused(false);
+        }
+        let no_signal = engine.status().waiting_for_signal;
         w.generation = engine.generation();
         w.current = None;
         w.candidate = None;
@@ -119,6 +149,7 @@ impl CaptureManager {
             s.needs_admin = false;
             s.suggest_admin = false;
             s.no_picture = no_picture;
+            s.no_signal = no_signal;
         });
     }
 
@@ -140,6 +171,7 @@ impl CaptureManager {
                 s.needs_admin = false;
                 s.suggest_admin = false;
                 s.no_picture = false;
+                s.no_signal = false;
             });
         }
         let found = foreground_game_app(added_games);
@@ -253,4 +285,8 @@ struct Watcher {
     gave_up: bool,
     /// When the capture card was opened, to give it time to send its first picture.
     card_since: Option<Instant>,
+    /// Since when the card has shown only a plain, still picture, such as its NO SIGNAL screen.
+    blank_since: Option<Instant>,
+    /// Polls in a row with a real picture from the card.
+    picture_polls: u32,
 }

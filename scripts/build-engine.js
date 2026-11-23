@@ -115,7 +115,7 @@ function compile(vcvars) {
 
   // /MT keeps the engine itself free of the VC++ runtime. /SUBSYSTEM:WINDOWS means no console can ever flash.
   msvc(vcvars, `cl /nologo /std:c++17 /EHsc /O2 /MT /W3 /D_CRT_SECURE_NO_WARNINGS /I"${path.join(srcDir, 'libobs')}" /I"${buildDir}" "${engineSource}" `
-    + '/Fe:afterclip-engine.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup obs.lib ole32.lib user32.lib shell32.lib');
+    + '/Fe:afterclip-engine.exe /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup obs.lib ole32.lib user32.lib shell32.lib dxgi.lib');
 }
 
 function dependenciesOf(vcvars, file) {

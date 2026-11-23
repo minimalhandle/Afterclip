@@ -21,6 +21,7 @@ let update = { status: 'idle' };
 let appVersion = '';
 let patchNotes = null;
 let seenVersion = '';
+let streamDeck = { offer: null, available: null };
 let storageUsed = 0;
 let remote = { on: false };
 
@@ -91,6 +92,7 @@ function renderStatus() {
   else if (capture.mode !== 'game' && settings?.gameProfiles.some((game) => game.capturePrivacy)) detail = 'Monitor capture disabled by Capture privacy';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }
   else if (status.waitingForGame) { title = 'Waiting for a game'; detail = 'The buffer starts when a game opens'; }
+  else if (status.waitingForSignal) { title = 'Capture card: no signal'; detail = 'The buffer is paused, and starts again when a picture arrives'; }
   else if (!ready) { title = 'Starting capture'; detail = ''; }
   else if (status.recording) { detail = `Full recording running · ${detail}`; }
   $('capture-title').textContent = title;
@@ -140,7 +142,7 @@ function renderBuffer() {
   $('buffer-note').classList.toggle('warn', !!frameProblem);
   $('buffer-note').title = frameProblem;
   $('buffer-note').textContent = frameProblem ? 'Losing frames'
-    : !status.buffering ? (status.waitingForGame ? 'Off until a game opens' : 'Not buffering')
+    : !status.buffering ? (status.waitingForGame ? 'Off until a game opens' : status.waitingForSignal ? 'Paused until the card has a picture' : 'Not buffering')
     : wanted >= buffer ? 'Whole buffer selected'
       : kept < wanted ? `Filling to ${lengthLabel(wanted)}`
         : `Last ${lengthLabel(wanted)} selected`;
@@ -687,6 +689,8 @@ async function refresh() {
   appVersion = state.version ?? appVersion;
   patchNotes = state.patchNotes ?? null;
   seenVersion = state.settings.seenVersion ?? '';
+  streamDeck = state.streamDeck ?? streamDeck;
+  renderStreamDeck();
   storageUsed = state.storageUsedBytes ?? 0;
   lastSession = state.lastSession ?? null;
   remote = state.remote ?? remote;
@@ -887,8 +891,9 @@ function renderCard() {
   const on = $('captureCard').checked;
   device.disabled = !on || !device.value;
   sound.disabled = !on || !device.value;
-  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps', 'cardAudioOwnTrack']) $(id).disabled = !on;
+  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps', 'cardAudioOwnTrack', 'cardPauseWithoutSignal']) $(id).disabled = !on;
   $('cardAudioOwnTrack').checked = settings.cardAudioOwnTrack;
+  $('cardPauseWithoutSignal').checked = settings.cardPauseWithoutSignal;
   if (!$('card-level').childElementCount) {
     $('card-level').append(levelControl(CARD_AUDIO_INDEX, settings.cardAudioVolume, (v) => { settings.cardAudioVolume = v; }));
   }
@@ -1326,6 +1331,27 @@ function fillNotes(box, text) {
     }
   }
   box.replaceChildren(...parts);
+}
+
+function renderStreamDeck() {
+  const upgrade = streamDeck.offer === 'update';
+  $('deck-offer').hidden = !streamDeck.offer;
+  $('deck-offer-title').textContent = upgrade ? 'Stream Deck plugin update' : 'Stream Deck found';
+  $('deck-offer-text').textContent = upgrade
+    ? 'A newer Afterclip plugin is ready, with the keys from this version.'
+    : 'Add Afterclip\'s keys to your Stream Deck to clip, record and mute your mic with a press.';
+  $('deck-install').textContent = upgrade ? 'Update plugin' : 'Install plugin';
+  // Settings offers it again after Not now, for as long as the Stream Deck app is missing it or has an older one.
+  $('deck-plugin-row').hidden = !streamDeck.available;
+  $('deck-plugin-install').textContent = streamDeck.available === 'update' ? 'Update' : 'Install';
+}
+
+function installStreamDeckPlugin() {
+  return api.invoke('install-stream-deck-plugin').then(() => {
+    streamDeck = { ...streamDeck, offer: null };
+    renderStreamDeck();
+    showBanner('Finish in the Stream Deck app. Afterclip\'s keys are in its Afterclip category.', 'good');
+  }).catch((e) => showBanner(errorText(e), 'bad'));
 }
 
 function renderPatchNotes() {
@@ -1770,6 +1796,7 @@ function readForm() {
   settings.cardFps = Number($('cardFps').value);
   settings.cardBitrateKbps = Number($('cardBitrateKbps').value);
   settings.cardAudioOwnTrack = $('cardAudioOwnTrack').checked;
+  settings.cardPauseWithoutSignal = $('cardPauseWithoutSignal').checked;
   settings.multipass = $('multipass').value === 'true';
   settings.outputDir = $('outputDir').value;
   settings.weeklyReelTag = $('weeklyReelTag').value.trim().replace(/^#/, '');
@@ -1936,6 +1963,12 @@ $('whats-new-close').onclick = () => api.invoke('dismiss-patch-notes').then(() =
   seenVersion = appVersion.replace(/-dev$/, '');
   renderPatchNotes();
 }).catch((e) => showBanner(errorText(e), 'bad'));
+$('deck-install').onclick = installStreamDeckPlugin;
+$('deck-plugin-install').onclick = installStreamDeckPlugin;
+$('deck-dismiss').onclick = () => api.invoke('dismiss-stream-deck-plugin').then(() => {
+  streamDeck = { ...streamDeck, offer: null };
+  renderStreamDeck();
+}).catch((e) => showBanner(errorText(e), 'bad'));
 $('autoUpdate').onchange = () => scheduleSave();
 $('storageLimitGb').onchange = () => scheduleSave();
 $('deleteAfterDays').onchange = () => scheduleSave();
@@ -2005,6 +2038,7 @@ $('captureCardDevice').onchange = () => {
 $('captureCardAudio').onchange = () => { settings.captureCardAudio = $('captureCardAudio').value; scheduleSave(); };
 for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderSummary(); renderEstimate(); scheduleSave(); };
 $('cardAudioOwnTrack').onchange = () => scheduleSave();
+$('cardPauseWithoutSignal').onchange = () => scheduleSave();
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {
   const on = $('runAsAdmin').checked;

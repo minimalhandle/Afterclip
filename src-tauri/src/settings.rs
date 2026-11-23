@@ -166,6 +166,9 @@ pub struct Settings {
     pub skipped_update: String,
     /// The last version whose patch notes were shown, so they show once after each update.
     pub seen_version: String,
+    /// The bundled Stream Deck plugin version whose install offer was answered, so it isn't offered again
+    /// until a newer plugin ships.
+    pub stream_deck_offer_seen: String,
     /// Lets a controller run the actions below, each with View, Create or Minus held.
     pub controller_enabled: bool,
     /// The second button for each action, by position, as controller::button reads it. Empty is off.
@@ -241,6 +244,9 @@ pub struct Settings {
     /// The card's sound: how loud, and whether it also gets an audio track of its own.
     pub card_audio_volume: f64,
     pub card_audio_own_track: bool,
+    /// Pauses the buffer while the card shows only a still, plain picture, such as its own NO SIGNAL screen,
+    /// so nothing is encoded while the console is off. It starts again as soon as a picture arrives.
+    pub card_pause_without_signal: bool,
     /// Switches between this PC and the capture card.
     pub card_hotkey: String,
     /// Once a week, joins the week's favourites, or clips with weekly_reel_tag, into one video.
@@ -313,6 +319,7 @@ impl Settings {
             auto_update: true,
             skipped_update: String::new(),
             seen_version: String::new(),
+            stream_deck_offer_seen: String::new(),
             controller_enabled: false,
             controller_clip: "r3".into(),
             controller_record: String::new(),
@@ -353,6 +360,7 @@ impl Settings {
             card_bitrate_kbps: 60000,
             card_audio_volume: 1.0,
             card_audio_own_track: false,
+            card_pause_without_signal: true,
             card_hotkey: String::new(),
             weekly_reel: false,
             weekly_reel_tag: String::new(),
@@ -639,6 +647,7 @@ impl Settings {
         settings.discord_webhooks = self.discord_webhooks.clone();
         settings.skipped_update = self.skipped_update.clone();
         settings.seen_version = self.seen_version.clone();
+        settings.stream_deck_offer_seen = self.stream_deck_offer_seen.clone();
         settings.test_pattern = self.test_pattern;
         // Opening this PC to the network is its own choice, never something a file from another PC decides.
         settings.remote_stream_deck = self.remote_stream_deck;

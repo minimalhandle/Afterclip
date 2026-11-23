@@ -4,12 +4,14 @@
 // dying for any reason, the engine finalizes any recording and exits, so it can never be orphaned.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dxgi.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <share.h>
 
 #include <obs.h>
 #include <obs-audio-controls.h>
+#include <graphics/vec4.h>
 #include <util/platform.h>
 
 #include <atomic>
@@ -19,6 +21,7 @@
 #include <cstdarg>
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <iostream>
 #include <mutex>
@@ -710,6 +713,95 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 	blog(LOG_INFO, "Capture card at %s, frame interval %lld, format %lld", best.c_str(), interval, format);
 }
 
+// Whether the capture card shows a real picture, or only one that is plain and still, such as an Elgato's own
+// "NO SIGNAL" screen while the console is off. A tiny copy of the card's picture is judged a few times a second.
+const uint32_t PROBE_WIDTH = 64, PROBE_HEIGHT = 36;
+const int PROBE_EVERY_FRAMES = 15;
+// Plain: this share of the picture within this much brightness of its middle value. The NO SIGNAL text and logo
+// cover about 2% of it.
+const double PLAIN_SHARE = 0.9;
+const int PLAIN_RANGE = 12;
+// Still: the average change in brightness since the last copy, out of 255.
+const double STILL_CHANGE = 2.0;
+gs_texrender_t *g_probeRender = nullptr;
+gs_stagesurf_t *g_probeStage = nullptr;
+bool g_probeStaged = false;
+int g_probeCountdown = 0;
+std::vector<uint8_t> g_probeLast; // Only touched on the graphics thread.
+std::atomic<bool> g_cardBlank{false}, g_cardProbed{false};
+
+void judgeProbe(const uint8_t *data, uint32_t linesize)
+{
+	const size_t count = (size_t)PROBE_WIDTH * PROBE_HEIGHT;
+	std::vector<uint8_t> luma(count);
+	size_t histogram[256] = {};
+	for (uint32_t y = 0; y < PROBE_HEIGHT; y++) {
+		const uint8_t *p = data + (size_t)y * linesize;
+		for (uint32_t x = 0; x < PROBE_WIDTH; x++, p += 4) {
+			const uint8_t l = (uint8_t)((p[0] * 54 + p[1] * 183 + p[2] * 19) >> 8);
+			luma[(size_t)y * PROBE_WIDTH + x] = l;
+			histogram[l]++;
+		}
+	}
+	int middle = 0;
+	for (size_t seen = 0; middle < 255 && (seen += histogram[middle]) < count / 2;)
+		middle++;
+	// Not "near", which windows.h defines away.
+	size_t alike = 0;
+	for (int l = middle - PLAIN_RANGE; l <= middle + PLAIN_RANGE; l++)
+		if (l >= 0 && l <= 255)
+			alike += histogram[l];
+	const bool plain = alike >= count * PLAIN_SHARE;
+	bool still = false;
+	if (g_probeLast.size() == count) {
+		uint64_t change = 0;
+		for (size_t i = 0; i < count; i++)
+			change += (uint64_t)std::abs((int)luma[i] - (int)g_probeLast[i]);
+		still = (double)change / count <= STILL_CHANGE;
+	}
+	g_probeLast.swap(luma);
+	g_cardBlank = plain && still;
+	g_cardProbed = true;
+}
+
+/** Runs on the graphics thread after each frame. Reads the copy staged last time, so the GPU never waits. */
+void probeCard(void *)
+{
+	if (!g_captureCard || --g_probeCountdown > 0)
+		return;
+	g_probeCountdown = PROBE_EVERY_FRAMES;
+	const uint32_t cx = obs_source_get_width(g_captureCard), cy = obs_source_get_height(g_captureCard);
+	if (!cx || !cy)
+		return;
+	if (!g_probeRender) {
+		g_probeRender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		g_probeStage = gs_stagesurface_create(PROBE_WIDTH, PROBE_HEIGHT, GS_RGBA);
+	}
+	if (g_probeStaged) {
+		uint8_t *data = nullptr;
+		uint32_t linesize = 0;
+		if (gs_stagesurface_map(g_probeStage, &data, &linesize)) {
+			judgeProbe(data, linesize);
+			gs_stagesurface_unmap(g_probeStage);
+		}
+		g_probeStaged = false;
+	}
+	gs_texrender_reset(g_probeRender);
+	if (!gs_texrender_begin_with_color_space(g_probeRender, PROBE_WIDTH, PROBE_HEIGHT, GS_CS_SRGB))
+		return;
+	vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	obs_source_video_render(g_captureCard);
+	gs_blend_state_pop();
+	gs_texrender_end(g_probeRender);
+	gs_stage_texture(g_probeStage, gs_texrender_get_texture(g_probeRender));
+	g_probeStaged = true;
+}
+
 /** Records a capture card's picture, filling the canvas, and its sound in the main mix. */
 bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t fps, bool hdr, std::string &error)
 {
@@ -738,7 +830,35 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
 	obs_source_set_volume(g_captureCard, obs_data_has_user_value(card, "volume") ? (float)obs_data_get_double(card, "volume") : 1.0f);
 	g_captureCardItem = obs_scene_add(g_scene, g_captureCard);
 	fitToCanvas(g_captureCardItem, width, height);
+	obs_add_main_rendered_callback(probeCard, nullptr);
 	return true;
+}
+
+/**
+ * Names the graphics adapter at an index, in the order libobs-d3d11 counts them, and says whether it is Windows'
+ * software renderer. That one comes first while a graphics driver is being installed, which leaves capture running
+ * on the CPU and the encoder on whatever other GPU is left until capture starts again.
+ */
+bool adapterIsSoftware(UINT index, std::string &name)
+{
+	IDXGIFactory1 *factory = nullptr;
+	if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory)))
+		return false;
+	bool software = false;
+	IDXGIAdapter1 *adapter = nullptr;
+	if (SUCCEEDED(factory->EnumAdapters1(index, &adapter))) {
+		DXGI_ADAPTER_DESC1 desc = {};
+		if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+			char utf8[256] = {};
+			WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, utf8, sizeof(utf8) - 1, nullptr, nullptr);
+			name = utf8;
+			// The Microsoft Basic Render Driver is vendor 0x1414, device 0x8c, and not always flagged as software.
+			software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) || (desc.VendorId == 0x1414 && desc.DeviceId == 0x8c);
+		}
+		adapter->Release();
+	}
+	factory->Release();
+	return software;
 }
 
 bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
@@ -769,6 +889,12 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		error = "Could not start video on this GPU (code " + std::to_string(video) + ")";
 		return false;
 	}
+	std::string gpu;
+	const bool softwareGpu = adapterIsSoftware(ovi.adapter, gpu);
+	if (softwareGpu)
+		blog(LOG_WARNING, "Capture is on %s, the CPU, because no graphics driver was ready", gpu.c_str());
+	obs_data_set_string(reply, "gpu", gpu.c_str());
+	obs_data_set_bool(reply, "softwareGpu", softwareGpu);
 	// On an HDR monitor, Windows shows ordinary content at the SDR brightness its slider sets. Matching it keeps
 	// the desktop and SDR games at the brightness you see, in an HDR picture and when HDR is turned into SDR.
 	const double sdrWhite = obs_data_get_double(c, "sdrWhiteNits");
@@ -1004,6 +1130,15 @@ void shutdownAll()
 		obs_source_release(source);
 	obs_source_release(g_card);
 	obs_source_release(g_camera);
+	if (g_captureCard) {
+		obs_remove_main_rendered_callback(probeCard, nullptr);
+		obs_enter_graphics();
+		gs_stagesurface_destroy(g_probeStage);
+		gs_texrender_destroy(g_probeRender);
+		obs_leave_graphics();
+		g_probeStage = nullptr;
+		g_probeRender = nullptr;
+	}
 	obs_source_release(g_captureCard);
 	obs_scene_release(g_scene);
 	// Sources are destroyed on a background queue, and shutting down before it drains destroys them twice.
@@ -1157,6 +1292,45 @@ bool cmdReplayWindow(obs_data_t *c, std::string &error)
 	return true;
 }
 
+/**
+ * Stops or starts just the RAM buffer, leaving the sources running, so a capture card with nothing on it costs no
+ * encoding while it's still watched for a picture. The stop isn't reported as a failure; the start is reported
+ * as usual. The app stops the buffer on disk first.
+ */
+bool cmdBufferPaused(obs_data_t *c, std::string &error)
+{
+	if (!g_replay) {
+		error = "Capture is not running";
+		return false;
+	}
+	const bool pause = obs_data_get_bool(c, "paused");
+	if (pause != obs_output_active(g_replay))
+		return true;
+	if (!pause) {
+		if (!obs_output_start(g_replay)) {
+			const char *why = obs_output_get_last_error(g_replay);
+			error = why ? why : "The buffer could not start again";
+			return false;
+		}
+		blog(LOG_INFO, "Buffer started again");
+		return true;
+	}
+	if (g_record && obs_output_active(g_record)) {
+		error = "Recording";
+		return false;
+	}
+	g_quietReplayStop = true;
+	ResetEvent(g_replayStopped);
+	obs_output_stop(g_replay);
+	if (WaitForSingleObject(g_replayStopped, 5000) != WAIT_OBJECT_0) {
+		g_quietReplayStop = false;
+		error = "The buffer did not stop in time";
+		return false;
+	}
+	blog(LOG_INFO, "Buffer paused while the capture card shows no picture");
+	return true;
+}
+
 /** Runs one command. Returns false when the engine should exit. */
 bool handle(const std::string &line)
 {
@@ -1193,6 +1367,11 @@ bool handle(const std::string &line)
 		obs_data_set_bool(reply, "card", g_captureCard != nullptr);
 		obs_data_set_int(reply, "width", g_captureCard ? obs_source_get_width(g_captureCard) : 0);
 		obs_data_set_int(reply, "height", g_captureCard ? obs_source_get_height(g_captureCard) : 0);
+		// Plain and still, such as the card's own NO SIGNAL screen. Absent until the first copy is judged.
+		if (g_cardProbed)
+			obs_data_set_bool(reply, "blank", g_cardBlank);
+	} else if (cmd == "bufferPaused") {
+		ok = cmdBufferPaused(c, error);
 	} else if (cmd == "listDevices") {
 		// Only what listing needs, so devices can be chosen while capture is stopped.
 		ok = loadListingModules(obs_data_get_string(c, "root"));

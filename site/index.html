@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Afterclip: save the moment after it happens</title>
+<meta name="description" content="A lightweight game clipper for Windows. A rolling buffer keeps your recent gameplay ready, so you can save a clip after the moment happens. Free and open source.">
+<link rel="canonical" href="https://afterclip.app/">
+<link rel="icon" type="image/svg+xml" href="assets/afterclip-icon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/og-icon.png">
+<meta name="theme-color" content="#0e0c1f">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://afterclip.app/">
+<meta property="og:title" content="Afterclip">
+<meta property="og:description" content="Save the moment after it happens. A lightweight game clipper for Windows.">
+<meta property="og:image" content="https://afterclip.app/assets/og-icon.png">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0c1f; --bg-2: #120f2e; --surface: #171433; --surface-2: #221e47; --line: #302b5c;
+    --text: #f0eefc; --muted: #9a95bd; --accent: #5b49e6; --accent-2: #7c6cff; --accent-text: #a99dff;
+    --rec: #f0554f; --ok: #45d39a;
+    --r-m: 12px; --r-l: 20px; --wrap: 1120px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 Inter, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  a { color: var(--accent-text); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; height: auto; display: block; }
+  .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+  kbd { font: 600 .82em Inter, sans-serif; background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; color: var(--text); }
+
+  /* nav */
+  header.nav { position: sticky; top: 0; z-index: 10; background: rgba(14,12,31,.78); backdrop-filter: blur(14px); border-bottom: 1px solid rgba(48,43,92,.6); }
+  header.nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand img { width: 28px; height: 28px; }
+  nav.links { display: flex; align-items: center; gap: 28px; font-size: 15px; }
+  nav.links a { color: var(--muted); }
+  nav.links a:hover { color: var(--text); text-decoration: none; }
+
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 24px; border-radius: var(--r-m); font-weight: 600; font-size: 16px; border: 1px solid transparent; transition: transform .15s, background .15s, box-shadow .15s; }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+  .btn-primary { background: linear-gradient(180deg, var(--accent-2), var(--accent)); color: #fff; box-shadow: 0 8px 30px -8px rgba(124,108,255,.65); }
+  .btn-primary:hover { box-shadow: 0 10px 36px -6px rgba(124,108,255,.8); }
+  .btn-ghost { background: var(--surface); border-color: var(--line); color: var(--text); }
+  .btn-ghost:hover { background: var(--surface-2); }
+  .btn-sm { padding: 8px 16px; font-size: 14px; }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* hero */
+  .hero { position: relative; padding: 88px 0 96px; }
+  .hero::before { content: ""; position: absolute; inset: -200px 0 auto; height: 900px; background: radial-gradient(600px 420px at 70% 30%, rgba(91,73,230,.35), transparent 70%), radial-gradient(500px 360px at 15% 10%, rgba(124,108,255,.14), transparent 70%); pointer-events: none; }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.1fr .9fr; gap: 64px; align-items: center; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--accent-text); background: rgba(124,108,255,.1); border: 1px solid rgba(124,108,255,.28); padding: 5px 12px; border-radius: 999px; }
+  a.eyebrow:hover { text-decoration: none; border-color: rgba(124,108,255,.55); }
+  .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  h1 { font-size: clamp(40px, 6vw, 68px); line-height: 1.04; letter-spacing: -.035em; margin: 22px 0 20px; font-weight: 800; }
+  h1 .grad { background: linear-gradient(90deg, #c9c1ff, var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { font-size: 19px; color: var(--muted); max-width: 520px; margin: 0 0 32px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .fine { margin-top: 18px; font-size: 14px; color: var(--muted); }
+
+  .shot-panel { position: relative; justify-self: center; width: 100%; max-width: 380px; }
+  .shot-panel img { border-radius: 18px; border: 1px solid var(--line); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(124,108,255,.12), 0 30px 80px -40px rgba(124,108,255,.6); }
+  .toast { position: absolute; left: -44px; bottom: 64px; display: flex; align-items: center; gap: 12px; background: rgba(23,20,51,.92); backdrop-filter: blur(8px); border: 1px solid var(--line); padding: 12px 16px; border-radius: 14px; box-shadow: 0 20px 40px -10px rgba(0,0,0,.6); font-size: 14px; animation: pop 5s ease-in-out infinite; }
+  .toast .ic { width: 32px; height: 32px; border-radius: 9px; background: rgba(69,211,154,.14); display: grid; place-items: center; color: var(--ok); }
+  .toast b { display: block; font-weight: 600; }
+  .toast span { color: var(--muted); font-size: 13px; }
+  @keyframes pop { 0%, 8% { opacity: 0; transform: translateY(10px); } 14%, 80% { opacity: 1; transform: none; } 88%, 100% { opacity: 0; transform: translateY(-6px); } }
+
+  /* buffer strip */
+  .buffer { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg-2); }
+  .buffer .wrap { display: grid; grid-template-columns: repeat(4, 1fr); }
+  .stat { padding: 28px 24px; border-left: 1px solid var(--line); }
+  .stat:first-child { border-left: 0; padding-left: 0; }
+  .stat b { display: block; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .stat span { color: var(--muted); font-size: 14px; }
+
+  /* sections */
+  section { padding: 104px 0; }
+  .sec-head { max-width: 640px; margin-bottom: 56px; }
+  .sec-head .k { font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent-text); }
+  h2 { font-size: clamp(30px, 4vw, 44px); line-height: 1.1; letter-spacing: -.025em; margin: 12px 0 16px; font-weight: 800; }
+  .sec-head p { color: var(--muted); font-size: 18px; margin: 0; }
+
+  .how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; counter-reset: s; }
+  .how li { list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); padding: 28px; counter-increment: s; }
+  .how li::before { content: counter(s); display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(124,108,255,.14); color: var(--accent-text); font-weight: 700; margin-bottom: 18px; }
+  .how h3 { margin: 0 0 8px; font-size: 19px; }
+  .how p { margin: 0; color: var(--muted); }
+  ol.how { padding: 0; margin: 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); padding: 28px; transition: border-color .2s, transform .2s; }
+  .card:hover { border-color: rgba(124,108,255,.5); transform: translateY(-2px); }
+  .card .ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: rgba(124,108,255,.12); color: var(--accent-text); margin-bottom: 18px; }
+  .card .ic svg { width: 22px; height: 22px; }
+  .card h3 { margin: 0 0 8px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center; }
+  .split.rev .copy { order: 2; }
+  .split h2 { font-size: clamp(28px, 3.4vw, 38px); }
+  .split p { color: var(--muted); font-size: 17px; }
+  .ticks { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 12px; }
+  .ticks li { position: relative; padding-left: 30px; }
+  .ticks li::before { content: ""; position: absolute; left: 0; top: 4px; width: 18px; height: 18px; border-radius: 50%; background: rgba(124,108,255,.18) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a99dff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12.5l4 4 8-9'/%3E%3C/svg%3E") center/12px no-repeat; }
+  .ticks b { color: var(--text); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .pair img, .frame { border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 30px 70px -30px rgba(0,0,0,.8); }
+  .pair img:nth-child(2) { margin-top: 48px; }
+
+  .wide { margin-top: 56px; }
+  .wide img { border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 40px 100px -40px rgba(0,0,0,.9); }
+  .wide figcaption { color: var(--muted); font-size: 14px; margin-top: 14px; text-align: center; }
+
+  .alt { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+
+  .install { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; }
+  .install .card:hover { transform: none; }
+  .steps { margin: 16px 0 0; padding-left: 22px; color: var(--muted); }
+  .steps li { margin: 8px 0; }
+  .steps b { color: var(--text); }
+  .note { margin-top: 20px; font-size: 14px; color: var(--muted); background: rgba(245,185,66,.07); border: 1px solid rgba(245,185,66,.25); border-radius: var(--r-m); padding: 12px 14px; }
+
+  .final { text-align: center; position: relative; }
+  .final::before { content: ""; position: absolute; inset: 0; background: radial-gradient(520px 260px at 50% 60%, rgba(91,73,230,.28), transparent 70%); pointer-events: none; }
+  .final .wrap { position: relative; }
+  .final img { width: 72px; margin: 0 auto 20px; }
+  .final p { color: var(--muted); font-size: 18px; margin: 0 0 32px; }
+  .final .cta { justify-content: center; }
+
+  footer { border-top: 1px solid var(--line); padding: 32px 0; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer a { color: var(--muted); }
+  footer nav { display: flex; gap: 20px; }
+
+  @media (max-width: 920px) {
+    .hero { padding: 56px 0 72px; }
+    .hero .wrap, .split, .install { grid-template-columns: 1fr; gap: 48px; }
+    .split.rev .copy { order: 0; }
+    .grid, .how { grid-template-columns: 1fr 1fr; }
+    .buffer .wrap { grid-template-columns: 1fr 1fr; }
+    .stat:nth-child(3) { border-left: 0; padding-left: 0; }
+    .stat:nth-child(n+3) { border-top: 1px solid var(--line); }
+    .toast { left: -12px; }
+    section { padding: 80px 0; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 16px; }
+    nav.links a:not(.btn) { display: none; }
+    .grid, .how { grid-template-columns: 1fr; }
+    .stat { padding: 20px 12px; }
+    .stat:nth-child(odd) { padding-left: 0; }
+    .lede { font-size: 17px; }
+    .toast { left: 8px; bottom: 24px; }
+    .pair img:nth-child(2) { margin-top: 28px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="assets/afterclip-mark.svg" alt="">Afterclip</a>
+    <nav class="links">
+      <a href="#features">Features</a>
+      <a href="#stream-deck">Stream Deck</a>
+      <a href="https://github.com/minimalhandle/Afterclip">GitHub</a>
+      <a class="btn btn-primary btn-sm" href="#download">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <a class="eyebrow" id="version" href="https://github.com/minimalhandle/Afterclip/releases/latest"><span class="dot"></span>Free for Windows<span id="version-num"></span></a>
+        <h1>Save the moment <span class="grad">after it happens.</span></h1>
+        <p class="lede">Afterclip is a lightweight game clipper for Windows. It keeps your recent gameplay in a rolling buffer, so when something great happens, one key saves it. Lossless, and out of your way.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/minimalhandle/Afterclip/releases/latest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 20h16"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn btn-ghost" href="#features">See what it does</a>
+        </div>
+        <p class="fine">Windows · NVIDIA, AMD and Intel GPUs · Free and open source</p>
+      </div>
+      <div class="shot-panel">
+        <img src="assets/home.png" width="420" height="700" alt="The Afterclip panel, showing the buffer and recent clips">
+        <div class="toast" aria-hidden="true">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+          <div><b>Clip saved</b><span>Last 30 seconds · Lossless</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="buffer">
+    <div class="wrap">
+      <div class="stat"><b>No re-encoding</b><span>Clips keep full quality</span></div>
+      <div class="stat"><b>Up to 120 fps</b><span>H.264, HEVC or AV1</span></div>
+      <div class="stat"><b>5 audio tracks</b><span>Keep game and voice apart</span></div>
+      <div class="stat"><b>Tray only</b><span>No window at startup</span></div>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="k">How it works</span>
+        <h2>Always ready, never in the way.</h2>
+        <p>There's no need to start recording first. Afterclip is already holding the last few minutes.</p>
+      </div>
+      <ol class="how">
+        <li><h3>Play like normal</h3><p>Afterclip spots fullscreen games and hooks them on its own. A rolling buffer keeps your recent gameplay in memory.</p></li>
+        <li><h3>Press a key</h3><p>Use a hotkey like <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>2</kbd>, a Stream Deck key or a controller combination. A tone and popup confirm the save mid-game.</p></li>
+        <li><h3>Share it</h3><p>Drag the clip straight into Discord, send it to a saved channel, or make a vertical copy for your phone.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="features" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="k">Features</span>
+        <h2>Everything you need around a clip.</h2>
+        <p>Saving, recording, editing and sharing, all in one small app that lives in your tray.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+          <h3>Clip any length</h3>
+          <p>Save the last 15 seconds, 30 minutes, the whole buffer or a custom length. Keep recording after you press, so you catch what happens next too.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <h3>Full-session recording</h3>
+          <p>Record whole sessions while the clip buffer keeps running, with no extra encode. Markers become chapters, and long recordings can split on a timer.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></div>
+          <h3>Vertical mode</h3>
+          <p>Capture in 9:16 for TikTok and Shorts, all the time or for one game. Your webcam goes across the top with the game below.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg></div>
+          <h3>Audio that stays separate</h3>
+          <p>Game, mic and apps like Discord each on their own track. Clean Mic removes background noise, and push to talk keeps your mic out until you need it.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l-2 16M10 4L8 20M18 4l-2 16M3 9h17M2 15h17"/></svg></div>
+          <h3>Share anywhere</h3>
+          <p>Drag clips into any app, send to named Discord channels, compress to about 100 MB, or trim a range and share just that.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h6"/><circle cx="18" cy="16" r="3"/></svg></div>
+          <h3>Settings for each game</h3>
+          <p>Give any game its own quality, frame rate and buffer length. Auto-record starts a recording when the game opens and stops when it closes.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div class="copy">
+        <span class="sec-head"><span class="k">Library</span></span>
+        <h2>A library that keeps itself tidy.</h2>
+        <p>Find any clip by game, name or tag, and scrub through a thumbnail without opening it.</p>
+        <ul class="ticks">
+          <li><b>Star, rename and tag</b> clips, like #funny, to find them later.</li>
+          <li><b>A storage limit</b> moves your oldest clips to the Recycle Bin, and never touches favourites.</li>
+          <li><b>Low disk warnings</b> stop a recording safely before your drive fills.</li>
+        </ul>
+      </div>
+      <div class="pair">
+        <img src="assets/library.png" width="840" height="1400" alt="The library, showing every clip in a grid" loading="lazy">
+        <img src="assets/audio.png" width="840" height="1400" alt="Audio settings, with sources, volumes and Clean Mic" loading="lazy">
+      </div>
+    </div>
+    <div class="wrap">
+      <figure class="wide">
+        <img src="assets/editor.png" width="2000" height="1088" alt="The editor, with trim handles and a merge timeline" loading="lazy">
+        <figcaption>The editor trims and merges clips without re-encoding, and never changes your originals.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="stream-deck" class="alt">
+    <div class="wrap split rev">
+      <div class="copy">
+        <span class="sec-head"><span class="k">Stream Deck</span></span>
+        <h2>A key for every move.</h2>
+        <p>The free Stream Deck plugin adds keys to save any length, record, take screenshots, mute your mic in clips, send your last clip to Discord and more. Keys show live state, and a saved clip lights up the key.</p>
+        <ul class="ticks">
+          <li><b>Stream Deck +</b> dials for mic volume and picking a clip length.</li>
+          <li><b>Two-PC setups:</b> control Afterclip on your gaming PC from your streaming PC.</li>
+        </ul>
+      </div>
+      <img class="frame" src="assets/streamdeck-keys-preview.png" width="792" height="638" alt="Afterclip's Stream Deck keys" loading="lazy">
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="k">Download</span>
+        <h2>Get Afterclip.</h2>
+        <p>Free, open source, and it updates itself.</p>
+      </div>
+      <div class="install">
+        <div class="card">
+          <h3>Install on Windows</h3>
+          <ol class="steps">
+            <li>Download the installer from the <a href="https://github.com/minimalhandle/Afterclip/releases/latest">latest release</a>.</li>
+            <li>Run it. Windows asks for permission once.</li>
+            <li>Afterclip starts in your tray, ready to clip.</li>
+          </ol>
+          <p class="note">The installer isn't code-signed yet, so Windows may show a SmartScreen warning. Choose <b>More info</b>, then <b>Run anyway</b>.</p>
+          <div class="cta" style="margin-top:24px">
+            <a class="btn btn-primary" href="https://github.com/minimalhandle/Afterclip/releases/latest">Download for Windows</a>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Stream Deck plugin</h3>
+          <p>Download the <code>.streamDeckPlugin</code> file from the same release and double-click it to install.</p>
+          <h3 style="margin-top:28px">Updates</h3>
+          <p>Afterclip downloads new versions itself and waits while you're in a game or recording. It refuses any update that isn't signed.</p>
+          <h3 style="margin-top:28px">What's new</h3>
+          <p>See the <a href="https://github.com/minimalhandle/Afterclip/blob/main/CHANGELOG.md">patch notes</a> for every version.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="final alt">
+    <div class="wrap">
+      <img src="assets/afterclip-icon.svg" alt="">
+      <h2>Never miss the play again.</h2>
+      <p>Install it once and forget about it until the moment comes.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/minimalhandle/Afterclip/releases/latest">Download for Windows</a>
+        <a class="btn btn-ghost" href="https://github.com/minimalhandle/Afterclip">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Afterclip · Open source under GPL-2.0</span>
+    <nav>
+      <a href="https://github.com/minimalhandle/Afterclip">GitHub</a>
+      <a href="https://github.com/minimalhandle/Afterclip/releases">Releases</a>
+      <a href="https://github.com/minimalhandle/Afterclip/issues">Report a problem</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+  // Show the latest GitHub release in the hero badge. Without it, the badge just says "Free for Windows".
+  (function () {
+    var KEY = 'afterclip-release', MAX_AGE = 60 * 60 * 1000;
+    function show(r) {
+      var v = String(r.tag || '').replace(/^v/i, '');
+      if (!/^\d+(\.\d+)*$/.test(v)) return;
+      document.getElementById('version-num').textContent = ' · Version ' + v;
+      if (/^https:\/\/github\.com\//.test(r.url)) document.getElementById('version').href = r.url;
+    }
+    try {
+      var cached = JSON.parse(localStorage.getItem(KEY) || 'null');
+      if (cached && Date.now() - cached.at < MAX_AGE) return show(cached);
+    } catch (e) {}
+    fetch('https://api.github.com/repos/minimalhandle/Afterclip/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+      .then(function (d) {
+        var r = { tag: d.tag_name, url: d.html_url, at: Date.now() };
+        show(r);
+        try { localStorage.setItem(KEY, JSON.stringify(r)); } catch (e) {}
+      })
+      .catch(function () {});
+  })();
+</script>
+</body>
+</html>

@@ -11,7 +11,9 @@ update itself. Each version starts with `## ` and its number. Lines that start w
 - The card's sound has its own volume, level meter and optional track. Afterclip warns if a mic source is really the card, which would record it twice.
 - Clips, recordings and screenshots from the card are named CaptureCard, and go in a CaptureCard folder with game folders on.
 - The panel and a popup say when the card sends no picture, usually because another app has it open.
+- While the card shows NO SIGNAL for a minute, such as with the console off, the buffer pauses so your graphics card isn't encoding a blank screen. It starts again within a few seconds of a picture arriving. Turn it off in Settings > Video, under the card.
 - Webcams and capture cards can be chosen while capture is stopped, such as while waiting for a game.
+- With the Stream Deck app installed, Afterclip offers to install its plugin, and to update it when a newer one comes with an update. It's in Settings > Controls too.
 - Fixed turning the webcam on when Afterclip started with it off, and turning it off now turns its light off.
 - Fixed Send to Discord from Edit and share never finishing.
 

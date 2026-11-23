@@ -6,6 +6,7 @@ mod audio_check;
 mod capture;
 mod controller;
 mod data_move;
+mod deck;
 mod diagnostics;
 mod discord;
 mod elevated_task;
@@ -1376,10 +1377,30 @@ const HEALTH_CHECK_EVERY: Duration = Duration::from_secs(1);
 const ENCODER_RETRY_EVERY: Duration = Duration::from_secs(60);
 const ENCODER_RETRIES: u32 = 10;
 
-/// Whether capture fell back to the CPU encoder when the graphics card's one worked earlier, which is
-/// what happens if capture restarts while a graphics driver is being installed.
-fn fell_back_to_cpu(chosen: &str, in_use: Option<&str>, hardware_seen: Option<&str>) -> bool {
-    chosen != "x264" && in_use == Some("obs_x264") && hardware_seen.is_some()
+/// The encoder setting an engine encoder id belongs to: "nvenc", "amd", "qsv" or "x264".
+fn encoder_vendor(id: &str) -> &'static str {
+    if id.contains("nvenc") {
+        "nvenc"
+    } else if id.contains("amf") {
+        "amd"
+    } else if id.contains("qsv") {
+        "qsv"
+    } else {
+        "x264"
+    }
+}
+
+/// How far down the engine's order an encoder is: NVIDIA, AMD, Intel, then the CPU.
+fn encoder_rank(id: &str) -> usize {
+    ["nvenc", "amd", "qsv", "x264"].iter().position(|v| *v == encoder_vendor(id)).unwrap_or(3)
+}
+
+/// Whether capture fell back to a worse encoder than one that worked earlier, which is what happens if
+/// capture restarts while a graphics driver is being installed: to the CPU, or to another GPU such as the
+/// processor's own graphics. An encoder the settings chose by name is never a fallback.
+fn fell_back(chosen: &str, in_use: Option<&str>, best_seen: Option<&str>) -> bool {
+    let (Some(in_use), Some(best_seen)) = (in_use, best_seen) else { return false };
+    chosen != "x264" && encoder_vendor(in_use) != chosen && encoder_rank(in_use) > encoder_rank(best_seen)
 }
 
 impl Core {
@@ -1417,18 +1438,30 @@ fn watch_engine(core: Shared) {
                 tries = 0;
             }
             let in_use = core.engine.encoder_in_use();
-            if in_use.as_deref().is_some_and(|e| e != "obs_x264") {
-                hardware_seen = in_use.clone();
+            let software_gpu = core.engine.on_software_gpu();
+            let chosen = core.settings.lock().unwrap().encoder.clone();
+            // Only a proper graphics driver counts, and only the best encoder seen, so a later fallback shows.
+            if let Some(e) = in_use.as_deref().filter(|e| *e != "obs_x264" && !software_gpu) {
+                if hardware_seen.as_deref().map_or(true, |best| encoder_rank(e) <= encoder_rank(best)) {
+                    hardware_seen = Some(e.to_string());
+                }
+            }
+            let fell = fell_back(&chosen, in_use.as_deref(), hardware_seen.as_deref());
+            if !software_gpu && !fell {
                 encoder_retries = 0;
             }
-            let chosen = core.settings.lock().unwrap().encoder.clone();
             let retry_due = encoder_tried_at.elapsed() >= ENCODER_RETRY_EVERY && since.elapsed() >= ENCODER_RETRY_EVERY;
-            if fell_back_to_cpu(&chosen, in_use.as_deref(), hardware_seen.as_deref()) && retry_due && encoder_retries < ENCODER_RETRIES && !status.recording {
-                encoder_retries += 1;
-                encoder_tried_at = Instant::now();
-                core.log_ui(&format!("capture is on the CPU encoder after a problem, so trying the graphics card again ({encoder_retries} of {ENCODER_RETRIES})"));
-                ready_since = None;
-                let _ = core.restart_capture();
+            if (software_gpu || fell) && retry_due && !status.recording {
+                if encoder_retries < ENCODER_RETRIES {
+                    encoder_retries += 1;
+                    encoder_tried_at = Instant::now();
+                    let why = if software_gpu { "on Windows' software renderer, with no graphics driver ready" } else { "on a worse encoder after a problem" };
+                    core.log_ui(&format!("capture is {why}, so trying the graphics card again ({encoder_retries} of {ENCODER_RETRIES})"));
+                    ready_since = None;
+                    let _ = core.restart_capture();
+                } else if software_gpu && status.message.is_none() {
+                    core.engine.set_message("Capture is running on the CPU because no graphics driver was ready. Restart Afterclip, or update your graphics driver.".into());
+                }
             }
             continue;
         }
@@ -1674,6 +1707,7 @@ fn state(core: tauri::State<Shared>) -> Value {
         "update": core.update.lock().unwrap().clone(),
         "version": core.app.package_info().version.to_string(),
         "patchNotes": updater::patch_notes(&core.app.package_info().version.to_string()),
+        "streamDeck": stream_deck_json(&core, &settings),
         "remote": remote_json(&core),
         "lastSession": *core.last_session.lock().unwrap(),
     })
@@ -2064,6 +2098,51 @@ fn skip_update(core: tauri::State<Shared>) -> Result<(), String> {
     updater::skip(&core)
 }
 
+/// The Stream Deck plugin offer: "install" or "update" while it's unanswered, and what Settings can always do.
+fn stream_deck_json(core: &Core, settings: &Settings) -> Value {
+    // Tests run on PCs that may have a Stream Deck, and mustn't depend on it, so they say what to offer.
+    let available = if api::is_test_instance() {
+        match std::env::var("AFTERCLIP_TEST_STREAM_DECK").as_deref() {
+            Ok("install") => Some("install"),
+            Ok("update") => Some("update"),
+            _ => None,
+        }
+    } else {
+        deck::offer(&core.app)
+    };
+    let unanswered = available.filter(|_| settings.stream_deck_offer_seen != deck::bundled_version());
+    json!({ "offer": unanswered, "available": available })
+}
+
+/// Hands the bundled plugin to the Stream Deck app, which shows its own install prompt.
+#[tauri::command(async)]
+fn install_stream_deck_plugin(core: tauri::State<Shared>) -> Result<(), String> {
+    // A test copy never hands anything to a real Stream Deck app.
+    if api::is_test_instance() {
+        return remember_stream_deck_offer(&core);
+    }
+    let file = deck::install(&core.app)?;
+    if !shell_execute("open", file.as_os_str(), None, None) {
+        return Err("The Stream Deck app couldn't open the plugin. Open the Stream Deck app, then try again.".into());
+    }
+    remember_stream_deck_offer(&core)
+}
+
+/// Stops offering the plugin until a newer one ships. It can still be installed from Settings.
+#[tauri::command(async)]
+fn dismiss_stream_deck_plugin(core: tauri::State<Shared>) -> Result<(), String> {
+    remember_stream_deck_offer(&core)
+}
+
+fn remember_stream_deck_offer(core: &Core) -> Result<(), String> {
+    let saved = {
+        let mut settings = core.settings.lock().unwrap();
+        settings.stream_deck_offer_seen = deck::bundled_version();
+        settings.clone()
+    };
+    saved.save(&core.settings_file).map_err(|e| e.to_string())
+}
+
 /// Hides this version's patch notes until the next update.
 #[tauri::command(async)]
 fn dismiss_patch_notes(core: tauri::State<Shared>) -> Result<(), String> {
@@ -2435,6 +2514,7 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     clean.mic_muted = current.mic_muted;
     clean.clean_mic = current.clean_mic;
     clean.seen_version = current.seen_version.clone();
+    clean.stream_deck_offer_seen = current.stream_deck_offer_seen.clone();
     let effective = core.effective(&clean);
     let restart = core.engine.current_settings().needs_engine_restart(&effective);
     if restart && core.engine.status().recording {
@@ -3150,10 +3230,14 @@ mod tests {
 
     #[test]
     fn going_back_to_the_graphics_card_only_after_a_fallback() {
-        assert!(fell_back_to_cpu("auto", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "fell back during a driver update");
-        assert!(!fell_back_to_cpu("x264", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "the CPU was chosen");
-        assert!(!fell_back_to_cpu("auto", Some("obs_x264"), None), "no graphics card encoder has ever worked here");
-        assert!(!fell_back_to_cpu("auto", Some("obs_nvenc_h264_tex"), Some("obs_nvenc_h264_tex")), "already on the graphics card");
+        assert!(fell_back("auto", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "fell back during a driver update");
+        assert!(!fell_back("x264", Some("obs_x264"), Some("obs_nvenc_h264_tex")), "the CPU was chosen");
+        assert!(!fell_back("auto", Some("obs_x264"), None), "no graphics card encoder has ever worked here");
+        assert!(!fell_back("auto", Some("obs_nvenc_h264_tex"), Some("obs_nvenc_h264_tex")), "already on the graphics card");
+        assert!(fell_back("auto", Some("h265_texture_amf"), Some("obs_nvenc_hevc_tex")), "fell back to the processor's graphics");
+        assert!(fell_back("nvenc", Some("h264_texture_amf"), Some("obs_nvenc_h264_tex")), "NVIDIA was chosen but AMD is in use");
+        assert!(!fell_back("amd", Some("h264_texture_amf"), Some("obs_nvenc_h264_tex")), "AMD was chosen after NVIDIA worked");
+        assert!(!fell_back("auto", Some("obs_nvenc_h264_tex"), Some("h264_texture_amf")), "a better encoder is never a fallback");
     }
 
     #[test]
@@ -3195,7 +3279,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, thumbnail, preview_strip, find_overlaps, keep_overlap, clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
+            state, estimate, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, install_stream_deck_plugin, dismiss_stream_deck_plugin, thumbnail, preview_strip, find_overlaps, keep_overlap, clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
  import_settings, running_apps, pick_game, audio_choices, camera_choices, card_choices, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit,
             open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
@@ -3333,7 +3417,13 @@ fn main() {
                 Arc::clone(&engine),
                 move || {
                     let s = detection_settings.lock().unwrap();
-                    if s.test_pattern { Watch::Off } else if s.card().is_some() { Watch::Card } else { Watch::Games }
+                    if s.test_pattern {
+                        Watch::Off
+                    } else if s.card().is_some() {
+                        Watch::Card { pause_without_signal: s.card_pause_without_signal }
+                    } else {
+                        Watch::Games
+                    }
                 },
                 move || profile_settings.lock().unwrap().game_profiles.iter().map(|p| p.exe.clone()).collect(),
                 move |state| {
@@ -3415,7 +3505,9 @@ fn main() {
                 thread::spawn(move || { let _ = engine.start(Some(starting.effective(&first))); });
             }
 
-            if open_at_start {
+            // A fresh install on a PC with a Stream Deck opens the panel once, where it offers the plugin.
+            let offer_deck = first_start && !api::is_test_instance() && deck::offer(&handle) == Some("install");
+            if open_at_start || offer_deck {
                 let opening = Arc::clone(&core);
                 thread::spawn(move || show_panel(&opening));
             }
