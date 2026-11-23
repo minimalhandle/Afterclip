@@ -44,6 +44,8 @@
   nav.links { display: flex; align-items: center; gap: 28px; font-size: 15px; }
   nav.links a { color: var(--muted); }
   nav.links a:hover { color: var(--text); text-decoration: none; }
+  nav.links a.discord { display: inline-flex; align-items: center; gap: 7px; }
+  nav.links a.discord svg { width: 18px; height: 18px; }
 
   .btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 24px; border-radius: var(--r-m); font-weight: 600; font-size: 16px; border: 1px solid transparent; transition: transform .15s, background .15s, box-shadow .15s; }
   .btn:hover { text-decoration: none; transform: translateY(-1px); }
@@ -168,7 +170,8 @@
   }
   @media (max-width: 640px) {
     .wrap { padding: 0 16px; }
-    nav.links a:not(.btn) { display: none; }
+    nav.links a:not(.btn):not(.discord) { display: none; }
+    nav.links { gap: 16px; }
     .grid, .how { grid-template-columns: 1fr; }
     .stat { padding: 20px 12px; }
     .stat:nth-child(odd) { padding-left: 0; }
@@ -188,6 +191,7 @@
       <a href="#features">Features</a>
       <a href="#capture-card">Capture cards</a>
       <a href="#stream-deck">Stream Deck</a>
+      <a class="discord" href="https://discord.gg/8rfA8De3Ag" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.3 5.3A16.6 16.6 0 0 0 15.2 4l-.5 1a15.4 15.4 0 0 0-5.4 0L8.8 4a16.6 16.6 0 0 0-4.1 1.3C2.1 9.2 1.4 13 1.7 16.7a16.7 16.7 0 0 0 5 2.5l1.1-1.7a10.8 10.8 0 0 1-1.7-.8l.4-.3a11.9 11.9 0 0 0 11 0l.4.3-1.7.8 1.1 1.7a16.6 16.6 0 0 0 5-2.5c.4-4.3-.7-8-3-11.4zM8.5 14.4c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2zm7 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2z"/></svg>Discord</a>
       <a href="https://github.com/minimalhandle/Afterclip">GitHub</a>
       <a class="btn btn-primary btn-sm" href="#download">Download</a>
     </nav>
@@ -411,6 +415,7 @@
   <div class="wrap">
     <span>© 2026 Afterclip · Open source under GPL-2.0</span>
     <nav>
+      <a href="https://discord.gg/8rfA8De3Ag" rel="noopener">Discord</a>
       <a href="https://github.com/minimalhandle/Afterclip">GitHub</a>
       <a href="https://github.com/minimalhandle/Afterclip/releases">Releases</a>
       <a href="https://github.com/minimalhandle/Afterclip/issues">Report a problem</a>
