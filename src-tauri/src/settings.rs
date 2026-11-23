@@ -253,6 +253,9 @@ pub struct Settings {
     pub weekly_reel: bool,
     /// The tag a clip needs to go in the weekly reel. Empty means favourites.
     pub weekly_reel_tag: String,
+    /// Anonymous usage count: None until the user is asked, then their answer (usage.rs).
+    #[serde(default)]
+    pub usage_ping: Option<bool>,
 }
 
 /// Where the webcam sits on the picture, in pixels: x, y, width, height.
@@ -275,8 +278,9 @@ impl Settings {
             record_hotkey: "Alt+Shift+R".into(),
             output_dir: videos_dir.join("Afterclip").to_string_lossy().into_owned(),
             encoder: "auto".into(),
-            quality: "high".into(),
-            resolution: "native".into(),
+            // Medium: 1080p at 20 Mbps. Light on the GPU and half the buffer's memory of High.
+            quality: "medium".into(),
+            resolution: "1080".into(),
             frame_rate: "60".into(),
             codec: "h264".into(),
             encoder_preset: "p3".into(),
@@ -289,7 +293,7 @@ impl Settings {
             fps: 60,
             width,
             height,
-            bitrate_kbps: 40000,
+            bitrate_kbps: 20000,
             capture_mic: true,
             audio_sources: vec![
                 AudioSource { kind: "output".into(), device: "default".into(), label: "Desktop audio".into(), mix: true, own_track: false, mute_with_key: None, volume: 1.0 },
@@ -328,7 +332,8 @@ impl Settings {
             controller_screenshot: String::new(),
             controller_clip_seconds: 30,
             clip_after_seconds: 0,
-            buffer_only_in_games: false,
+            // No capture on the desktop: the GPU, encoder and memory are only used while a game is open.
+            buffer_only_in_games: true,
             push_to_talk: false,
             push_to_talk_key: "Mouse4".into(),
             camera_enabled: false,
@@ -364,6 +369,7 @@ impl Settings {
             card_hotkey: String::new(),
             weekly_reel: false,
             weekly_reel_tag: String::new(),
+            usage_ping: None,
         }
     }
 
@@ -649,6 +655,8 @@ impl Settings {
         settings.seen_version = self.seen_version.clone();
         settings.stream_deck_offer_seen = self.stream_deck_offer_seen.clone();
         settings.test_pattern = self.test_pattern;
+        // Counting this PC is its own choice, never something a file from another PC decides.
+        settings.usage_ping = self.usage_ping;
         // Opening this PC to the network is its own choice, never something a file from another PC decides.
         settings.remote_stream_deck = self.remote_stream_deck;
         settings.remote_port = self.remote_port;
@@ -664,7 +672,7 @@ impl Settings {
     pub fn exported(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         if let Some(map) = value.as_object_mut() {
-            for key in ["discordWebhook", "discordWebhooks", "skippedUpdate", "seenVersion", "testPattern", "micMuted"] {
+            for key in ["discordWebhook", "discordWebhooks", "skippedUpdate", "seenVersion", "testPattern", "micMuted", "usagePing"] {
                 map.remove(key);
             }
         }

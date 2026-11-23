@@ -698,6 +698,7 @@ async function refresh() {
   controllersSeen = state.controllers ?? controllersSeen;
   renderControllersSeen();
   renderUpdate();
+  renderUsageOffer();
   renderStorageUsed();
   // Only this comes from the backend after startup: the form owns the rest while it's being edited.
   if (settings) {
@@ -1237,9 +1238,9 @@ const BITRATES = [[8000, 'Low (8 Mbps)'], [20000, 'Medium (20 Mbps)'], [40000, '
 const HEIGHTS = [2160, 1440, 1080, 720];
 const QUALITY = {
   low: { resolution: '720', frameRate: '60', kbps: 8000, preset: 'p1', multipass: false, blurb: 'Smallest files and the least work for your PC.' },
-  medium: { resolution: '1080', frameRate: '60', kbps: 20000, preset: 'p3', multipass: false, blurb: 'A good balance for sharing.' },
+  medium: { resolution: '1080', frameRate: '60', kbps: 20000, preset: 'p3', multipass: false, blurb: 'A good balance for sharing, and light on your PC while you play.' },
   high: { resolution: 'native', frameRate: '60', kbps: 40000, preset: 'p3', multipass: false, blurb: 'Your monitor\'s full resolution, with low encode load.' },
-  full: { resolution: 'native', frameRate: 'native', kbps: 150000, preset: 'p5', multipass: true, blurb: 'The most your monitor and encoder can give. Files are very large and it uses the most memory, so shorten the buffer if needed.' },
+  full: { resolution: 'native', frameRate: 'native', kbps: 150000, preset: 'p5', multipass: true, blurb: 'The most your monitor and encoder can give. It uses the most GPU and memory and can lower your frame rate in games, and files are very large. Shorten the buffer if needed.' },
 };
 const ENCODER_NAMES = {
   obs_nvenc_h264_tex: 'NVIDIA NVENC H.264', obs_nvenc_hevc_tex: 'NVIDIA NVENC HEVC', obs_nvenc_av1_tex: 'NVIDIA NVENC AV1',
@@ -1331,6 +1332,20 @@ function fillNotes(box, text) {
     }
   }
   box.replaceChildren(...parts);
+}
+
+// Asked once on the home page, after any update, patch notes or Stream Deck offer. Until then nothing is sent.
+function renderUsageOffer() {
+  const busy = ['update-card', 'whats-new', 'deck-offer'].some((id) => !$(id).hidden);
+  $('usage-offer').hidden = !settings || typeof settings.usagePing === 'boolean' || busy;
+}
+
+function answerUsage(yes) {
+  settings.usagePing = yes;
+  $('usagePing').checked = yes;
+  renderUsageOffer();
+  scheduleSave();
+  if (yes) showBanner('Thanks! You can turn this off in Settings, under Privacy.', 'good');
 }
 
 function renderStreamDeck() {
@@ -1700,6 +1715,8 @@ function fillForm() {
   ensureOption($('bufferMinutes'), minutes, `Custom (${settings.bufferSeconds} seconds)`);
   $('bufferMinutes').value = minutes;
   for (const k of SWITCHES) $(k).checked = settings[k];
+  // Not in SWITCHES: it stays unanswered (null) until someone chooses.
+  $('usagePing').checked = settings.usagePing === true;
   renderAutoClip();
   $('weeklyReelTag').value = settings.weeklyReelTag ? `#${settings.weeklyReelTag}` : '';
   renderWeeklyReel();
@@ -1970,6 +1987,9 @@ $('deck-dismiss').onclick = () => api.invoke('dismiss-stream-deck-plugin').then(
   renderStreamDeck();
 }).catch((e) => showBanner(errorText(e), 'bad'));
 $('autoUpdate').onchange = () => scheduleSave();
+$('usagePing').onchange = () => answerUsage($('usagePing').checked);
+$('usage-yes').onclick = () => answerUsage(true);
+$('usage-no').onclick = () => answerUsage(false);
 $('storageLimitGb').onchange = () => scheduleSave();
 $('deleteAfterDays').onchange = () => scheduleSave();
 $('add-webhook').onclick = () => {

@@ -5,6 +5,12 @@ update itself. Each version starts with `## ` and its number. Lines that start w
 
 ## 1.6.0
 
+- Lighter on games: the game hook now copies frames only at your capture frame rate, so a game running at 144 or 240 fps no longer pays for frames Afterclip never uses.
+- New installs start lighter: Medium quality (1080p at 60 fps, 20 Mbps), which needs about half the memory of High, and Only buffer during games on, so nothing is captured on the desktop. Your current settings stay as they are.
+- When memory gets tight during a game, the buffer moves to disk sooner, before Windows starts taking memory from the game.
+- Full quality now says it uses the most GPU and can lower your frame rate in games.
+- Push-to-talk checks its key half as often, with no difference you can hear.
+- Optional and off until you say yes: count yourself as an Afterclip user. Once a day it sends afterclip.app a random ID and the version number, nothing else. Change it any time in Settings > Privacy.
 - Capture cards: record a console or a second PC through a capture card, such as an Elgato 4K X, instead of this PC. Turn on Record a capture card in Settings > Video.
 - The card has its own resolution, frame rate and quality, up to 4K whatever your monitor is, so your settings for PC games stay as they are.
 - Switch between this PC and the card from the tray, a hotkey or the new Capture Card Stream Deck key.

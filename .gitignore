@@ -5,3 +5,6 @@ src-tauri/gen/
 streamdeck/dist/
 *.log
 src/renderer/qrcode.js
+
+# Local tool settings
+.claude/

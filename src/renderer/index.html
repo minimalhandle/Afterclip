@@ -56,6 +56,13 @@
       <button id="deck-dismiss" class="small">Not now</button>
     </div>
   </section>
+  <section id="usage-offer" class="update-card" hidden>
+    <div class="update-text"><b>Help count Afterclip users?</b><div>Once a day, Afterclip would send afterclip.app a random ID and its version number. Nothing else: no names, games, clips or settings. You can change this in Settings, under Privacy.</div></div>
+    <div class="row">
+      <button id="usage-yes" class="small primary">Count me</button>
+      <button id="usage-no" class="small">No thanks</button>
+    </div>
+  </section>
   <section id="capture-card" class="capture-card">
     <div class="capture-line">
       <span id="capture-dot" class="dot"></span>
@@ -180,6 +187,13 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Beeps</div><div class="setting-desc">Sounds for saved clips, recording, mic mute and errors.</div></div>
         <input id="beepEnabled" class="switch" type="checkbox" aria-label="Beeps">
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Privacy</div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Count me as an Afterclip user</div><div class="setting-desc">Once a day, Afterclip sends afterclip.app a random ID and its version number. Nothing else: no names, games, clips, settings or hardware. Turning this off deletes the ID.</div></div>
+        <input id="usagePing" class="switch" type="checkbox" aria-label="Count me as an Afterclip user">
       </div>
     </div>
     <div class="card">

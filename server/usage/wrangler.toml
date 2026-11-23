@@ -1,0 +1,22 @@
+name = "afterclip-usage"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Only /api/* goes to the Worker; the rest of afterclip.app stays as it is.
+routes = [{ pattern = "afterclip.app/api/*", zone_name = "afterclip.app" }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "afterclip-usage"
+# Paste the id that `npx wrangler d1 create afterclip-usage` prints.
+database_id = "0d60bff5-bf15-49f7-814f-b01e478c1334"
+
+# Sleekmeeter's usage Worker, for the combined dashboard. A service binding calls it directly, without
+# going out to the internet. Without it the dashboard reads https://sleekmeeter.app/api/stats instead.
+[[services]]
+binding = "SLEEKMEETER"
+service = "sleekmeeter-usage"
+
+# Deletes rows older than 400 days, once a day.
+[triggers]
+crons = ["23 3 * * *"]

@@ -19,6 +19,7 @@ mod render;
 mod settings;
 mod studio;
 mod updater;
+mod usage;
 mod win32;
 
 use api::{start_api, ApiHandlers};
@@ -63,7 +64,7 @@ const READY_RELOAD_AFTER: Duration = Duration::from_secs(4);
 const READY_SHOW_AFTER: Duration = Duration::from_secs(8);
 // A recording stops below this much free space, while the file can still be finished properly.
 const STOP_RECORDING_BELOW: u64 = 2_000_000_000;
-const PUSH_TO_TALK_POLL: Duration = Duration::from_millis(15);
+const PUSH_TO_TALK_POLL: Duration = Duration::from_millis(30);
 const PUSH_TO_TALK_IDLE: Duration = Duration::from_millis(500);
 const WAITING_FOR_GAME: &str = "Afterclip only buffers while a game is open. Start a game, or turn this off in Settings, under Video.";
 
@@ -1229,8 +1230,8 @@ const MEMORY_CHECK_EVERY: Duration = Duration::from_secs(5);
 // Two low readings in a row, so a moment's spike while a game loads doesn't count.
 const LOW_MEMORY_READINGS: u32 = 2;
 // Free memory below the larger of these is low. Windows starts paging the game out not far below it.
-const LOW_MEMORY_BYTES: u64 = 1_500_000_000;
-const LOW_MEMORY_SHARE: f64 = 0.08;
+const LOW_MEMORY_BYTES: u64 = 2_500_000_000;
+const LOW_MEMORY_SHARE: f64 = 0.12;
 // A buffer smaller than this frees too little to be worth moving.
 const MOVE_BUFFER_FROM_MB: i64 = 500;
 const MOVE_RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -2526,6 +2527,7 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     }
     // Unelevated, it can wait: an off setting never uses the task, and the next elevated start tidies it.
     let remote_changed = clean.remote_port() != current.remote_port();
+    let usage_changed = clean.usage_ping != current.usage_ping;
     if clean.run_as_admin != current.run_as_admin && win32::is_self_elevated() {
         sync_elevated_task(&core.ui_log, clean.run_as_admin);
     }
@@ -2536,6 +2538,9 @@ fn apply_settings(core: &Shared, payload: Settings) -> Result<Value, String> {
     *core.settings.lock().unwrap() = clean;
     if remote_changed {
         sync_remote_api(&core);
+    }
+    if usage_changed {
+        usage::nudge();
     }
     register_hotkeys(&core);
     if restart {
@@ -3475,6 +3480,7 @@ fn main() {
             let _ = core.controller.set(listener);
             start_services(&core);
             updater::start(Arc::clone(&core));
+            usage::start(Arc::clone(&core));
             let watcher = Arc::clone(&core);
             thread::spawn(move || watch_games(watcher));
             let tools = Arc::clone(&core);

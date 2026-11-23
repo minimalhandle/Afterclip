@@ -940,6 +940,8 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 
 		obs_data_t *gs = obs_data_create();
 		obs_data_set_string(gs, "capture_mode", "window");
+		// Copy game frames only at capture's frame rate: a 240 fps game isn't slowed by copying frames nobody uses.
+		obs_data_set_bool(gs, "limit_framerate", true);
 		obs_data_set_bool(gs, "capture_cursor", true);
 		obs_data_set_bool(gs, "anti_cheat_hook", true);
 		g_game = createSource("game_capture", "Game", gs);
@@ -1430,6 +1432,8 @@ bool handle(const std::string &line)
 		if (g_game) {
 			obs_data_t *s = obs_data_create();
 			obs_data_set_string(s, "capture_mode", "window");
+			// Copy game frames only at capture's frame rate: a 240 fps game isn't slowed by copying frames nobody uses.
+			obs_data_set_bool(s, "limit_framerate", true);
 			obs_data_set_string(s, "window", obs_data_get_string(c, "window"));
 			obs_data_set_int(s, "priority", 2); // Match by exe, so a changing window title stays hooked.
 			obs_data_set_bool(s, "capture_cursor", true);
