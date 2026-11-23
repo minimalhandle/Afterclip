@@ -42,8 +42,8 @@
   .brand:hover { text-decoration: none; }
   .brand img { width: 28px; height: 28px; }
   nav.links { display: flex; align-items: center; gap: 28px; font-size: 15px; }
-  nav.links a { color: var(--muted); }
-  nav.links a:hover { color: var(--text); text-decoration: none; }
+  nav.links a:not(.btn) { color: var(--muted); }
+  nav.links a:not(.btn):hover { color: var(--text); text-decoration: none; }
   nav.links a.discord { display: inline-flex; align-items: center; gap: 7px; }
   nav.links a.discord svg { width: 18px; height: 18px; }
 

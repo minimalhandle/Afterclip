@@ -7,7 +7,7 @@
 <p align="center"><strong>Save the moment after it happens.</strong><br>
 A lightweight game clipper for Windows, with hotkeys, Stream Deck keys and full-session recording.</p>
 
-<p align="center"><a href="https://afterclip.app"><strong>afterclip.app</strong></a></p>
+<p align="center"><a href="https://afterclip.app"><strong>afterclip.app</strong></a> · <a href="https://discord.gg/8rfA8De3Ag"><strong>Join the Discord</strong></a></p>
 
 <p align="center">
   <img src="docs/screenshots/home.png" width="32%" alt="The panel, with the buffer and recent clips">
@@ -296,6 +296,10 @@ Set `AFTERCLIP_APP_EXE` to test a specific `afterclip.exe`.
 ## Releasing
 
 `npm run release` builds the installer and signs it, and writes the `latest.json` that existing copies read. Upload the installer, its `.sig` and `latest.json` to the GitHub release. It needs the private signing key at `%USERPROFILE%\.afterclip\updater.key`. Keep a backup of that key somewhere safe and never commit it: without it, existing copies won't accept any future update.
+
+## Community
+
+Questions, ideas or clips to show off? Join the [Afterclip Discord](https://discord.gg/8rfA8De3Ag). To report a bug, open a [GitHub issue](https://github.com/minimalhandle/Afterclip/issues) and attach the zip from **Save diagnostics**.
 
 ## Licence
 
