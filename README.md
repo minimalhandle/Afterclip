@@ -40,7 +40,7 @@ The glass card at the top of the panel shows your buffer. The timer shows how mu
 
 ### Automatic game capture
 
-Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor, or with **Only buffer during games** on, it stops the buffer until a game opens, to free memory and GPU on the desktop.
+Afterclip spots exclusive and borderless fullscreen games by itself and hooks them directly. A game you add under **Settings > Games** is captured even when it plays in a window. Until the hook connects, or if it fails, it records that game's monitor so you still have footage. Without a game, it records your primary monitor, or with **Only buffer during games** on, it stops the buffer until a game opens, to free memory and GPU on the desktop. New installs have it on, and start at **Medium** quality (1080p at 60 fps, 20 Mbps), which is light on the GPU and needs about half the memory of High.
 
 ### Vertical mode
 
@@ -48,7 +48,13 @@ Turn on **Vertical mode** in **Settings > Video**, or for one game in **Settings
 
 ### Capture cards
 
-Turn on **Record a capture card** in **Settings > Video** to clip and record a console or a second PC through a capture card, such as an Elgato 4K X, instead of this PC's screen. Afterclip suggests the card and its audio, and picks the card's largest picture that fits your resolution, at the frame rate nearest yours. The card's sound goes in the main mix with your mic and other sources. The buffer runs all the time, even with **Only buffer during games** on. Close the card in other apps, such as OBS, first.
+Turn on **Record a capture card** in **Settings > Video** to clip and record a console or a second PC through a capture card, such as an Elgato 4K X, instead of this PC's screen. Clips, recordings, screenshots and markers work as usual, with your mic and other sources mixed in. Close the card in other apps, such as OBS, first.
+
+- **Its own video settings:** **Card resolution** (4K, 1440p, 1080p or 720p), **Card frame rate** (30, 60 or 120 fps) and **Card visual quality** are used only while the card is recorded, and aren't limited by your monitor, so your settings for PC games stay as they are.
+- **Its own sound:** **Card audio** goes in the main mix, with its own **Card volume** and level meter. Turn on **Card audio on its own track** to also get a track named Capture card. Afterclip warns if a mic source is really the card, which would record it twice.
+- **Switch in a press:** the tray menu, a **Switch to the capture card** hotkey in **Settings > Controls**, or the **Capture Card** Stream Deck key switch between this PC and the card.
+- **Pause when there's no signal:** after a minute of the card's NO SIGNAL screen, such as with the console off, the buffer pauses so your graphics card isn't encoding a blank screen. It starts again within a few seconds of a picture arriving. Otherwise the buffer runs all the time, even with **Only buffer during games** on.
+- **Named for the card:** clips, recordings and screenshots from it are named CaptureCard, and go in a CaptureCard folder with game folders on. The panel says when the card sends no picture, usually because another app has it open.
 
 ### Your webcam
 
@@ -77,7 +83,7 @@ Record whole sessions while the clip buffer keeps running, with no extra encode.
 
 Drag a clip straight into Discord or any other app, the same way you would from File Explorer.
 
-Choose **Edit and share** from a clip's menu to pick a range, choose recorded audio tracks, make a **vertical copy** for phones, which keeps the middle of the picture at 9:16, or **Send to Discord**. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Even out volume** levels the audio in share copies.
+Choose **Edit and share** from a clip's menu to pick a range, choose recorded audio tracks, make a **vertical copy** for phones, or **Send to Discord**. **Vertical layout** moves the 9:16 crop or pins a region, such as a scoreboard, and **Share recipes** save a combination, such as a vertical copy under 50 MB with even volume, to run again in one click or from the **Share Recipe** Stream Deck key. Add named channels under **Settings > Clips and sharing**, then pick where to send each clip. A clip over Discord's 10 MB limit is sent as a smaller copy. **Even out volume** levels the audio in share copies.
 
 **Screenshots** are saved as PNGs by a hotkey, a controller combination, a Stream Deck key or the camera button. **Settings > Clips and sharing** can move anything older than a set age to the Recycle Bin, leaving your favourites alone. Turn on **Keep tagged clips** to protect the clips you've tagged too.
 
@@ -86,6 +92,15 @@ Clips this good are big, so **Compress** re-encodes a smaller H.264 copy, using 
 ### A library that stays tidy
 
 **View all** shows every clip and recording, with search, a game filter and sorting. Star your favourites, rename clips to something you'll recognise, and tag them, such as #funny, to find them by tag later. Move the mouse across a video's thumbnail to scrub through it without opening it. Afterclip can also save into a folder for each game. **Make a reel** opens everything the filters show, such as your favourites or one tag, in the editor, oldest first, ready to trim and merge into one video. **Weekly reel**, in **Settings > Clips and sharing**, does this by itself once a week: it joins the last 30 seconds of each of the week's favourites, or clips with a tag you choose, into one video tagged #reel, without re-encoding and only while no game is open. **Find overlapping clips** finds clips saved so close together that they show the same moment, such as pressing the clip key twice, and offers to move the shorter one to the Recycle Bin. Favourites are never suggested. Right-click a clip, or use its ⋯ button, for its menu. Deleting moves files to the Recycle Bin, with an **Undo** that puts them back, favourite star and tags included, and the Delete key deletes whatever you've selected. After a game closes, the home page says how many clips that **session** saved, and Review shows just those. A **storage limit** keeps things under control: above it, your oldest clips go to the Recycle Bin, and favourites are never touched. When your drive runs low, Afterclip warns you, and a recording stops safely before the drive fills.
+
+### Tools
+
+**Tools**, on the panel, has four extras:
+
+- **Batch export:** run a share recipe on every clip you selected in the library, one after another. The queue can pause, and can wait while you're in a game or recording.
+- **Replay recovery:** saves a recoverable copy of the buffer about every 30 seconds, within a disk cap you set, so a crash doesn't lose it. **Restore latest** brings it back.
+- **Import clips:** copies MP4, MKV and MOV files into Afterclip, or watches a folder and imports new clips once they finish writing.
+- **Audio setup check:** reads your sources and mixer, maps game, mic and chat, and records four seconds to check them. Voicemeeter channels use the names shown in Sleekmeeter.
 
 ### Settings for each game
 
@@ -109,7 +124,7 @@ Afterclip downloads new versions by itself and shows a countdown before installi
 
 ### Stream Deck keys
 
-Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip**, **Send Last Clip to Discord**, **Vertical Copy of Last Clip**, **Star Last Clip**, **Save and Star**, **Show Your Webcam** and **Hold to Talk**, which puts your mic in clips while you hold it, with Push to talk on.
+Keys for 15 and 30 seconds, for 1 to 30 minutes, **Save Full Buffer**, **Save Custom Length**, **Record**, **Mute Mic In Clips**, **Clean Mic**, **Add Marker**, **Take Screenshot**, **Open Afterclip**, **Open Clips Folder**, **Edit Last Clip**, **Copy Last Clip**, **Compress Last Clip**, **Send Last Clip to Discord**, **Vertical Copy of Last Clip**, **Star Last Clip**, **Save and Star**, **Share Recipe**, **Capture Card**, **Show Your Webcam** and **Hold to Talk**, which puts your mic in clips while you hold it, with Push to talk on.
  They show live state, including when recording or when Afterclip isn't running, and a saved clip closes the key's ring into a lit circle.
 
 On a Stream Deck +, the **Mic Volume** dial turns your mic up or down in clips, and pressing it mutes your mic in clips. The **Clip Length Dial** picks a length as you turn it, saves that length when you press it, and shows how full your buffer is.
@@ -128,7 +143,7 @@ Download the installer from [afterclip.app](https://afterclip.app) or the [lates
 
 For Stream Deck keys, Afterclip finds the Stream Deck app and offers to install its plugin, which the installer includes. It's also in **Settings > Controls > Stream Deck**, or download the `.streamDeckPlugin` file from the same release and double-click it.
 
-**Two PCs:** the Stream Deck can control Afterclip on another PC, such as your gaming PC from your streaming PC. On the PC that runs Afterclip, turn on **Allow a Stream Deck on another PC** in **Settings > Controls**, and copy the address it shows. On the PC with the Stream Deck, install the plugin, open any Afterclip key's settings, paste the address into **Address**, and press **Connect**. All the keys then control that PC. Install Afterclip on the PC that runs the game, because it records the game where it runs, not from a capture card.
+**Two PCs:** the Stream Deck can control Afterclip on another PC, such as your gaming PC from your streaming PC. On the PC that runs Afterclip, turn on **Allow a Stream Deck on another PC** in **Settings > Controls**, and copy the address it shows. On the PC with the Stream Deck, install the plugin, open any Afterclip key's settings, paste the address into **Address**, and press **Connect**. All the keys then control that PC. Install Afterclip on the PC that runs the game, because it records the game where it runs. To record another PC or a console from this one instead, use a capture card.
 
 ### Build from source
 
@@ -171,6 +186,7 @@ Click the tray icon to open the panel. It closes when you click away, and frees 
 | `Alt+Shift+R` | Start or stop recording |
 | `Alt+Shift+M` | Mute or unmute your mic in clips |
 | `Alt+Shift+K` | Add a marker to a recording |
+| `Alt+Shift+F` | Save the last 30s and star it |
 | `Alt+Shift+S` | Take a screenshot |
 
 You can change these and add more clip lengths in Settings.
@@ -180,7 +196,7 @@ You can change these and add more clip lengths in Settings.
 - **Run as administrator:** some games, such as Call of Duty, need this for game capture. Turn it on in General. Windows asks once, then Afterclip starts without a prompt through a scheduled task. Turning it off removes the task the next time Afterclip runs elevated, and uninstalling always does.
 - **A game that refuses capture:** some anti-cheat blocks game capture every time, even as administrator. After a minute without it, Afterclip stops trying and records the game's monitor instead, because each try reaches into the game and can make it stutter. It tries again the next time the game opens.
 - **Buffer size:** the buffer lives in RAM, so a longer one or a higher bitrate uses more memory. Settings shows an estimate. With **Keep the buffer on disk**, it shows the disk space instead, which is the buffer plus a minute. That writes all the time, at your bitrate, so use an SSD.
-- **Buffer moved to disk:** this happens when free memory drops below 1.5 GB, or 8% of your RAM if that's more, during a game, and only for a buffer over 500 MB. Where the memory part meets the disk part, up to a second can repeat.
+- **Buffer moved to disk:** this happens when free memory drops below 2.5 GB, or 12% of your RAM if that's more, during a game, and only for a buffer over 500 MB. Where the memory part meets the disk part, up to a second can repeat.
 - **Changing settings:** buffer, audio and video changes restart capture, which clears the buffer. Volume changes don't.
 - **Trim accuracy:** keyframes are 1 second apart, so a clip or trim can start up to about 1 second early, but never late. Only clips with matching video settings can merge.
 - **Mic mute timing:** it applies from the moment you press it, so anything already in the buffer keeps your mic.
@@ -199,6 +215,7 @@ You can change these and add more clip lengths in Settings.
 - **Long clips:** Compress keeps a long clip at 1080p60 and lets it go over 100 MB. Send to Discord can't, so it asks you to trim a clip too long to fit.
 - **Track volumes:** a source in the main mix can't be taken back out of it. To remove something like Discord later, record it on its own track and out of the main mix.
 - **If capture stops by itself:** an encoder error, a crash or a graphics driver update can stop capture. Afterclip starts it again by itself, waiting a little longer each time, for about seven minutes, which covers a driver install. Whatever was in the buffer is lost, and the panel says when capture is back. If capture had to fall back to the CPU encoder while the driver was being replaced, it tries your graphics card again every minute, but never during a recording.
+- **Counting users:** Afterclip asks once whether you'd like to be counted, and sends nothing until you say yes. If you do, once a day it sends `afterclip.app` a random ID and its version number, nothing else. Change it in **Settings > General > Privacy**, and turning it off deletes the ID.
 - **Updates:** installing by itself needs Run as administrator, because otherwise Windows would show a UAC prompt out of nowhere. Without it, updates wait for you to click **Update now**. Turn **Automatic updates** off in General to stop Afterclip checking GitHub.
 - **Reporting a problem:** in General, **Save diagnostics** saves your logs and settings in one zip file to attach to a GitHub issue. Your Discord webhook and Windows user folder are left out, and nothing is sent anywhere. The logs do show your hardware, monitors, audio devices and game names.
 - **HEVC and AV1:** these give smaller files, but not every app can play them, and the editor's preview may not.
@@ -216,7 +233,7 @@ Some details:
 
 - **Engine link:** the app talks to the engine over private pipes. If the app dies for any reason, the pipes close, and the engine finalizes any recording and exits.
 - **Clip lengths:** each clip saves the whole rolling buffer, then the media helper losslessly cuts the last N seconds.
-- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`. With **Allow a Stream Deck on another PC** on, it also listens on your local network on port 4468, or one you choose, and every request must carry the key from the address. A wrong key is answered slowly, so guessing it is impractical. The connection isn't encrypted, so use it on your own network, not on shared Wi-Fi. **New key** in Settings stops an old address working.
+- **Network:** the engine listens on no ports. OBS's game capture plugin connects out to `obsproject.com` to update its game compatibility list. Automatic updates check this repository's latest release on GitHub. **Send to Discord** only connects when you use it, and only to Discord's own addresses. With **Count me as an Afterclip user** on, it posts a random ID and its version to `afterclip.app/api/ping` once a day. The server keeps one row per ID per day and no IP addresses; its code is in `server/usage`. The Stream Deck plugin uses a token-protected API on `127.0.0.1:4467`. With **Allow a Stream Deck on another PC** on, it also listens on your local network on port 4468, or one you choose, and every request must carry the key from the address. A wrong key is answered slowly, so guessing it is impractical. The connection isn't encrypted, so use it on your own network, not on shared Wi-Fi. **New key** in Settings stops an old address working.
 - **Library data:** favourites, tags, where a clip's webcam sat, and which game a renamed clip came from, are kept in `%LOCALAPPDATA%\Afterclip\library.json`. Clips stay ordinary files.
 - **Where things live:** the app is in `C:\Program Files\Afterclip`, and your clips, recordings and screenshots are in your save folder, with a hidden `.staging` folder beside them for files being written. Everything else, including settings, thumbnails, previews and logs, is in `%LOCALAPPDATA%\Afterclip`.
 - **Security:** a silently elevated task must not point at a folder anything can rewrite, so it's only created for a copy in `Program Files`. An elevated copy also ignores test settings and WebView2 override variables.
