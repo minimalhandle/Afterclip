@@ -3436,7 +3436,7 @@ fn main() {
                     // Said once each time it happens, since the panel is usually closed while playing.
                     if state.no_picture && !warned_no_picture.swap(true, Ordering::SeqCst) {
                         if toast_settings.lock().unwrap().toast_enabled {
-                            win32::show_toast("No picture from your capture card. Close it in other apps, such as OBS.");
+                            win32::show_toast("No picture from your capture card. Close it in other apps such as OBS, and check the console is on with HDCP off. Afterclip keeps trying.");
                         }
                     } else if !state.no_picture {
                         warned_no_picture.store(false, Ordering::SeqCst);

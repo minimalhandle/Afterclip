@@ -979,6 +979,11 @@ impl Engine {
         })
     }
 
+    /// Opens the capture card again, looking for the device afresh, for one that has sent no picture.
+    pub fn reopen_card(&self) -> Result<(), String> {
+        self.rpc("reopenCard", json!({})).map(|_| ())
+    }
+
     /// Pauses the buffer, in RAM and on disk, while the sources keep running, or starts it again. A capture card
     /// with no signal costs no encoding this way, and its picture is still watched for. What the buffer held is lost.
     pub fn set_buffer_paused(&self, paused: bool) -> Result<(), String> {

@@ -87,7 +87,7 @@ function renderStatus() {
   };
   let title = labels[capture.mode] ?? 'Recording';
   let detail = capture.mode === 'game' ? 'Game capture' : capture.mode === 'fallback' ? 'Recording its monitor' : capture.mode === 'detecting' ? 'Recording its monitor for now' : 'Waiting for a game';
-  if (capture.mode === 'card') detail = capture.noPicture ? 'No picture from the card. Close it in other apps, such as OBS.' : 'Recording your capture card';
+  if (capture.mode === 'card') detail = capture.noPicture ? 'No picture from the card. Close it in other apps such as OBS, and check the console is on with HDCP off. Afterclip keeps trying.' : 'Recording your capture card';
   else if (capture.mode === 'private') detail = 'Video hidden by Capture privacy';
   else if (capture.mode !== 'game' && settings?.gameProfiles.some((game) => game.capturePrivacy)) detail = 'Monitor capture disabled by Capture privacy';
   if (status.state === 'error') { title = 'Capture stopped'; detail = status.message ?? ''; }

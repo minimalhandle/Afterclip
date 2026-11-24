@@ -835,6 +835,32 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
 }
 
 /**
+ * Opens the capture card again, for one that has sent no picture: it wasn't found when capture started, such as
+ * while it was still starting up after being plugged in, or another app had it. The card's sizes are read afresh,
+ * and updating an active dshow_input reopens it, which looks for the device again.
+ */
+bool cmdReopenCard(std::string &error)
+{
+	if (!g_captureCard) {
+		error = "No capture card is being recorded";
+		return false;
+	}
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		error = "Capture is not running";
+		return false;
+	}
+	obs_data_t *s = obs_source_get_settings(g_captureCard);
+	obs_data_set_int(s, "res_type", 0); // The card's own choice, unless it now lists its sizes.
+	obs_data_set_bool(s, "active", true);
+	tuneCaptureCard(s, ovi.base_width, ovi.base_height, ovi.fps_num, g_hdr);
+	obs_source_update(g_captureCard, s);
+	obs_data_release(s);
+	blog(LOG_INFO, "Capture card opened again, as it had sent no picture");
+	return true;
+}
+
+/**
  * Names the graphics adapter at an index, in the order libobs-d3d11 counts them, and says whether it is Windows'
  * software renderer. That one comes first while a graphics driver is being installed, which leaves capture running
  * on the CPU and the encoder on whatever other GPU is left until capture starts again.
@@ -1374,6 +1400,8 @@ bool handle(const std::string &line)
 			obs_data_set_bool(reply, "blank", g_cardBlank);
 	} else if (cmd == "bufferPaused") {
 		ok = cmdBufferPaused(c, error);
+	} else if (cmd == "reopenCard") {
+		ok = cmdReopenCard(error);
 	} else if (cmd == "listDevices") {
 		// Only what listing needs, so devices can be chosen while capture is stopped.
 		ok = loadListingModules(obs_data_get_string(c, "root"));

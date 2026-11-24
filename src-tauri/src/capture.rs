@@ -10,6 +10,9 @@ const POLL: Duration = Duration::from_secs(1);
 pub const CARD_NAME: &str = "CaptureCard";
 // A card normally sends its first picture within a few seconds of opening. After this, say it isn't.
 const NO_PICTURE_AFTER: Duration = Duration::from_secs(10);
+// While the card has sent no picture, it's opened again this often, so one that wasn't ready when capture
+// started, or that another app has since let go of, is picked up. Reopening takes a few seconds, so not more often.
+const REOPEN_CARD_EVERY: Duration = Duration::from_secs(30);
 // The card has shown only a plain, still picture, such as its NO SIGNAL screen, for this long, so the buffer pauses.
 // Long enough that a black loading screen or fade never pauses it, and a console just switched off can still be clipped.
 const NO_SIGNAL_PAUSE_AFTER: Duration = Duration::from_secs(60);
@@ -80,7 +83,7 @@ impl CaptureManager {
         let me = Arc::clone(&manager);
         thread::spawn(move || {
             init_com_for_thread();
-            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false, card_since: None, blank_since: None, picture_polls: 0 };
+            let mut watcher = Watcher { game_mix: None, audio_check_in: 0, current: None, candidate: None, deadline: Instant::now(), display_hidden: false, generation: 0, privacy: None, hooked_once: false, gave_up: false, card_since: None, card_reopened: None, blank_since: None, picture_polls: 0 };
             loop {
                 thread::sleep(POLL);
                 if engine.status().state != "ready" {
@@ -115,12 +118,18 @@ impl CaptureManager {
         if w.generation != engine.generation() || w.current.is_some() {
             engine.set_game(Some(CARD_NAME.into()));
             w.card_since = Some(Instant::now());
+            w.card_reopened = None;
             w.blank_since = None;
             w.picture_polls = 0;
         }
         let waited = w.card_since.is_some_and(|since| since.elapsed() > NO_PICTURE_AFTER);
         let signal = engine.card_signal();
         let no_picture = waited && signal.is_some_and(|c| !c.picture);
+        if no_picture && w.card_reopened.is_none_or(|at| at.elapsed() >= REOPEN_CARD_EVERY) {
+            // Tried again on a later poll if it fails, like any other card change.
+            w.card_reopened = Some(Instant::now());
+            let _ = engine.reopen_card();
+        }
         // No picture at all, once the card has had time to send one, is as empty as a NO SIGNAL screen.
         let blank = signal.is_some_and(|c| c.blank == Some(true) || (waited && !c.picture));
         if blank {
@@ -285,6 +294,8 @@ struct Watcher {
     gave_up: bool,
     /// When the capture card was opened, to give it time to send its first picture.
     card_since: Option<Instant>,
+    /// When the card, having sent no picture, was last opened again.
+    card_reopened: Option<Instant>,
     /// Since when the card has shown only a plain, still picture, such as its NO SIGNAL screen.
     blank_since: Option<Instant>,
     /// Polls in a row with a real picture from the card.
