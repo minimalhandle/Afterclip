@@ -66,6 +66,7 @@
   <section id="capture-card" class="capture-card">
     <div class="capture-line">
       <span id="capture-dot" class="dot"></span>
+      <canvas id="card-preview" class="card-preview" width="320" height="180" title="Your capture card's picture. Click to make it bigger." hidden></canvas>
       <div class="capture-text">
         <div id="capture-title" class="capture-title">Starting</div>
         <div id="capture-detail" class="capture-detail"></div>
@@ -97,6 +98,14 @@
     <div id="admin" class="admin" hidden>
       <span id="admin-text"></span>
       <button id="restart-admin" class="small">Restart as administrator</button>
+    </div>
+    <div id="audio-missing" class="admin" hidden>
+      <span id="audio-missing-text"></span>
+      <button id="audio-missing-fix" class="small">Choose in Audio settings</button>
+    </div>
+    <div id="card-hdr-hint" class="admin" hidden>
+      <span>Your capture card's picture looks grey and washed out, as if your console sends HDR. Turning on Console sends HDR restarts capture, which clears the buffer.</span>
+      <div class="row"><button id="card-hdr-on" class="small">Turn on Console sends HDR</button><button id="card-hdr-dismiss" class="small">Not now</button></div>
     </div>
   </section>
 
@@ -300,9 +309,10 @@
         </select>
       </div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Card frame rate</div><div class="setting-desc">The 4K X records up to 60 fps at 4K, and 120 fps at 1440p and below.</div></div>
+        <div class="setting-text"><div class="setting-name">Card frame rate</div><div class="setting-desc">Sizes and rates your card doesn't send are greyed out. The 4K X sends up to 60 fps at 4K, and 120 fps at 1440p and below.</div></div>
         <select id="cardFps" aria-label="Capture card frame rate"><option value="30">30 fps</option><option value="60">60 fps</option><option value="120">120 fps</option></select>
       </div>
+      <p id="card-mode-note" class="note warn" hidden></p>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Console sends HDR</div><div class="setting-desc">Turn on while HDR is on in your console's video settings, or clips look grey and washed out. Turn off for SDR, or they look too bright. Clips are recorded in HDR only with HDR on above; otherwise the picture is turned into SDR. Switching restarts capture, which clears the buffer.</div></div>
         <input id="cardHdr" class="switch" type="checkbox" aria-label="Console sends HDR">

@@ -58,9 +58,10 @@ async function startApp(settings) {
   const output = path.join(home, 'out');
   const userData = path.join(home, 'userData');
   fs.mkdirSync(userData, { recursive: true });
-  // Tests start as if this version's patch notes were already read, unless they say otherwise.
+  // Tests start as if this version's patch notes were already read, unless they say otherwise. New installs only
+  // buffer during games, and a test has no game open, so the buffer runs all the time unless a test says otherwise.
   const { version } = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
-  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ outputDir: output, screenshotHotkey: '', seenVersion: version, ...settings }));
+  fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ outputDir: output, screenshotHotkey: '', seenVersion: version, bufferOnlyInGames: false, ...settings }));
   // AFTERCLIP_HOME makes this a separate test copy, with its own folders and port, beside any real running app.
   const app = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, AFTERCLIP_HOME: home, AFTERCLIP_API_PORT: TEST_PORT } });
 

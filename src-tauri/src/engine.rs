@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,6 +74,9 @@ pub struct EngineStatus {
     pub buffer_on_disk: bool,
     /// Capturing in HDR.
     pub hdr: bool,
+    /// Audio sources whose device is gone, by name, so they aren't recorded.
+    #[serde(rename = "missingAudio", skip_serializing_if = "Vec::is_empty")]
+    pub missing_audio: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -91,6 +94,10 @@ pub struct CardSignal {
     pub picture: bool,
     /// The picture is plain and still, such as the card's own NO SIGNAL screen. None until it's first judged.
     pub blank: Option<bool>,
+    /// How long the picture has been moving since the card opened, and the brightest it got meanwhile, out of
+    /// 255. HDR read as SDR never gets near white.
+    pub moving_seconds: f64,
+    pub brightest: i64,
 }
 
 pub enum EngineEvent {
@@ -139,7 +146,7 @@ impl Engine {
             home,
             root,
             settings: Mutex::new(settings),
-            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false, waiting_for_signal: false, buffer_on_disk: false, hdr: false }),
+            status: Mutex::new(EngineStatus { state: "stopped", message: None, buffering: false, buffering_since: None, recording: false, waiting_for_game: false, waiting_for_signal: false, buffer_on_disk: false, hdr: false, missing_audio: Vec::new() }),
             running: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             saved: Mutex::new(None),
@@ -387,7 +394,12 @@ impl Engine {
     }
 
     fn try_start(self: &Arc<Self>) -> Result<(), String> {
-        let s = self.settings.lock().unwrap().clone();
+        let mut s = self.settings.lock().unwrap().clone();
+        // A device that got a new id, such as after a driver reinstall, is found again by its name. The engine would
+        // otherwise retry the old id for ever, recording nothing from it.
+        let outputs = crate::win32::audio_endpoints(false);
+        let inputs = crate::win32::audio_endpoints(true);
+        let (_, missing_audio) = s.relink_audio(outputs.as_deref(), inputs.as_deref());
         // HDR follows Windows' Use HDR switch for the main monitor, which is where games run.
         let (monitor_hdr, sdr_white) = crate::win32::primary_hdr().unwrap_or((false, 0.0));
         // A capture card's picture comes from a console or another PC, so this PC's monitor has no say in it.
@@ -402,6 +414,7 @@ impl Engine {
             status.waiting_for_signal = false;
             status.buffer_on_disk = false;
             status.hdr = hdr;
+            status.missing_audio = missing_audio;
         });
         *self.disk.lock().unwrap() = DiskBuffer::default();
         let _ = fs::remove_dir_all(self.disk_dir());
@@ -483,7 +496,7 @@ impl Engine {
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
             "noMonitorFallback": card.is_none() && s.game_profiles.iter().any(|profile| profile.capture_privacy),
-            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio, "volume": s.card_audio_volume, "ownTrack": s.card_audio_own_track, "hdr": s.card_hdr })),
+            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio, "volume": s.card_audio_volume, "ownTrack": s.card_audio_own_track, "hdr": s.card_hdr, "soundDevice": card_sound_device(audio, inputs.as_deref()) })),
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);
@@ -970,13 +983,39 @@ impl Engine {
         self.choices("cardChoices").map(|m| json!({ "cards": m["cards"], "audio": m["audio"] }))
     }
 
+    /// The sizes a capture card sends uncompressed, each with its highest frame rate, as a list of
+    /// {width, height, fps}. Reading them takes seconds, so it's always a listing engine of its own, never the one
+    /// capturing, which would stall meanwhile, and each card's answer is kept, as a card's sizes don't change.
+    pub fn card_modes(&self, device: &str) -> Result<Value, String> {
+        static KNOWN: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+        let known = KNOWN.get_or_init(Default::default);
+        if let Some(modes) = known.lock().unwrap().get(device) {
+            return Ok(modes.clone());
+        }
+        let modes = self.list_without_capture("cardModes", json!({ "device": device }))?["modes"].clone();
+        // An empty answer may just be a card that's busy starting up, so it's asked again next time.
+        if modes.as_array().is_some_and(|m| !m.is_empty()) {
+            known.lock().unwrap().insert(device.to_string(), modes.clone());
+        }
+        Ok(modes)
+    }
+
     /// What the capture card is sending, or None when no card is being recorded.
     pub fn card_signal(&self) -> Option<CardSignal> {
         let reply = self.rpc("cardStatus", json!({})).ok()?;
         reply["card"].as_bool().unwrap_or(false).then(|| CardSignal {
             picture: reply["width"].as_i64().unwrap_or(0) > 0,
             blank: reply["blank"].as_bool(),
+            moving_seconds: reply["movingSeconds"].as_f64().unwrap_or(0.0),
+            brightest: reply["brightest"].as_i64().unwrap_or(0),
         })
+    }
+
+    /// The newest small copy of the card's picture, as {width, height, rgba}, and keeps copies coming for a few
+    /// seconds. Has no pixels the first time, or with no card.
+    pub fn card_preview(&self) -> Result<Value, String> {
+        let reply = self.rpc("cardPreview", json!({}))?;
+        Ok(json!({ "width": reply["width"], "height": reply["height"], "rgba": reply["rgba"] }))
     }
 
     /// Opens the capture card again, looking for the device afresh, for one that has sent no picture.
@@ -1048,10 +1087,10 @@ impl Engine {
                 return Ok(reply);
             }
         }
-        self.list_without_capture(cmd)
+        self.list_without_capture(cmd, json!({}))
     }
 
-    fn list_without_capture(&self, cmd: &str) -> Result<Value, String> {
+    fn list_without_capture(&self, cmd: &str, args: Value) -> Result<Value, String> {
         // Its own folder, so its log never replaces the capture engine's.
         let config = self.home.join("engine-list");
         fs::create_dir_all(&config).map_err(|e| e.to_string())?;
@@ -1068,7 +1107,7 @@ impl Engine {
             .map_err(|e| format!("Could not list devices: {e}"))?;
         let mut stdin = child.stdin.take().ok_or("No engine stdin")?;
         let stdout = child.stdout.take().ok_or("No engine stdout")?;
-        let commands = [json!({ "id": 1, "cmd": "listDevices", "root": self.root }), json!({ "id": 2, "cmd": cmd }), json!({ "id": 3, "cmd": "shutdown" })];
+        let commands = [json!({ "id": 1, "cmd": "listDevices", "root": self.root }), { let mut asked = args; asked["id"] = json!(2); asked["cmd"] = json!(cmd); asked }, json!({ "id": 3, "cmd": "shutdown" })];
         for command in commands {
             let _ = writeln!(stdin, "{command}");
         }
@@ -1336,6 +1375,29 @@ impl ShareAudio {
     }
 }
 
+/// The Windows recording device that is the capture card's DirectShow audio device, by name, or "" for none.
+/// DirectShow puts an instance number before the device's own name, as "Elgato 4K X (2- Elgato 4K X)", where
+/// Windows lists "Elgato 4K X (Elgato 4K X)". Its id is the DirectShow name, a colon and a path.
+fn card_sound_device(dshow_id: &str, inputs: Option<&[(String, String)]>) -> String {
+    let name = dshow_id.split_once(':').map_or(dshow_id, |(name, _)| name);
+    let windows_name = match name.split_once(" (") {
+        Some((before, rest)) => {
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            match rest[digits..].strip_prefix("- ") {
+                Some(own) if digits > 0 => format!("{before} ({own}"),
+                _ => name.to_string(),
+            }
+        }
+        None => name.to_string(),
+    };
+    let found = inputs.unwrap_or_default().iter().filter(|(_, n)| *n == windows_name).collect::<Vec<_>>();
+    // Two cards of the same model would have the same name, and which is which can't be told from it.
+    match found.as_slice() {
+        [(id, _)] if !name.is_empty() => id.clone(),
+        _ => String::new(),
+    }
+}
+
 /// The RAM buffer's size cap, which must not cut it short, so it leaves headroom over the estimate.
 fn buffer_max_mb(seconds: i64, bitrate_kbps: i64) -> i64 {
     estimate_buffer_mb(seconds, bitrate_kbps) * 3 / 2 + 64
@@ -1371,4 +1433,24 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     fs::copy(from, to).map_err(|e| format!("Could not save clip: {e}"))?;
     let _ = fs::remove_file(from);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cards_sound_is_found_among_windows_recording_devices() {
+        let inputs = vec![
+            ("{mic}".to_string(), "Microphone (USB)".to_string()),
+            ("{4kx}".to_string(), "Elgato 4K X (Elgato 4K X)".to_string()),
+        ];
+        assert_eq!(card_sound_device("Elgato 4K X (2- Elgato 4K X):", Some(&inputs)), "{4kx}");
+        assert_eq!(card_sound_device("Elgato 4K X (Elgato 4K X):", Some(&inputs)), "{4kx}", "without an instance number");
+        assert_eq!(card_sound_device("Other Card (3- Other Card):", Some(&inputs)), "", "not listed: the card's own sound");
+        assert_eq!(card_sound_device("", Some(&inputs)), "");
+        assert_eq!(card_sound_device("Elgato 4K X (2- Elgato 4K X):", None), "", "Windows not asked");
+        let twins = [inputs.clone(), vec![("{4kx2}".to_string(), "Elgato 4K X (Elgato 4K X)".to_string())]].concat();
+        assert_eq!(card_sound_device("Elgato 4K X (2- Elgato 4K X):", Some(&twins)), "", "two of the same card can't be told apart");
+    }
 }

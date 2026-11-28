@@ -73,9 +73,15 @@ obs_source_t *g_privacyCard = nullptr;
 // A capture card, such as an Elgato 4K X, recorded instead of the display and game.
 obs_source_t *g_captureCard = nullptr;
 obs_sceneitem_t *g_captureCardItem = nullptr;
-bool g_captureCardHasAudio = false;
+// What carries the card's sound into the mix: the card itself, or the same sound through Windows. Not owned.
+obs_source_t *g_cardSound = nullptr;
 // Whether the card receives HDR. Apart from g_hdr, as a console can send HDR into an SDR recording or SDR into HDR.
 bool g_cardHdr = false;
+// Whether the card was asked for 10-bit P010, and whether that sent only black, in which case it isn't asked again
+// until capture restarts. When it opened, to give P010 a moment before judging it.
+bool g_cardTenBit = false, g_cardTenBitFailed = false;
+uint64_t g_cardOpenedAt = 0;
+const uint64_t TEN_BIT_GRACE_NS = 5000000000ULL;
 const int CARD_AUDIO_INDEX = -2;
 obs_sceneitem_t *g_privacyItem = nullptr;
 std::atomic<DWORD> g_privatePid{0};
@@ -448,8 +454,8 @@ void setMeters(bool on)
 			add(g_sourceByIndex[i], (int)i);
 	if (g_gameAudio)
 		add(g_gameAudio, GAME_AUDIO_INDEX);
-	if (g_captureCard && g_captureCardHasAudio)
-		add(g_captureCard, CARD_AUDIO_INDEX);
+	if (g_cardSound)
+		add(g_cardSound, CARD_AUDIO_INDEX);
 }
 
 void addStats(obs_data_t *reply)
@@ -552,6 +558,67 @@ void listChoices(obs_data_t *reply, const char *key, const char *sourceId, const
 	obs_data_array_release(array);
 }
 
+// DirectShow's NV12, the uncompressed format cards send by choice. Sizes and rates only on offer as MJPEG, such as
+// the 4K X's 4K at 120 fps, would cost the CPU decoding them, so they don't count.
+const long long DSHOW_NV12 = 201;
+
+/**
+ * The sizes a capture card sends, each with the highest frame rate it sends at that size, as a list of
+ * {width, height, fps}. Read from a closed copy, so it works while the card is being recorded. It takes about a
+ * second for each size, so it never runs in the engine that's capturing.
+ */
+obs_data_array_t *cardModes(const char *device)
+{
+	obs_data_array_t *modes = obs_data_array_create();
+	obs_data_t *s = obs_data_create();
+	obs_data_set_string(s, "video_device_id", device);
+	obs_data_set_bool(s, "active", false);
+	obs_source_t *probe = obs_source_create_private("dshow_input", "Capture card sizes", s);
+	if (!probe) {
+		obs_data_release(s);
+		return modes;
+	}
+	obs_properties_t *props = obs_source_properties(probe);
+	obs_property_t *list = props ? obs_properties_get(props, "resolution") : nullptr;
+	std::vector<std::string> sizes;
+	for (size_t i = 0, n = list ? obs_property_list_item_count(list) : 0; i < n; i++)
+		if (const char *value = obs_property_list_item_string(list, i))
+			sizes.push_back(value);
+	obs_properties_destroy(props);
+	for (const std::string &size : sizes) {
+		int w = 0, h = 0;
+		// Only 16:9, the shape the app offers, as each size takes about a second to read.
+		if (sscanf(size.c_str(), "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0 || (long long)w * 9 != (long long)h * 16)
+			continue;
+		obs_data_set_int(s, "res_type", 1);
+		obs_data_set_string(s, "resolution", size.c_str());
+		obs_data_set_int(s, "video_format", DSHOW_NV12);
+		obs_data_set_int(s, "frame_interval", 0);
+		obs_source_update(probe, s);
+		props = obs_source_properties(probe);
+		list = props ? obs_properties_get(props, "frame_interval") : nullptr;
+		long long shortest = 0;
+		for (size_t i = 0, n = list ? obs_property_list_item_count(list) : 0; i < n; i++) {
+			const long long interval = obs_property_list_item_int(list, i);
+			// Disabled entries are the current choice when it isn't on offer, not a real rate.
+			if (interval > 0 && !obs_property_list_item_disabled(list, i) && (!shortest || interval < shortest))
+				shortest = interval;
+		}
+		obs_properties_destroy(props);
+		if (!shortest)
+			continue;
+		obs_data_t *mode = obs_data_create();
+		obs_data_set_int(mode, "width", w);
+		obs_data_set_int(mode, "height", h);
+		obs_data_set_double(mode, "fps", 10000000.0 / shortest);
+		obs_data_array_push_back(modes, mode);
+		obs_data_release(mode);
+	}
+	obs_source_release(probe);
+	obs_data_release(s);
+	return modes;
+}
+
 /**
  * Opens or closes a DirectShow device. Its "active" setting is only read when the source is made: an update
  * with it off reopens the device, and one with it on does nothing while closed. The activate call does both.
@@ -628,12 +695,13 @@ void addCamera(obs_data_t *camera, bool testPattern)
 /**
  * Chooses the card's largest picture that fits the canvas, at the frame rate nearest the canvas's, and puts
  * them in its settings. A card lists what it can send for the signal coming in, so this is read from the card
- * rather than assumed. The card chooses the format. An HDR signal is marked Rec. 2100 PQ, and SDR Rec. 709: the
- * 4K X sends HDR as PQ in 8-bit NV12, which looks grey and washed out when read as SDR, and sends only black when
- * asked for 10-bit P010. The colour space is the console's, not the recording's: libobs turns one into the other.
- * It asks a closed copy, because each change to an open card reopens it, which takes seconds.
+ * rather than assumed. An HDR signal is marked Rec. 2100 PQ, and SDR Rec. 709: the 4K X sends HDR as PQ in 8-bit
+ * NV12 too, which looks grey and washed out when read as SDR. The colour space is the console's, not the
+ * recording's: libobs turns one into the other. With `tenBit` it asks for 10-bit P010 if the card sends it at that
+ * size, and otherwise the card chooses the format. Returns whether it asked for P010. It asks a closed copy, because
+ * each change to an open card reopens it, which takes seconds.
  */
-void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint32_t fps, bool hdr)
+bool tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint32_t fps, bool hdr, bool tenBit)
 {
 	obs_data_set_string(settings, "color_space", hdr ? "2100PQ" : "709");
 	obs_data_set_int(settings, "video_format", 0); // The card's choice.
@@ -643,7 +711,7 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 	obs_source_t *probe = obs_source_create_private("dshow_input", "Capture card check", closed);
 	if (!probe) {
 		obs_data_release(closed);
-		return;
+		return false;
 	}
 	obs_properties_t *props = obs_source_properties(probe);
 	obs_property_t *list = props ? obs_properties_get(props, "resolution") : nullptr;
@@ -672,15 +740,32 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 		blog(LOG_WARNING, "The capture card listed no sizes, so it sends its own choice");
 		obs_source_release(probe);
 		obs_data_release(closed);
-		return;
+		return false;
 	}
 
-	// The frame rates on offer depend on the size, so they're read after it's chosen, for any format.
+	// The formats on offer depend on the size, and the frame rates on both, so they're read in that order. Any
+	// format and the Highest rate list everything at the size, whatever was chosen last time.
 	obs_data_set_int(closed, "res_type", 1);
 	obs_data_set_string(closed, "resolution", best.c_str());
 	obs_data_set_int(closed, "video_format", 0);
+	obs_data_set_int(closed, "frame_interval", 0);
 	obs_source_update(probe, closed);
 	props = obs_source_properties(probe);
+	// 10-bit P010 keeps HDR's smooth gradients, where 8-bit can band. Only if it's on offer at this size, and then
+	// the frame rates are the ones the card sends it at.
+	long long format = 0;
+	obs_property_t *formats = tenBit && props ? obs_properties_get(props, "video_format") : nullptr;
+	for (size_t i = 0, n = formats ? obs_property_list_item_count(formats) : 0; i < n; i++) {
+		const char *name = obs_property_list_item_name(formats, i);
+		if (name && strstr(name, "P010") && !obs_property_list_item_disabled(formats, i))
+			format = obs_property_list_item_int(formats, i);
+	}
+	if (format) {
+		obs_properties_destroy(props);
+		obs_data_set_int(closed, "video_format", format);
+		obs_source_update(probe, closed);
+		props = obs_source_properties(probe);
+	}
 	list = props ? obs_properties_get(props, "frame_interval") : nullptr;
 	const long long wanted = 10000000LL / (fps ? fps : 60);
 	long long interval = -1; // Match the canvas, if the card lists nothing better.
@@ -702,12 +787,16 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 	obs_data_set_int(settings, "res_type", 1); // Custom, so the size and frame rate below apply.
 	obs_data_set_string(settings, "resolution", best.c_str());
 	obs_data_set_int(settings, "frame_interval", interval);
-	blog(LOG_INFO, "Capture card at %s, frame interval %lld, %s", best.c_str(), interval, hdr ? "HDR" : "SDR");
+	obs_data_set_int(settings, "video_format", format);
+	blog(LOG_INFO, "Capture card at %s, frame interval %lld, %s%s", best.c_str(), interval, hdr ? "HDR" : "SDR",
+	     format ? ", 10-bit" : "");
+	return format != 0;
 }
 
 // Whether the capture card shows a real picture, or only one that is plain and still, such as an Elgato's own
-// "NO SIGNAL" screen while the console is off. A tiny copy of the card's picture is judged a few times a second.
-const uint32_t PROBE_WIDTH = 64, PROBE_HEIGHT = 36;
+// "NO SIGNAL" screen while the console is off. A small copy of the card's picture is judged a few times a second.
+// It's big enough to catch white text, for the HDR check below.
+const uint32_t PROBE_WIDTH = 160, PROBE_HEIGHT = 90;
 const int PROBE_EVERY_FRAMES = 15;
 // Plain: this share of the picture within this much brightness of its middle value. The NO SIGNAL text and logo
 // cover about 2% of it.
@@ -721,6 +810,10 @@ bool g_probeStaged = false;
 int g_probeCountdown = 0;
 std::vector<uint8_t> g_probeLast; // Only touched on the graphics thread.
 std::atomic<bool> g_cardBlank{false}, g_cardProbed{false};
+// HDR read as SDR never gets near white: SDR white sits at about 58% in PQ, and full white would be 10,000 nits.
+// An SDR picture almost always has some white, such as a HUD or menu, so a moving picture that never has any
+// suggests the console sends HDR. These count only copies that move, and start again when the card reopens.
+std::atomic<int> g_cardBrightest{0}, g_cardMovingProbes{0};
 
 void judgeProbe(const uint8_t *data, uint32_t linesize)
 {
@@ -751,12 +844,48 @@ void judgeProbe(const uint8_t *data, uint32_t linesize)
 			change += (uint64_t)std::abs((int)luma[i] - (int)g_probeLast[i]);
 		still = (double)change / count <= STILL_CHANGE;
 	}
+	if (!plain && !still && g_probeLast.size() == count) {
+		int brightest = 255;
+		while (brightest > 0 && !histogram[brightest])
+			brightest--;
+		if (brightest > g_cardBrightest)
+			g_cardBrightest = brightest;
+		g_cardMovingProbes++;
+	}
 	g_probeLast.swap(luma);
 	g_cardBlank = plain && still;
 	g_cardProbed = true;
 }
 
-/** Runs on the graphics thread after each frame. Reads the copy staged last time, so the GPU never waits. */
+// A larger copy for the panel's preview, made only while the panel asks for one. Its pixels are RGBA, top row first.
+const uint32_t PREVIEW_WIDTH = 320, PREVIEW_HEIGHT = 180;
+const uint64_t PREVIEW_KEEP_NS = 3000000000ULL;
+gs_texrender_t *g_previewRender = nullptr;
+gs_stagesurf_t *g_previewStage = nullptr;
+bool g_previewStaged = false;
+std::atomic<uint64_t> g_previewWantedUntil{0};
+std::mutex g_previewMutex;
+std::vector<uint8_t> g_previewPixels; // Guarded by g_previewMutex.
+
+/** Draws the card's picture into a small texture and stages it, to be read on the next call. */
+void stageCard(gs_texrender_t *render, gs_stagesurf_t *stage, uint32_t width, uint32_t height, uint32_t cx, uint32_t cy)
+{
+	gs_texrender_reset(render);
+	if (!gs_texrender_begin_with_color_space(render, width, height, GS_CS_SRGB))
+		return;
+	vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	obs_source_video_render(g_captureCard);
+	gs_blend_state_pop();
+	gs_texrender_end(render);
+	gs_stage_texture(stage, gs_texrender_get_texture(render));
+}
+
+/** Runs on the graphics thread after each frame. Reads the copies staged last time, so the GPU never waits. */
 void probeCard(void *)
 {
 	if (!g_captureCard || --g_probeCountdown > 0)
@@ -778,20 +907,60 @@ void probeCard(void *)
 		}
 		g_probeStaged = false;
 	}
-	gs_texrender_reset(g_probeRender);
-	if (!gs_texrender_begin_with_color_space(g_probeRender, PROBE_WIDTH, PROBE_HEIGHT, GS_CS_SRGB))
-		return;
-	vec4 clear;
-	vec4_zero(&clear);
-	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
-	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-	obs_source_video_render(g_captureCard);
-	gs_blend_state_pop();
-	gs_texrender_end(g_probeRender);
-	gs_stage_texture(g_probeStage, gs_texrender_get_texture(g_probeRender));
+	stageCard(g_probeRender, g_probeStage, PROBE_WIDTH, PROBE_HEIGHT, cx, cy);
 	g_probeStaged = true;
+
+	if (g_previewStaged) {
+		uint8_t *data = nullptr;
+		uint32_t linesize = 0;
+		if (gs_stagesurface_map(g_previewStage, &data, &linesize)) {
+			std::lock_guard<std::mutex> lock(g_previewMutex);
+			g_previewPixels.resize((size_t)PREVIEW_WIDTH * PREVIEW_HEIGHT * 4);
+			for (uint32_t y = 0; y < PREVIEW_HEIGHT; y++)
+				memcpy(&g_previewPixels[(size_t)y * PREVIEW_WIDTH * 4], data + (size_t)y * linesize, PREVIEW_WIDTH * 4);
+			gs_stagesurface_unmap(g_previewStage);
+		}
+		g_previewStaged = false;
+	}
+	if (os_gettime_ns() < g_previewWantedUntil) {
+		if (!g_previewRender) {
+			g_previewRender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+			g_previewStage = gs_stagesurface_create(PREVIEW_WIDTH, PREVIEW_HEIGHT, GS_RGBA);
+		}
+		stageCard(g_previewRender, g_previewStage, PREVIEW_WIDTH, PREVIEW_HEIGHT, cx, cy);
+		g_previewStaged = true;
+	}
+}
+
+/** Standard base64, for sending pixels in a JSON reply. */
+std::string base64(const uint8_t *data, size_t size)
+{
+	static const char *const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	std::string out;
+	out.reserve((size + 2) / 3 * 4);
+	for (size_t i = 0; i < size; i += 3) {
+		const uint32_t n = (uint32_t)data[i] << 16 | (i + 1 < size ? (uint32_t)data[i + 1] << 8 : 0) | (i + 2 < size ? data[i + 2] : 0);
+		out += ALPHABET[n >> 18 & 63];
+		out += ALPHABET[n >> 12 & 63];
+		out += i + 1 < size ? ALPHABET[n >> 6 & 63] : '=';
+		out += i + 2 < size ? ALPHABET[n & 63] : '=';
+	}
+	return out;
+}
+
+/**
+ * The newest preview of the card's picture, and asks for more for the next few seconds. The first call has none
+ * yet, as a copy takes a few frames.
+ */
+void cardPreview(obs_data_t *reply)
+{
+	g_previewWantedUntil = os_gettime_ns() + PREVIEW_KEEP_NS;
+	std::lock_guard<std::mutex> lock(g_previewMutex);
+	if (g_previewPixels.empty())
+		return;
+	obs_data_set_int(reply, "width", PREVIEW_WIDTH);
+	obs_data_set_int(reply, "height", PREVIEW_HEIGHT);
+	obs_data_set_string(reply, "rgba", base64(g_previewPixels.data(), g_previewPixels.size()).c_str());
 }
 
 /** Records a capture card's picture, filling the canvas, and its sound in the main mix. */
@@ -799,28 +968,56 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
 {
 	const std::string device = obs_data_get_string(card, "device");
 	const std::string audio = obs_data_get_string(card, "audio");
+	// The same sound as Windows records it, when it lists the card's audio device: at Windows' own rate, such as
+	// 48 kHz like the rest of the mix, where DirectShow gives 44.1 kHz, which then has to be resampled.
+	const std::string sound = audio.empty() ? "" : obs_data_get_string(card, "soundDevice");
 	obs_data_t *s = obs_data_create();
 	obs_data_set_string(s, "video_device_id", device.c_str());
 	obs_data_set_bool(s, "active", true);
 	obs_data_set_bool(s, "deactivate_when_not_showing", false);
 	obs_data_set_int(s, "res_type", 0);
-	// Cards such as the 4K X are USB video devices whose sound is a separate audio device.
+	// Cards such as the 4K X are USB video devices whose sound is a separate audio device. A custom device with no
+	// id is none at all, for when Windows records it instead, so the card isn't opened for its sound twice.
 	obs_data_set_bool(s, "use_custom_audio_device", !audio.empty());
-	obs_data_set_string(s, "audio_device_id", audio.c_str());
+	obs_data_set_string(s, "audio_device_id", sound.empty() ? audio.c_str() : "");
 	obs_data_set_int(s, "audio_output_mode", 0); // Into the recording, not out of the speakers.
 	g_cardHdr = obs_data_get_bool(card, "hdr");
-	tuneCaptureCard(s, width, height, fps, g_cardHdr);
+	g_cardBrightest = 0;
+	g_cardMovingProbes = 0;
+	g_cardTenBitFailed = false;
+	g_cardTenBit = tuneCaptureCard(s, width, height, fps, g_cardHdr, g_cardHdr);
+	g_cardOpenedAt = os_gettime_ns();
 	g_captureCard = createSource("dshow_input", "Capture card", s);
 	obs_data_release(s);
 	if (!g_captureCard) {
 		error = "Could not open the capture card. Check it's plugged in, and closed in other apps such as OBS or 4K Capture Utility.";
 		return false;
 	}
-	g_captureCardHasAudio = !audio.empty();
+	g_cardSound = nullptr;
+	if (!sound.empty()) {
+		obs_data_t *ws = obs_data_create();
+		obs_data_set_string(ws, "device_id", sound.c_str());
+		obs_source_t *wasapi = createSource("wasapi_input_capture", "Capture card sound", ws);
+		obs_data_release(ws);
+		if (wasapi) {
+			// Owned with the other sound sources, and released and taken off its channel with them.
+			g_audioSources.push_back(wasapi);
+			obs_set_output_source((uint32_t)g_audioSources.size(), wasapi);
+			g_cardSound = wasapi;
+			blog(LOG_INFO, "Capture card sound recorded through Windows");
+		} else {
+			blog(LOG_WARNING, "Could not record the capture card's sound through Windows");
+		}
+	}
+	if (!audio.empty() && !g_cardSound)
+		g_cardSound = g_captureCard;
 	// Its own track, if wanted, is added once the other sources have theirs.
-	obs_source_set_audio_mixers(g_captureCard, audio.empty() ? 0 : 1);
-	obs_source_set_muted(g_captureCard, audio.empty());
-	obs_source_set_volume(g_captureCard, obs_data_has_user_value(card, "volume") ? (float)obs_data_get_double(card, "volume") : 1.0f);
+	obs_source_set_audio_mixers(g_captureCard, g_cardSound == g_captureCard ? 1 : 0);
+	obs_source_set_muted(g_captureCard, g_cardSound != g_captureCard);
+	if (g_cardSound) {
+		obs_source_set_audio_mixers(g_cardSound, 1);
+		obs_source_set_volume(g_cardSound, obs_data_has_user_value(card, "volume") ? (float)obs_data_get_double(card, "volume") : 1.0f);
+	}
 	g_captureCardItem = obs_scene_add(g_scene, g_captureCard);
 	fitToCanvas(g_captureCardItem, width, height);
 	obs_add_main_rendered_callback(probeCard, nullptr);
@@ -832,7 +1029,7 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
  * while it was still starting up after being plugged in, or another app had it. The card's sizes are read afresh,
  * and updating an active dshow_input reopens it, which looks for the device again.
  */
-bool cmdReopenCard(std::string &error)
+bool reopenCard(const char *why, std::string &error)
 {
 	if (!g_captureCard) {
 		error = "No capture card is being recorded";
@@ -846,11 +1043,35 @@ bool cmdReopenCard(std::string &error)
 	obs_data_t *s = obs_source_get_settings(g_captureCard);
 	obs_data_set_int(s, "res_type", 0); // The card's own choice, unless it now lists its sizes.
 	obs_data_set_bool(s, "active", true);
-	tuneCaptureCard(s, ovi.base_width, ovi.base_height, ovi.fps_num, g_cardHdr);
+	g_cardTenBit = tuneCaptureCard(s, ovi.base_width, ovi.base_height, ovi.fps_num, g_cardHdr, g_cardHdr && !g_cardTenBitFailed);
+	g_cardBrightest = 0;
+	g_cardMovingProbes = 0;
+	g_cardProbed = false;
+	g_cardOpenedAt = os_gettime_ns();
 	obs_source_update(g_captureCard, s);
 	obs_data_release(s);
-	blog(LOG_INFO, "Capture card opened again, as it had sent no picture");
+	blog(LOG_INFO, "Capture card opened again, %s", why);
 	return true;
+}
+
+bool cmdReopenCard(std::string &error)
+{
+	return reopenCard("as it had sent no picture", error);
+}
+
+/**
+ * Goes back to 8-bit when the card was asked for 10-bit P010 and has shown only a plain, still picture since, which
+ * some cards send for P010 at some sizes. A console that's off looks the same, and costs only the 10-bit until
+ * capture restarts.
+ */
+void checkTenBit()
+{
+	if (!g_cardTenBit || !g_cardProbed || !g_cardBlank || g_cardMovingProbes > 0 ||
+	    os_gettime_ns() - g_cardOpenedAt < TEN_BIT_GRACE_NS)
+		return;
+	g_cardTenBitFailed = true;
+	std::string error;
+	reopenCard("in 8-bit, as 10-bit sent no picture", error);
 }
 
 /**
@@ -1006,10 +1227,10 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	g_stagingDir = obs_data_get_string(c, "stagingDir");
 	g_cpuInfo = os_cpu_usage_info_start();
 	int tracks = createAudioSources(c);
-	if (g_captureCard && g_captureCardHasAudio && tracks < MAX_AUDIO_TRACKS) {
+	if (g_cardSound && tracks < MAX_AUDIO_TRACKS) {
 		obs_data_t *card = obs_data_get_obj(c, "card");
 		if (obs_data_get_bool(card, "ownTrack"))
-			obs_source_set_audio_mixers(g_captureCard, 1u | (1u << tracks++));
+			obs_source_set_audio_mixers(g_cardSound, 1u | (1u << tracks++));
 		obs_data_release(card);
 	}
 	// Recordings name each audio track after its encoder, so editors show "Discord" instead of "Track 3".
@@ -1158,11 +1379,17 @@ void shutdownAll()
 		obs_enter_graphics();
 		gs_stagesurface_destroy(g_probeStage);
 		gs_texrender_destroy(g_probeRender);
+		gs_stagesurface_destroy(g_previewStage);
+		gs_texrender_destroy(g_previewRender);
 		obs_leave_graphics();
 		g_probeStage = nullptr;
 		g_probeRender = nullptr;
+		g_previewStage = nullptr;
+		g_previewRender = nullptr;
+		g_previewStaged = false;
 	}
 	obs_source_release(g_captureCard);
+	g_cardSound = nullptr;
 	obs_scene_release(g_scene);
 	// Sources are destroyed on a background queue, and shutting down before it drains destroys them twice.
 	obs_wait_for_destroy_queue();
@@ -1386,6 +1613,7 @@ bool handle(const std::string &line)
 
 		listChoices(reply, "cameras", "dshow_input", "video_device_id");
 	} else if (cmd == "cardStatus") {
+		checkTenBit();
 		// A card that another app holds, or that was unplugged, never sends a frame, so its size stays 0.
 		obs_data_set_bool(reply, "card", g_captureCard != nullptr);
 		obs_data_set_int(reply, "width", g_captureCard ? obs_source_get_width(g_captureCard) : 0);
@@ -1393,6 +1621,15 @@ bool handle(const std::string &line)
 		// Plain and still, such as the card's own NO SIGNAL screen. Absent until the first copy is judged.
 		if (g_cardProbed)
 			obs_data_set_bool(reply, "blank", g_cardBlank);
+		// How long the picture has moved, and the brightest it got meanwhile, out of 255, for the HDR check.
+		obs_video_info ovi = {};
+		if (obs_get_video_info(&ovi) && ovi.fps_num) {
+			const double probeSeconds = PROBE_EVERY_FRAMES * (double)ovi.fps_den / ovi.fps_num;
+			obs_data_set_double(reply, "movingSeconds", g_cardMovingProbes * probeSeconds);
+			obs_data_set_int(reply, "brightest", g_cardBrightest);
+		}
+	} else if (cmd == "cardPreview") {
+		cardPreview(reply);
 	} else if (cmd == "bufferPaused") {
 		ok = cmdBufferPaused(c, error);
 	} else if (cmd == "reopenCard") {
@@ -1405,6 +1642,11 @@ bool handle(const std::string &line)
 	} else if (cmd == "cardChoices") {
 		listChoices(reply, "cards", "dshow_input", "video_device_id");
 		listChoices(reply, "audio", "dshow_input", "audio_device_id");
+	} else if (cmd == "cardModes") {
+		// Seconds per card, so the app asks a listing engine of its own, never the one capturing.
+		obs_data_array_t *modes = cardModes(obs_data_get_string(c, "device"));
+		obs_data_set_array(reply, "modes", modes);
+		obs_data_array_release(modes);
 	} else if (cmd == "camera") {
 		ok = showCamera(obs_data_get_bool(c, "on"));
 		if (!ok)
@@ -1474,7 +1716,7 @@ bool handle(const std::string &line)
 	} else if (cmd == "volume") {
 		const int index = (int)obs_data_get_int(c, "index");
 		obs_source_t *source = index == GAME_AUDIO_INDEX ? g_gameAudio
-				       : index == CARD_AUDIO_INDEX ? (g_captureCardHasAudio ? g_captureCard : nullptr)
+				       : index == CARD_AUDIO_INDEX ? g_cardSound
 				       : index >= 0 && index < (int)g_sourceByIndex.size() ? g_sourceByIndex[index]
 											   : nullptr;
 		if (source)

@@ -52,6 +52,10 @@ html:has(body.panel), body.panel { background: transparent; }
 @keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .recording .dot { animation: none; } button { transition: none; } }
 .capture-text { flex: 1; min-width: 0; }
+/* The capture card's live picture, in place of the dot. Clicked, it takes the card's full width, under the line. */
+.card-preview { flex: none; width: 64px; height: 36px; border-radius: 6px; background: #000; cursor: zoom-in; box-shadow: 0 0 0 1px rgb(255 255 255 / .08); }
+.capture-line:has(.card-preview.big) { flex-wrap: wrap; }
+.card-preview.big { order: 9; width: 100%; height: auto; aspect-ratio: 16 / 9; cursor: zoom-out; }
 .capture-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .capture-detail { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .record-toggle { flex: none; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--rec); box-shadow: inset 0 0 0 1px var(--rec); }

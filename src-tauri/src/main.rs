@@ -2378,6 +2378,20 @@ fn camera_choices(core: tauri::State<Shared>) -> Result<Value, String> {
     core.engine.camera_choices()
 }
 
+/// A small live copy of the capture card's picture for the panel, as RGBA pixels in base64. Empty until the
+/// first copy is made, and while no card is being recorded.
+#[tauri::command(async)]
+fn card_preview(core: tauri::State<Shared>) -> Value {
+    core.engine.card_preview().unwrap_or_else(|_| json!({}))
+}
+
+/// The sizes and highest frame rates a capture card sends, for greying out the rest in Settings. Seconds the
+/// first time for each card.
+#[tauri::command(async)]
+fn card_modes(core: tauri::State<Shared>, payload: Option<String>) -> Result<Value, String> {
+    core.engine.card_modes(&payload.unwrap_or_default())
+}
+
 #[tauri::command(async)]
 fn card_choices(core: tauri::State<Shared>) -> Result<Value, String> {
     let mut choices = core.engine.card_choices()?;
@@ -3285,7 +3299,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             state, estimate, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, install_stream_deck_plugin, dismiss_stream_deck_plugin, thumbnail, preview_strip, find_overlaps, keep_overlap, clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
- import_settings, running_apps, pick_game, audio_choices, camera_choices, card_choices, display_info,
+ import_settings, running_apps, pick_game, audio_choices, camera_choices, card_choices, card_preview, card_modes, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit,
             open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
             save_game_layout, pick_angle, sync_angle,
@@ -3418,6 +3432,7 @@ fn main() {
             let profile_settings = Arc::clone(&shared_settings);
             let toast_settings = Arc::clone(&shared_settings);
             let warned_no_picture = Arc::new(AtomicBool::new(false));
+            let suggested_card_hdr = AtomicBool::new(false);
             let manager = CaptureManager::start(
                 Arc::clone(&engine),
                 move || {
@@ -3425,7 +3440,7 @@ fn main() {
                     if s.test_pattern {
                         Watch::Off
                     } else if s.card().is_some() {
-                        Watch::Card { pause_without_signal: s.card_pause_without_signal }
+                        Watch::Card { pause_without_signal: s.card_pause_without_signal, card_hdr: s.card_hdr }
                     } else {
                         Watch::Games
                     }
@@ -3440,6 +3455,10 @@ fn main() {
                         }
                     } else if !state.no_picture {
                         warned_no_picture.store(false, Ordering::SeqCst);
+                    }
+                    // Once a session: the panel offers to turn it on.
+                    if state.suggest_card_hdr && !suggested_card_hdr.swap(true, Ordering::SeqCst) && toast_settings.lock().unwrap().toast_enabled {
+                        win32::show_toast("Your capture card's picture looks grey and washed out, as if your console sends HDR. Open Afterclip to turn on Console sends HDR.");
                     }
                 },
             );
@@ -3500,6 +3519,20 @@ fn main() {
             let saver = Arc::clone(&core);
             thread::spawn(move || watch_memory(saver));
             core.allow_media_folders();
+            // Audio devices that got new ids, such as after a driver reinstall, are saved under them, so the
+            // settings show what's really recorded. The engine finds them again by name on every start too.
+            {
+                let (outputs, inputs) = (win32::audio_endpoints(false), win32::audio_endpoints(true));
+                let mut settings = core.settings.lock().unwrap();
+                let (changed, missing) = settings.relink_audio(outputs.as_deref(), inputs.as_deref());
+                if changed {
+                    let _ = settings.save(&core.settings_file);
+                    core.log_ui("audio sources found again under new device ids");
+                }
+                if !missing.is_empty() {
+                    core.log_ui(&format!("audio sources not connected: {}", missing.join(", ")));
+                }
+            }
             // With the buffer only running during games, it waits for one.
             let first = core.settings.lock().unwrap().clone();
             if first.pauses_without_game() && !game_in_front(&core, &first) {

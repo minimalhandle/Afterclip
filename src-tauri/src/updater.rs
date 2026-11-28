@@ -13,6 +13,22 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 const FIRST_CHECK_AFTER: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// What a check came to, which decides when the next one is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Checked {
+    /// Up to date, or an update is ready: check again at the usual time.
+    Done,
+    /// It waits for the game or recording to end, so it's tried again soon.
+    Later,
+    /// GitHub couldn't be reached, such as while offline, so each try waits longer than the last.
+    Failed,
+}
+
+/// How long to wait after this many failures in a row: `first`, doubling each time, never more than `most`.
+pub fn backoff(failures: u32, first: Duration, most: Duration) -> Duration {
+    first.saturating_mul(1 << failures.saturating_sub(1).min(16)).min(most)
+}
 const TICK: Duration = Duration::from_secs(15);
 /// How long someone has to skip an update before it installs by itself.
 const INSTALL_COUNTDOWN: Duration = Duration::from_secs(5 * 60);
@@ -75,19 +91,19 @@ async fn find_update(core: &Shared) -> Result<Option<Update>, String> {
 }
 
 /// Looks for an update and downloads it. `asked` means someone pressed the button, so it runs even during a
-/// game, and offers a version they skipped earlier. Returns false if it should try again soon.
-pub fn check(core: &Shared, asked: bool) -> bool {
+/// game, and offers a version they skipped earlier. Says when the next check should be.
+pub fn check(core: &Shared, asked: bool) -> Checked {
     if core.update_busy.swap(true, Ordering::SeqCst) {
-        return true;
+        return Checked::Done;
     }
     let result = tauri::async_runtime::block_on(check_inner(core, asked));
     core.update_busy.store(false, Ordering::SeqCst);
     result
 }
 
-async fn check_inner(core: &Shared, asked: bool) -> bool {
+async fn check_inner(core: &Shared, asked: bool) -> Checked {
     if core.update.lock().unwrap().status == "ready" {
-        return true;
+        return Checked::Done;
     }
     if asked {
         set_status(core, "checking", None, None);
@@ -100,22 +116,22 @@ async fn check_inner(core: &Shared, asked: bool) -> bool {
             if asked {
                 set_status(core, "failed", None, Some(format!("Couldn't check for updates: {message}")));
             }
-            return false;
+            return Checked::Failed;
         }
     };
     let Some(update) = found else {
         if asked {
             set_status(core, "current", None, None);
         }
-        return true;
+        return Checked::Done;
     };
     let version = update.version.clone();
     if !asked && core.settings.lock().unwrap().skipped_update == version {
-        return true;
+        return Checked::Done;
     }
     // A download can hurt a game's connection, so it waits unless someone asked for it now.
     if !asked && on_game_or_recording(core) {
-        return false;
+        return Checked::Later;
     }
     set_status(core, "downloading", Some(version.clone()), None);
     match update.download(|_, _| {}, || {}).await {
@@ -127,12 +143,12 @@ async fn check_inner(core: &Shared, asked: bool) -> bool {
             if core.settings.lock().unwrap().toast_enabled {
                 win32::show_toast(&format!("Update {version} is ready"));
             }
-            true
+            Checked::Done
         }
         Err(message) => {
             core.log_ui(&format!("update download failed: {message}"));
             set_status(core, "failed", Some(version), Some(format!("The update couldn't be downloaded: {message}")));
-            false
+            Checked::Failed
         }
     }
 }
@@ -211,10 +227,17 @@ pub fn start(core: Shared) {
     }
     thread::spawn(move || {
         let mut next_check = Instant::now() + FIRST_CHECK_AFTER;
+        let mut failures = 0;
         loop {
             thread::sleep(TICK);
             if Instant::now() >= next_check && core.settings.lock().unwrap().auto_update {
-                next_check = Instant::now() + if check(&core, false) { CHECK_EVERY } else { RETRY_AFTER };
+                let outcome = check(&core, false);
+                failures = if outcome == Checked::Failed { failures + 1 } else { 0 };
+                next_check = Instant::now() + match outcome {
+                    Checked::Done => CHECK_EVERY,
+                    Checked::Later => RETRY_AFTER,
+                    Checked::Failed => backoff(failures, RETRY_AFTER, CHECK_EVERY),
+                };
             }
             tick_countdown(&core);
         }
@@ -224,6 +247,14 @@ pub fn start(core: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_checks_wait_longer_each_time() {
+        let minutes = |n| backoff(n, RETRY_AFTER, CHECK_EVERY).as_secs() / 60;
+        assert_eq!([1, 2, 3, 4, 5, 6, 7].map(minutes), [5, 10, 20, 40, 80, 160, 320]);
+        assert_eq!(minutes(8), 360, "never longer than the usual wait");
+        assert_eq!(minutes(1000), 360, "no overflow");
+    }
 
     #[test]
     fn a_dev_build_shows_its_release_notes() {

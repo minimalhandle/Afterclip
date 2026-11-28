@@ -3,6 +3,10 @@ const $ = (id) => document.getElementById(id);
 let settings;
 let status = { state: 'stopped', buffering: false, recording: false };
 let capture = { mode: 'desktop' };
+// Only for as long as the panel is open; the next time it opens, the suggestion shows again if it still applies.
+let cardHdrDismissed = false;
+// Each capture card's sizes and highest frame rates, by device id. Null while being read.
+const cardModes = {};
 let media = [];
 let kind = 'clip';
 let chosenLength = null;
@@ -121,8 +125,47 @@ function renderStatus() {
   $('admin-text').textContent = capture.needsAdmin
     ? `${capture.app} is running as administrator, so Afterclip is recording its monitor instead.`
     : `Afterclip couldn't capture ${capture.app} directly, so it's recording its monitor. Running as administrator may fix this.`;
+  const preview = capture.mode === 'card' && status.state === 'ready' && !capture.noPicture;
+  $('card-preview').hidden = !preview;
+  $('capture-dot').hidden = preview;
+  if (preview) watchCardPreview();
+  $('card-hdr-hint').hidden =!(capture.mode === 'card' && capture.suggestCardHdr && !cardHdrDismissed && !settings?.cardHdr);
+  // Afterclip already looked for each one by name, so these are really gone, not just renumbered.
+  const missing = status.missingAudio ?? [];
+  $('audio-missing').hidden = missing.length === 0;
+  $('audio-missing-text').textContent = missing.length === 1
+    ? `${missing[0]} isn't connected, so it isn't in your clips. Plug it in or start its app, or choose another device.`
+    : `${missing.length} audio sources aren't connected, so they aren't in your clips: ${missing.join(', ')}. Plug them in or start their apps, or choose other devices.`;
   renderBuffer();
 }
+
+// The capture card's live picture, a few times a second, only while it's on screen. The engine only makes copies
+// for a few seconds after each ask, so a hidden panel costs nothing.
+const PREVIEW_EVERY_MS = 300;
+let previewTimer = null;
+function watchCardPreview() {
+  if (previewTimer) return;
+  const tick = async () => {
+    const canvas = $('card-preview');
+    if (canvas.hidden || document.visibilityState !== 'visible') {
+      previewTimer = null;
+      return;
+    }
+    try {
+      const frame = await api.invoke('card-preview');
+      if (frame?.rgba && frame.width === canvas.width && frame.height === canvas.height) {
+        const bytes = Uint8ClampedArray.from(atob(frame.rgba), (c) => c.charCodeAt(0));
+        for (let i = 3; i < bytes.length; i += 4) bytes[i] = 255;
+        canvas.getContext('2d').putImageData(new ImageData(bytes, frame.width, frame.height), 0, 0);
+      }
+    } catch {
+      // Capture restarting: try again on the next tick.
+    }
+    previewTimer = setTimeout(tick, PREVIEW_EVERY_MS);
+  };
+  previewTimer = setTimeout(tick, 0);
+}
+document.addEventListener('visibilitychange', () => { if (!$('card-preview').hidden) watchCardPreview(); });
 
 // The bar: its full width is the buffer, the colour is what's filled so far, and the white part, at the
 // newest end, is what Save would keep. It only ticks while the buffer is still filling.
@@ -899,10 +942,46 @@ function renderCard() {
   if (!$('card-level').childElementCount) {
     $('card-level').append(levelControl(CARD_AUDIO_INDEX, settings.cardAudioVolume, (v) => { settings.cardAudioVolume = v; }));
   }
+  renderCardModes();
   const doubled = on && cardChoices?.doubled;
   $('card-doubled').hidden = !doubled;
   $('card-doubled').textContent = doubled ? `Your audio source ${doubled} is the capture card's sound too, so it would be recorded twice. Choose your real mic in Settings, under Audio.` : '';
   updateLiveViews();
+}
+
+/**
+ * Greys out the card sizes and frame rates the chosen card doesn't send, uncompressed, and says what happens
+ * with one that's chosen anyway. Nothing is greyed out while the card's sizes aren't known.
+ */
+function renderCardModes() {
+  const device = $('captureCardDevice').value;
+  const card = cardChoices?.cards.find((c) => c.id === device);
+  // Read in the background the first time, as it takes seconds; until then nothing is greyed out.
+  if (card && !(device in cardModes)) {
+    cardModes[device] = null;
+    api.invoke('card-modes', device).then((modes) => { cardModes[device] = modes ?? []; }, () => { delete cardModes[device]; }).then(renderCardModes);
+  }
+  const modes = cardModes[device] ?? [];
+  // The same 16:9 size as the Rust side's with_card.
+  const sizeOf = (height) => ({ width: Math.floor((height * 16 / 9 + 1) / 2) * 2, height });
+  const fastest = (height) => {
+    const { width } = sizeOf(height);
+    return Math.max(0, ...modes.filter((m) => m.width === width && m.height === height).map((m) => m.fps));
+  };
+  // 59.94 counts as 60.
+  const sends = (height, fps) => fastest(height) >= fps * 0.99;
+  const height = Number($('cardResolution').value);
+  const fps = Number($('cardFps').value);
+  for (const option of $('cardResolution').options) option.disabled = modes.length > 0 && !fastest(Number(option.value));
+  for (const option of $('cardFps').options) option.disabled = modes.length > 0 && !sends(height, Number(option.value));
+  let note = '';
+  if (modes.length && !fastest(height)) {
+    note = `${card.name} doesn't send this size, so it records the nearest size it does, scaled to fit.`;
+  } else if (modes.length && !sends(height, fps)) {
+    note = `${card.name} sends this size at up to ${Math.round(fastest(height))} fps, so it records at that.`;
+  }
+  $('card-mode-note').hidden = !note || !$('captureCard').checked;
+  $('card-mode-note').textContent = note;
 }
 
 function renderPresets(failures = []) {
@@ -2058,7 +2137,7 @@ $('captureCardDevice').onchange = () => {
   scheduleSave();
 };
 $('captureCardAudio').onchange = () => { settings.captureCardAudio = $('captureCardAudio').value; scheduleSave(); };
-for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderSummary(); renderEstimate(); scheduleSave(); };
+for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderCardModes(); renderSummary(); renderEstimate(); scheduleSave(); };
 $('cardAudioOwnTrack').onchange = () => scheduleSave();
 $('cardHdr').onchange = () => scheduleSave();
 $('cardPauseWithoutSignal').onchange = () => scheduleSave();
@@ -2176,6 +2255,15 @@ $('open-studio').onclick = () => api.invoke('open-studio').catch((error) => show
 $('batch-selected').onclick = () => api.invoke('open-studio', [...selected]).catch((error) => showBanner(errorText(error), 'bad'));
 api.on('studio-import', () => refresh());
 $('restart-admin').onclick = () => api.invoke('restart-admin').catch((e) => showBanner(errorText(e), 'bad'));
+$('audio-missing-fix').onclick = () => { showView('settings'); showPane('audio'); };
+$('card-preview').onclick = () => $('card-preview').classList.toggle('big');
+$('card-hdr-dismiss').onclick = () => { cardHdrDismissed = true; renderStatus(); };
+$('card-hdr-on').onclick = () => {
+  settings.cardHdr = true;
+  $('cardHdr').checked = true;
+  scheduleSave();
+  renderStatus();
+};
 $('add-marker-key').onclick = () => { settings.markerKeys.push({ label: '', hotkey: '' }); renderMarkerKeys(); scheduleSave(); };
 for (const id of ['toastCorner', 'markerClipSeconds', 'autoClipSource', 'autoClipSeconds']) $(id).onchange = () => scheduleSave();
 $('autoClip').onchange = () => { renderAutoClip(); scheduleSave(); updateLiveViews(); };

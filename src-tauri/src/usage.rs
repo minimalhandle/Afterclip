@@ -68,13 +68,14 @@ fn send(body: &Value) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Sends today's ping if the user agreed and it hasn't gone yet; forgets the ID if they didn't.
-fn tick(core: &Shared) {
+/// Sends today's ping if the user agreed and it hasn't gone yet; forgets the ID if they didn't. False only if
+/// sending failed.
+fn tick(core: &Shared) -> bool {
     let on = core.settings.lock().unwrap().usage_ping == Some(true);
     let path = file(core);
     if !on {
         let _ = std::fs::remove_file(&path);
-        return;
+        return true;
     }
     let saved: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
     let id = match saved["id"].as_str().filter(|id| valid_id(id)) {
@@ -83,14 +84,18 @@ fn tick(core: &Shared) {
     };
     let day = today();
     if saved["id"] == json!(id) && saved["sent"] == json!(day) {
-        return;
+        return true;
     }
     match send(&payload(&id)) {
         Ok(()) => {
             let _ = std::fs::write(&path, json!({ "id": id, "sent": day }).to_string());
+            true
         }
         // Offline or the site is down: try again later, quietly.
-        Err(e) => core.log_ui(&format!("Usage count not sent this time: {e}")),
+        Err(e) => {
+            core.log_ui(&format!("Usage count not sent this time: {e}"));
+            false
+        }
     }
 }
 
@@ -104,9 +109,12 @@ pub fn start(core: Shared) {
     thread::spawn(move || {
         // Wait for startup to finish, or for an answer.
         let _ = rx.recv_timeout(FIRST);
+        // While offline, each try waits longer than the last, up to a day, instead of every 10 minutes.
+        let mut failures = 0;
         loop {
-            tick(&core);
-            let _ = rx.recv_timeout(EVERY);
+            failures = if tick(&core) { 0 } else { failures + 1 };
+            let wait = if failures == 0 { EVERY } else { crate::updater::backoff(failures, EVERY, Duration::from_secs(24 * 60 * 60)) };
+            let _ = rx.recv_timeout(wait);
         }
     });
 }

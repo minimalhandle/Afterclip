@@ -377,6 +377,33 @@ impl Settings {
         }
     }
 
+    /// Points each output and input source whose device is gone at a working device with the same name, such as
+    /// after Voicemeeter or VB-Cable is reinstalled and Windows gives its devices new ids. Each list is the working
+    /// devices' ids and names, or None if Windows couldn't be asked, which changes nothing. Returns whether any
+    /// source changed, and the names of the ones still missing.
+    pub fn relink_audio(&mut self, outputs: Option<&[(String, String)]>, inputs: Option<&[(String, String)]>) -> (bool, Vec<String>) {
+        let (mut changed, mut missing) = (false, Vec::new());
+        for source in &mut self.audio_sources {
+            let devices = match source.kind.as_str() {
+                "output" => outputs,
+                "input" => inputs,
+                _ => continue,
+            };
+            let Some(devices) = devices else { continue };
+            if source.device.is_empty() || source.device == "default" || devices.iter().any(|(id, _)| *id == source.device) {
+                continue;
+            }
+            match devices.iter().find(|(_, name)| *name == source.label) {
+                Some((id, _)) => {
+                    source.device = id.clone();
+                    changed = true;
+                }
+                None => missing.push(source.label.clone()),
+            }
+        }
+        (changed, missing)
+    }
+
     /// The capture card's video and audio devices while it's what's recorded, or None for the screen and games.
     pub fn card(&self) -> Option<(&str, &str)> {
         (self.capture_card && !self.capture_card_device.is_empty() && !self.test_pattern)
@@ -728,6 +755,32 @@ mod tests {
         assert_eq!(tracked.track_names().last().map(String::as_str), Some("Capture card"));
         assert!(card.needs_engine_restart(&tracked), "a new track needs a restart");
         assert!(!tracked.needs_engine_restart(&Settings { card_audio_volume: 0.5, ..tracked.clone() }), "volume changes live");
+    }
+
+    #[test]
+    fn audio_devices_with_new_ids_are_found_again_by_name() {
+        let source = |kind: &str, device: &str, label: &str| AudioSource { kind: kind.into(), device: device.into(), label: label.into(), mix: true, own_track: false, mute_with_key: None, volume: 1.0 };
+        let mut s = sample();
+        s.audio_sources = vec![
+            source("output", "{old-out}", "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"),
+            source("input", "{old-in}", "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"),
+            source("input", "{gone}", "Yeti (Blue Yeti)"),
+            source("output", "default", "Default"),
+            source("app", "Discord:Discord.exe", "Discord"),
+            source("input", "{kept}", "Microphone (USB)"),
+        ];
+        let outputs = vec![("{new-out}".to_string(), "Voicemeeter Input (VB-Audio Voicemeeter VAIO)".to_string())];
+        let inputs = vec![
+            ("{new-in}".to_string(), "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)".to_string()),
+            ("{kept}".to_string(), "Microphone (USB)".to_string()),
+        ];
+        let (changed, missing) = s.relink_audio(Some(&outputs), Some(&inputs));
+        assert!(changed);
+        assert_eq!(missing, vec!["Yeti (Blue Yeti)".to_string()], "only a device that's really gone is missing");
+        let devices: Vec<&str> = s.audio_sources.iter().map(|a| a.device.as_str()).collect();
+        assert_eq!(devices, ["{new-out}", "{new-in}", "{gone}", "default", "Discord:Discord.exe", "{kept}"]);
+        assert_eq!(s.relink_audio(Some(&outputs), Some(&inputs)).0, false, "nothing changes the second time");
+        assert_eq!(s.relink_audio(None, None), (false, vec![]), "Windows not answering isn't every device missing");
     }
 
     #[test]

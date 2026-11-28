@@ -445,6 +445,32 @@ pub fn default_input_name() -> Option<String> {
     }
 }
 
+/// Every working playback device, or recording device for `capture`, as Windows' id and its name, such as
+/// "Voicemeeter Input (VB-Audio Voicemeeter VAIO)". The id is the one the engine's audio sources use. None if
+/// Windows couldn't be asked, which is different from there being none. It asks on a thread of its own, as
+/// setting up COM on the caller's thread could be the UI thread, which WebView2 needs left single-threaded.
+pub fn audio_endpoints(capture: bool) -> Option<Vec<(String, String)>> {
+    unsafe fn look(capture: bool) -> windows::core::Result<Vec<(String, String)>> {
+        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let all = devices.EnumAudioEndpoints(if capture { eCapture } else { eRender }, DEVICE_STATE_ACTIVE)?;
+        let mut found = Vec::new();
+        for i in 0..all.GetCount()? {
+            let Ok(device) = all.Item(i) else { continue };
+            let Ok(id) = device.GetId().and_then(|id| take_pwstr(id)) else { continue };
+            let name = device.OpenPropertyStore(STGM_READ).and_then(|store| store.GetValue(&PKEY_Device_FriendlyName)).map(|v| v.to_string()).unwrap_or_default();
+            found.push((id, name));
+        }
+        Ok(found)
+    }
+    std::thread::spawn(move || {
+        init_com_for_thread();
+        unsafe { look(capture) }.ok()
+    })
+    .join()
+    .ok()
+    .flatten()
+}
+
 /// The output devices this process is playing sound through right now. Empty while it's silent or inactive.
 pub fn active_endpoints_of(pid: u32) -> Vec<ActiveEndpoint> {
     unsafe fn look(pid: u32) -> windows::core::Result<Vec<ActiveEndpoint>> {

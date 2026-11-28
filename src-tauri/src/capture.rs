@@ -18,6 +18,9 @@ const REOPEN_CARD_EVERY: Duration = Duration::from_secs(30);
 const NO_SIGNAL_PAUSE_AFTER: Duration = Duration::from_secs(60);
 // Polls in a row with a real picture before a paused buffer starts again, so one odd frame doesn't start it.
 const SIGNAL_RESUME_POLLS: u32 = 2;
+// How long the card's picture must move without getting near white, out of 255, before HDR is suggested.
+const HDR_HINT_AFTER_SECONDS: f64 = 120.0;
+const NEAR_WHITE: i64 = 250;
 // Hooking a game normally takes a few seconds. After this, say capture has fallen back.
 const HOOK_GRACE: Duration = Duration::from_secs(10);
 // A game whose anti-cheat blocks the hook, such as Call of Duty, refuses it every time, and each try reaches into
@@ -46,6 +49,8 @@ pub struct CaptureState {
     pub no_picture: bool,
     /// The capture card shows no signal, so the buffer is paused until a picture arrives.
     pub no_signal: bool,
+    /// The card's picture looks like HDR read as SDR, so turning on Console sends HDR is worth suggesting.
+    pub suggest_card_hdr: bool,
 }
 
 /// What the watcher looks for.
@@ -57,7 +62,7 @@ pub enum Watch {
     Games,
     /// Nothing on this PC, because a capture card is what's recorded. With pause_without_signal, the buffer
     /// pauses while the card shows no signal.
-    Card { pause_without_signal: bool },
+    Card { pause_without_signal: bool, card_hdr: bool },
 }
 
 /// Chooses what to record. It always tries the fullscreen app, or a game you've added in any window,
@@ -78,6 +83,7 @@ impl CaptureManager {
                 elevated: is_self_elevated(),
                 no_picture: false,
                 no_signal: false,
+                suggest_card_hdr: false,
             }),
         });
         let me = Arc::clone(&manager);
@@ -91,7 +97,7 @@ impl CaptureManager {
                 }
                 match watch() {
                     Watch::Games => me.tick(&engine, &mut watcher, &added_games(), &on_change),
-                    Watch::Card { pause_without_signal } => me.show_card(&engine, &mut watcher, pause_without_signal, &on_change),
+                    Watch::Card { pause_without_signal, card_hdr } => me.show_card(&engine, &mut watcher, pause_without_signal, card_hdr, &on_change),
                     Watch::Off => {}
                 }
             }
@@ -113,7 +119,7 @@ impl CaptureManager {
     }
 
     /// Says the card is being recorded. Leaving card mode restarts the engine, so game detection starts afresh then.
-    fn show_card(&self, engine: &Engine, w: &mut Watcher, pause_without_signal: bool, on_change: &impl Fn(&CaptureState)) {
+    fn show_card(&self, engine: &Engine, w: &mut Watcher, pause_without_signal: bool, card_hdr: bool, on_change: &impl Fn(&CaptureState)) {
         // Any device can be behind a card, so its files are named for the card, not a console.
         if w.generation != engine.generation() || w.current.is_some() {
             engine.set_game(Some(CARD_NAME.into()));
@@ -148,6 +154,8 @@ impl CaptureManager {
             let _ = engine.set_buffer_paused(false);
         }
         let no_signal = engine.status().waiting_for_signal;
+        // A moving picture that never gets near white, for long enough, is HDR read as SDR.
+        let suggest_card_hdr = !card_hdr && signal.is_some_and(|c| c.moving_seconds >= HDR_HINT_AFTER_SECONDS && c.brightest > 0 && c.brightest < NEAR_WHITE);
         w.generation = engine.generation();
         w.current = None;
         w.candidate = None;
@@ -159,6 +167,7 @@ impl CaptureManager {
             s.suggest_admin = false;
             s.no_picture = no_picture;
             s.no_signal = no_signal;
+            s.suggest_card_hdr = suggest_card_hdr;
         });
     }
 
@@ -181,6 +190,7 @@ impl CaptureManager {
                 s.suggest_admin = false;
                 s.no_picture = false;
                 s.no_signal = false;
+                s.suggest_card_hdr = false;
             });
         }
         let found = foreground_game_app(added_games);
