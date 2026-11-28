@@ -220,18 +220,18 @@
     <div class="card">
       <div class="card-title">Backup</div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Export settings</div><div class="setting-desc">Saves your settings, hotkeys and game profiles to a file, for a reinstall or another PC. Your Discord webhook is left out.</div></div>
+        <div class="setting-text"><div class="setting-name">Export settings</div><div class="setting-desc">Saves your settings, hotkeys and game profiles to a file, for a reinstall or another PC. Your Discord webhook and upload server are left out.</div></div>
         <button id="export-settings" class="small">Export</button>
       </div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Import settings</div><div class="setting-desc">Loads a file you exported. Your Discord webhook stays as it is here.</div></div>
+        <div class="setting-text"><div class="setting-name">Import settings</div><div class="setting-desc">Loads a file you exported. Your Discord webhook and upload server stay as they are here.</div></div>
         <button id="import-settings" class="small">Import</button>
       </div>
     </div>
     <div class="card">
       <div class="card-title">Troubleshooting</div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Save diagnostics</div><div class="setting-desc">Saves your logs and settings in one zip file to send with a problem report. Your Discord webhook and Windows user folder are left out, and nothing is sent anywhere.</div></div>
+        <div class="setting-text"><div class="setting-name">Save diagnostics</div><div class="setting-desc">Saves your logs and settings in one zip file to send with a problem report. Your Discord webhook, upload server and Windows user folder are left out, and nothing is sent anywhere.</div></div>
         <button id="save-diagnostics" class="small">Save</button>
       </div>
     </div>
@@ -356,6 +356,10 @@
         <select id="clipAfterSeconds" aria-label="Keep recording after you save">
           <option value="0">Off</option><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="15">15 seconds</option>
         </select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Press twice for a longer clip</div><div class="setting-desc">Pressing a clip key again within 10 seconds saves one clip from the first press to the second, instead of two that show the same moment. The shorter clip goes to the Recycle Bin, and the longer one keeps its star and tags.</div></div>
+        <input id="extendOnDoublePress" class="switch" type="checkbox" aria-label="Press twice for a longer clip">
       </div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Only buffer during games</div><div class="setting-desc">Frees memory and GPU on the desktop. The buffer starts when a game opens, and stops 10 minutes after it closes. Record still works any time.</div></div>
@@ -715,6 +719,20 @@
       </div>
     </div>
     <p class="note">Anyone with a webhook address can post to that channel, so they're hidden here. The first channel is the one the Stream Deck key uses. A clip over Discord's 10 MB limit is sent as a smaller copy, and your original isn't changed.</p>
+
+    <div class="card">
+      <div class="card-title">Your upload server</div>
+      <div class="setting wide">
+        <div class="setting-text"><div class="setting-name">Upload and copy link</div><div class="setting-desc">Adds Upload and copy link to Edit and share. It posts the clip to your own file host, such as a self-hosted one, and copies the link it answers with. The address must start with https://.</div></div>
+        <div class="upload-fields">
+          <input id="uploadUrl" type="password" autocomplete="off" spellcheck="false" placeholder="https://clips.example.com/api/upload" aria-label="Upload server address">
+          <input id="uploadToken" type="password" autocomplete="off" spellcheck="false" placeholder="Token (optional)" aria-label="Upload token, sent as a bearer token">
+          <input id="uploadField" autocomplete="off" spellcheck="false" placeholder="file" maxlength="40" aria-label="Form field the file goes in">
+        </div>
+        <div id="upload-warning" class="warn" hidden></div>
+      </div>
+    </div>
+    <p class="note">The token is sent as <code>Authorization: Bearer</code>, and the file goes in the form field named on the right, which is <code>file</code> for most servers. The address and token are hidden here, and left out of exported settings and diagnostics.</p>
   </div>
 
   <div class="settings-foot"><p id="save-note" class="note">Changes save automatically.</p></div>

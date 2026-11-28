@@ -8,22 +8,32 @@ mod controller;
 mod data_move;
 mod deck;
 mod diagnostics;
+mod double_press;
 mod discord;
 mod elevated_task;
 mod engine;
 mod library;
 mod loud;
 mod overlaps;
+mod previews;
 mod reel;
 mod render;
 mod settings;
 mod studio;
 mod updater;
+mod upload;
 mod usage;
 mod win32;
 
+// Parts of the app itself, split out of this file. Their items are used here as if they were still in it.
+mod app_windows;
+mod media;
+mod watchers;
+pub(crate) use app_windows::*;
+pub(crate) use media::*;
+pub(crate) use watchers::*;
+
 use api::{start_api, ApiHandlers};
-use base64::Engine as _;
 use capture::{CaptureManager, Watch};
 use engine::{ClipResult, Engine, EngineEvent, ShareAudio};
 use library::{clean_file_stem, older_than, over_limit, LibraryData, StoredClip};
@@ -84,13 +94,15 @@ struct Core {
     /// Why the API couldn't start, such as another app holding its port.
     api_error: Mutex<Option<String>>,
     hotkey_failures: Mutex<Vec<String>>,
-    thumbnail_lock: Mutex<()>,
+    /// Thumbnails being made, a few at a time.
+    thumbnails: previews::Gate,
     restart_lock: Mutex<()>,
     quitting: AtomicBool,
     /// Set while a dialog is open, because the panel losing focus to it must not close it.
     keep_panel_open: AtomicBool,
     panel_hidden_at: Mutex<Option<Instant>>,
-    panel_recovered_at: Mutex<Option<Instant>>,
+    /// When the panel was rebuilt after its browser crashed, lately.
+    panel_recoveries: Mutex<Vec<Instant>>,
     panel_hide_count: AtomicU64,
     tray_anchor: Mutex<Option<(i32, i32)>>,
     pending_editor_files: Mutex<Vec<String>>,
@@ -109,7 +121,8 @@ struct Core {
     update_ready: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
     update_busy: AtomicBool,
     storage_lock: Mutex<()>,
-    strip_lock: Mutex<()>,
+    /// Scrub strips and loudness being made, a few at a time.
+    strips: previews::Gate,
     /// The engine is stopped on purpose until a game opens.
     paused: AtomicBool,
     /// The push-to-talk key is held.
@@ -122,6 +135,8 @@ struct Core {
     deleted: Mutex<Vec<DeletedMedia>>,
     /// The last game session that saved clips, until it's dismissed.
     last_session: Mutex<Option<GameSession>>,
+    /// The last press of a clip key, which a quick second press extends.
+    last_clip_press: Mutex<Option<Arc<double_press::Press>>>,
 }
 
 /// A file moved to the Recycle Bin, and its library details.
@@ -240,8 +255,50 @@ impl Core {
         }
     }
 
+    /// Saves a clip of the last `seconds`. A second press soon after a first saves one longer clip in place of
+    /// both, when that's on.
     fn clip(&self, seconds: i64) -> Result<ClipResult, String> {
-        self.save_clip(seconds, false)
+        if !self.settings.lock().unwrap().extend_on_double_press {
+            return self.save_clip(seconds, false);
+        }
+        let now = Instant::now();
+        let (earlier, press) = {
+            let mut last = self.last_clip_press.lock().unwrap();
+            let earlier = last.take().and_then(|e| double_press::extended_seconds(&e, now, seconds).map(|s| (e, s)));
+            let press = Arc::new(double_press::Press::new(now, earlier.as_ref().map_or(seconds, |(_, s)| *s)));
+            *last = Some(Arc::clone(&press));
+            (earlier.map(|(e, _)| e), press)
+        };
+        let result = self.save_clip(press.seconds, false);
+        press.finish(result.as_ref().ok().map(|r| PathBuf::from(&r.file)));
+        let result = result?;
+        if let Some(earlier) = earlier {
+            self.replace_earlier_clip(&earlier, &result);
+        }
+        Ok(result)
+    }
+
+    /// Moves the clip an earlier press saved to the Recycle Bin, now a longer one covers it, giving the longer
+    /// one its star and tags.
+    fn replace_earlier_clip(&self, earlier: &double_press::Press, longer: &ClipResult) {
+        let Some(old) = earlier.wait(double_press::WAIT_FOR_EARLIER) else { return };
+        let new = PathBuf::from(&longer.file);
+        if same_path(&old, &new) {
+            return;
+        }
+        let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        {
+            let mut library = self.library.lock().unwrap();
+            library.carry_over(&name(&old), &name(&new));
+            let _ = library.save(&self.library_file);
+        }
+        match remove_media(self, &old) {
+            Ok(()) => {
+                self.log_ui(&format!("a quick second press extended {} into {}", name(&old), name(&new)));
+                let _ = self.app.emit("feedback", json!({ "kind": "clip-extended", "ok": true, "file": longer.file, "replaced": old }));
+            }
+            Err(e) => self.log_ui(&format!("a quick second press couldn't remove the shorter clip {}: {e}", old.display())),
+        }
     }
 
     fn save_clip(&self, seconds: i64, star: bool) -> Result<ClipResult, String> {
@@ -512,6 +569,29 @@ impl Core {
                 let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": true, "name": name }));
             }
             Err(message) => { let _ = self.app.emit("feedback", json!({ "kind": "discord", "ok": false, "message": message })); }
+        }
+        sent
+    }
+
+    /// Uploads a file to the server set in Settings, and returns the link it answers with.
+    fn upload(&self, path: &Path) -> Result<String, String> {
+        let (address, token, field, toast) = {
+            let s = self.settings.lock().unwrap();
+            (s.upload_url.clone(), s.upload_token.clone(), s.upload_field.clone(), s.toast_enabled)
+        };
+        let sent = if upload::is_address(&address, api::is_test_instance()) {
+            upload::send(&address, &token, &field, path)
+        } else {
+            Err(NO_UPLOAD_SERVER.into())
+        };
+        match &sent {
+            Ok(link) => {
+                if toast {
+                    win32::show_toast("Uploaded");
+                }
+                let _ = self.app.emit("feedback", json!({ "kind": "uploaded", "ok": true, "link": link }));
+            }
+            Err(message) => { let _ = self.app.emit("feedback", json!({ "kind": "uploaded", "ok": false, "message": message })); }
         }
         sent
     }
@@ -832,804 +912,6 @@ fn register_hotkeys(core: &Shared) {
     *core.hotkey_failures.lock().unwrap() = failures;
 }
 
-#[derive(Serialize)]
-struct Media {
-    file: String,
-    name: String,
-    size: u64,
-    mtime: f64,
-    kind: &'static str,
-    favourite: bool,
-    /// Only set for a renamed clip, whose file name no longer says.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    game: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    tags: Vec<String>,
-}
-
-// More than this is too much to send to the panel in one go.
-const MAX_LISTED_MEDIA: usize = 2000;
-
-fn modified_ms(meta: &fs::Metadata) -> f64 {
-    meta.modified().ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(0.0)
-}
-
-/// The files in a folder, and in the game folders inside it. Hidden folders such as .staging are left out.
-fn files_in(dir: &Path) -> Vec<fs::DirEntry> {
-    let mut found = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else { return found };
-    for entry in entries.flatten() {
-        let hidden = entry.file_name().to_string_lossy().starts_with('.');
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() && !hidden => {
-                let inside = fs::read_dir(entry.path()).into_iter().flatten().flatten();
-                found.extend(inside.filter(|e| e.file_type().is_ok_and(|t| t.is_file())));
-            }
-            Ok(kind) if kind.is_file() => found.push(entry),
-            _ => {}
-        }
-    }
-    found
-}
-
-fn list_media(core: &Core) -> Vec<Media> {
-    let active = core.engine.active_recording();
-    let library = core.library.lock().unwrap();
-    let mut media = Vec::new();
-    const VIDEOS: &[&str] = &["mp4", "mkv", "mov"];
-    for (dir, kind, extensions) in [(core.engine.clips_dir(), "clip", VIDEOS), (core.engine.recordings_dir(), "recording", VIDEOS), (core.engine.screenshots_dir(), "screenshot", &["png"])] {
-        for entry in files_in(&dir) {
-            let path = entry.path();
-            let wanted = path.extension().and_then(|e| e.to_str())
-                .is_some_and(|e| extensions.contains(&e.to_lowercase().as_str()));
-            if !wanted || active.as_deref() == Some(path.as_path()) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            media.push(Media {
-                file: path.to_string_lossy().into_owned(),
-                favourite: library.favourites.contains(&name),
-                game: library.games.get(&name).cloned(),
-                tags: library.tags.get(&name).cloned().unwrap_or_default(),
-                name,
-                size: meta.len(),
-                mtime: modified_ms(&meta),
-                kind,
-            });
-        }
-    }
-    media.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
-    media
-}
-
-/// The newest saved clip. Recordings aren't clips, so they don't count.
-fn last_clip(core: &Shared) -> Result<String, String> {
-    list_media(core).into_iter().find(|m| m.kind == "clip").map(|m| m.file).ok_or_else(|| "No clips yet".to_string())
-}
-
-/// Applies the chosen age and size limits. Runs after saves, and regularly for recordings and for clips getting older.
-/// Whether storage rules must leave this file alone: favourites always, and clips tagged by you when that's on.
-fn kept_by_rules(media: &Media, keep_tagged: bool) -> bool {
-    media.favourite || (keep_tagged && media.tags.iter().any(|t| t != AUTO_TAG))
-}
-
-fn enforce_storage_rules(core: &Shared) {
-    let (limit_gb, days, keep_tagged) = {
-        let settings = core.settings.lock().unwrap();
-        (settings.storage_limit_gb, settings.delete_after_days, settings.keep_tagged)
-    };
-    if limit_gb <= 0.0 && days <= 0 {
-        return;
-    }
-    let _one_at_a_time = core.storage_lock.lock().unwrap();
-    let clips: Vec<StoredClip> = list_media(core).into_iter().map(|m| StoredClip {
-        path: PathBuf::from(&m.file),
-        size: m.size,
-        modified: m.mtime,
-        favourite: kept_by_rules(&m, keep_tagged),
-    }).collect();
-    let mut chosen = if days > 0 { older_than(&clips, days, now_ms()) } else { Vec::new() };
-    if limit_gb > 0.0 {
-        let left = clips.into_iter().filter(|c| !chosen.contains(&c.path)).collect();
-        chosen.extend(over_limit(left, (limit_gb * 1e9) as u64));
-    }
-    let mut removed = 0;
-    for path in chosen {
-        match remove_media(core, &path) {
-            Ok(()) => removed += 1,
-            Err(e) => core.log_ui(&format!("storage rules could not remove {}: {e}", path.display())),
-        }
-    }
-    if removed > 0 {
-        let _ = core.app.emit("feedback", json!({ "kind": "storage", "ok": true, "removed": removed }));
-    }
-}
-
-// Long enough after start that capture is up and the panel isn't waiting on the media tool.
-const RETAG_DELAY: Duration = Duration::from_secs(60);
-const RETAG_GAME_POLL: Duration = Duration::from_secs(30);
-// Room left on the drive beyond the copy, so this can never be what fills it.
-const RETAG_SPARE_BYTES: u64 = 5_000_000_000;
-
-/// HEVC clips saved before 1.3.1 were tagged hev1, which iPhones won't play. This fixes them once, in the background
-/// and never while a game is in front. Anything it couldn't do, such as a clip open in a player, is tried at the next start.
-fn retag_old_clips(core: &Shared) {
-    let done = core.settings_file.with_file_name("hvc1-retagged");
-    if done.exists() {
-        return;
-    }
-    thread::sleep(RETAG_DELAY);
-    let gaming = || {
-        let settings = core.settings.lock().unwrap().clone();
-        game_in_front(core, &settings)
-    };
-    let mut finished = true;
-    let (mut fixed, mut checked) = (0, 0);
-    for media in list_media(core) {
-        let path = PathBuf::from(&media.file);
-        // FFmpeg writes this copy as MP4, so only MP4 and MOV files are touched.
-        let mp4 = path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["mp4", "mov"].contains(&e.to_lowercase().as_str()));
-        if media.kind == "screenshot" || !mp4 {
-            continue;
-        }
-        while gaming() && !core.quitting.load(Ordering::SeqCst) {
-            thread::sleep(RETAG_GAME_POLL);
-        }
-        if core.quitting.load(Ordering::SeqCst) {
-            return;
-        }
-        let Ok(before) = fs::metadata(&path) else { continue };
-        if path.parent().and_then(win32::free_bytes).is_some_and(|free| free < before.len() + RETAG_SPARE_BYTES) {
-            core.log_ui(&format!("retag skipped {}: not enough free space", path.display()));
-            finished = false;
-            continue;
-        }
-        checked += 1;
-        match core.engine.retag(&path).and_then(|copy| copy.map_or(Ok(false), |copy| replace_keeping_dates(core, &path, &before, &copy).map(|_| true))) {
-            Ok(true) => fixed += 1,
-            Ok(false) => {}
-            Err(e) => {
-                core.log_ui(&format!("retag could not fix {}: {e}", path.display()));
-                finished = false;
-            }
-        }
-    }
-    core.log_ui(&format!("retag checked {checked} videos and fixed {fixed}"));
-    if finished {
-        let _ = fs::write(&done, "");
-    }
-}
-
-/// Puts a fixed copy in place of the original, with the original's dates, so the library order and
-/// cached thumbnails stay as they were. If the original changed or went meanwhile, the copy goes instead.
-fn replace_keeping_dates(core: &Core, original: &Path, before: &fs::Metadata, copy: &Path) -> Result<(), String> {
-    use std::os::windows::fs::FileTimesExt;
-    let replaced = (|| {
-        let mut times = fs::FileTimes::new().set_modified(before.modified().map_err(|e| e.to_string())?);
-        if let Ok(created) = before.created() {
-            times = times.set_created(created);
-        }
-        fs::OpenOptions::new().write(true).open(copy).and_then(|f| f.set_times(times)).map_err(|e| e.to_string())?;
-        // The same locks as deleting, in the same order, so a clip can't be deleted or read halfway through this.
-        let _no_thumbnail = core.thumbnail_lock.lock().unwrap();
-        let _no_preview = core.strip_lock.lock().unwrap();
-        let now = fs::metadata(original).map_err(|_| "it was deleted or renamed".to_string())?;
-        if now.len() != before.len() || now.modified().ok() != before.modified().ok() {
-            return Err("it changed while being fixed".to_string());
-        }
-        fs::rename(copy, original).map_err(|e| format!("it may be open in another app ({e})"))
-    })();
-    if replaced.is_err() {
-        let _ = fs::remove_file(copy);
-    }
-    replaced
-}
-
-/// Sends a clip to the Recycle Bin, and forgets what was known about it.
-/// Moves a file to the Recycle Bin. It runs on a fresh thread, because the Recycle Bin needs COM set up one way,
-/// panics if a thread already has it set up another, and a shared thread may have been set up for anything.
-fn recycle(path: &Path) -> Result<(), String> {
-    let path = path.to_path_buf();
-    thread::spawn(move || trash::delete(path).map_err(|e| e.to_string()))
-        .join()
-        .unwrap_or_else(|_| Err("the Recycle Bin couldn't be reached".into()))
-}
-
-fn remove_media(core: &Core, path: &Path) -> Result<(), String> {
-    // A thumbnail or preview being made has the file open, which would stop it moving.
-    let deleted = {
-        let _no_thumbnail = core.thumbnail_lock.lock().unwrap();
-        let _no_preview = core.strip_lock.lock().unwrap();
-        recycle(path)
-    };
-    // Something else, such as Explorer's preview, may let go a moment later.
-    if deleted.is_err() {
-        thread::sleep(Duration::from_millis(500));
-        recycle(path).map_err(|e| format!("Couldn't delete this file. It may be open in another app. ({e})"))?;
-    }
-    let bookmarks = studio::bookmark_file(path);
-    if bookmarks.is_file() { let _ = recycle(&bookmarks); }
-    // A game folder goes once it's empty. Removing a folder with anything in it fails, which is what's wanted.
-    if let Some(folder) = path.parent().filter(|f| in_media_folders(core, f.parent())) {
-        let _ = fs::remove_dir(folder);
-    }
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    forget_thumbnails(core, &name);
-    let mut library = core.library.lock().unwrap();
-    let remembered = DeletedMedia {
-        path: path.to_path_buf(),
-        favourite: library.favourites.contains(&name),
-        game: library.games.get(&name).cloned(),
-        tags: library.tags.get(&name).cloned(),
-        camera: library.cameras.get(&name).copied(),
-    };
-    {
-        let mut deleted = core.deleted.lock().unwrap();
-        deleted.retain(|d| d.path != path);
-        deleted.push(remembered);
-        let extra = deleted.len().saturating_sub(MAX_REMEMBERED_DELETES);
-        deleted.drain(..extra);
-    }
-    library.forget(&name);
-    library.save(&core.library_file)
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-}
-
-/// Puts files deleted from Afterclip back where they were, from the Recycle Bin, with their favourite, game and tags.
-fn restore_media(core: &Core, files: &[String]) -> Result<usize, String> {
-    let wanted: Vec<DeletedMedia> = {
-        let mut deleted = core.deleted.lock().unwrap();
-        let (found, rest): (Vec<_>, Vec<_>) = deleted.drain(..).partition(|d| files.iter().any(|f| same_path(&d.path, Path::new(f))));
-        *deleted = rest;
-        found
-    };
-    if wanted.is_empty() {
-        return Err("That can't be undone anymore. It's still in the Recycle Bin.".into());
-    }
-    let binned = trash::os_limited::list().map_err(|e| format!("Couldn't read the Recycle Bin. ({e})"))?;
-    let mut restored = 0;
-    let mut problems = Vec::new();
-    for item in &wanted {
-        let bookmarks = studio::bookmark_file(&item.path);
-        // The newest copy, in case an older file of the same name was deleted before.
-        let newest = |path: &Path| binned.iter().filter(|b| same_path(&b.original_path(), path)).max_by_key(|b| b.time_deleted).cloned();
-        let Some(file) = newest(&item.path) else {
-            problems.push(format!("{} is no longer in the Recycle Bin", item.path.display()));
-            continue;
-        };
-        if item.path.exists() {
-            problems.push(format!("{} already exists", item.path.display()));
-            continue;
-        }
-        if let Some(folder) = item.path.parent() {
-            let _ = fs::create_dir_all(folder);
-        }
-        if let Err(e) = trash::os_limited::restore_all([file]) {
-            problems.push(format!("{} ({e})", item.path.display()));
-            continue;
-        }
-        if let Some(marks) = newest(&bookmarks).filter(|_| !bookmarks.exists()) {
-            let _ = trash::os_limited::restore_all([marks]);
-        }
-        let name = item.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let mut library = core.library.lock().unwrap();
-        if item.favourite {
-            library.favourites.insert(name.clone());
-        }
-        if let Some(game) = &item.game {
-            library.games.insert(name.clone(), game.clone());
-        }
-        if let Some(tags) = &item.tags {
-            library.tags.insert(name.clone(), tags.clone());
-        }
-        if let Some(camera) = item.camera {
-            library.cameras.insert(name, camera);
-        }
-        restored += 1;
-    }
-    core.library.lock().unwrap().save(&core.library_file)?;
-    if problems.is_empty() {
-        Ok(restored)
-    } else {
-        Err(format!("Couldn't put back {}: {}", problems.len(), problems.join("; ")))
-    }
-}
-
-fn forget_thumbnails(core: &Core, name: &str) {
-    let prefix = format!("{name}-");
-    if let Ok(entries) = fs::read_dir(core.engine.thumbs_dir()) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&prefix) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-}
-
-const PANEL_RECOVER_GAP: Duration = Duration::from_secs(30);
-
-// A game's profile stays on this long after it closes, so its last moments are still in the buffer to clip.
-fn profile_hold() -> Duration {
-    if api::is_test_instance() { Duration::from_secs(3) } else { Duration::from_secs(10 * 60) }
-}
-const GAME_WATCH_EVERY: Duration = Duration::from_secs(2);
-// Polls in a row with no game before an automatic recording stops, so a brief alt-tab or restart doesn't end it.
-const GAME_GONE_POLLS: u32 = 3;
-const STORAGE_CHECK_POLLS: u32 = 30;
-
-/// Whether a game is in front right now, for when capture is stopped and can't say.
-fn game_in_front(core: &Core, settings: &Settings) -> bool {
-    let added: Vec<String> = settings.game_profiles.iter().map(|p| p.exe.clone()).collect();
-    core.test_game.lock().unwrap().is_some() || win32::foreground_game_app(&added).is_some()
-}
-
-/// Stops a recording before the drive fills, and warns once when space gets low.
-fn check_free_space(core: &Shared, settings: &Settings, recording: bool, warned: &mut bool) {
-    let folder = PathBuf::from(&settings.output_dir);
-    let Some(existing) = folder.ancestors().find(|p| p.exists()) else { return };
-    let tested = *core.test_free_bytes.lock().unwrap();
-    let Some(free) = tested.or_else(|| win32::free_bytes(existing)) else { return };
-    let gb = |bytes: u64| (bytes as f64 / 1e9 * 10.0).floor() / 10.0;
-    if recording && free < STOP_RECORDING_BELOW && core.toggle_record().is_ok() {
-        let message = format!("Recording stopped and saved, because your drive has only {} GB free.", gb(free));
-        if settings.toast_enabled {
-            win32::show_toast(&message);
-        }
-        let _ = core.app.emit("feedback", json!({ "kind": "low-space", "ok": false, "message": message }));
-    }
-    let warn_below = (settings.low_space_warn_gb * 1e9) as u64;
-    if warn_below > 0 && free < warn_below {
-        if !*warned {
-            *warned = true;
-            let message = format!("Your drive has only {} GB free. Clips and recordings may fail when it fills up.", gb(free));
-            if settings.toast_enabled {
-                win32::show_toast(&format!("Low disk space: {} GB left", gb(free)));
-            }
-            let _ = core.app.emit("feedback", json!({ "kind": "low-space", "ok": false, "message": message }));
-        }
-    } else if free > warn_below + warn_below / 10 {
-        // A little above the line, so hovering around it doesn't warn again and again.
-        *warned = false;
-    }
-}
-
-/// Lets the mic through only while the push-to-talk key is held. It reads the key's state, which never stops
-/// the game from getting the press.
-fn watch_push_to_talk(core: Shared) {
-    let mut held = false;
-    loop {
-        let (on, key) = {
-            let s = core.settings.lock().unwrap();
-            (s.push_to_talk, s.push_to_talk_key.clone())
-        };
-        let code = if on { win32::virtual_key(&key) } else { None };
-        let tested = *core.test_talk.lock().unwrap();
-        // The Stream Deck's Hold to Talk key works alongside the keyboard or mouse one.
-        let deck = on && core.deck_talking.load(Ordering::SeqCst);
-        let now = deck || code.is_some_and(|code| tested.unwrap_or_else(|| win32::key_held(code)));
-        if now != held {
-            held = now;
-            core.talking.store(now, Ordering::SeqCst);
-            if core.engine.status().buffering {
-                let settings = core.settings.lock().unwrap().clone();
-                let _ = core.engine.set_mic_muted(core.mic_silenced(&settings));
-            }
-        }
-        thread::sleep(if code.is_some() { PUSH_TO_TALK_POLL } else { PUSH_TO_TALK_IDLE });
-    }
-}
-
-const MEMORY_CHECK_EVERY: Duration = Duration::from_secs(5);
-// Two low readings in a row, so a moment's spike while a game loads doesn't count.
-const LOW_MEMORY_READINGS: u32 = 2;
-// Free memory below the larger of these is low. Windows starts paging the game out not far below it.
-const LOW_MEMORY_BYTES: u64 = 2_500_000_000;
-const LOW_MEMORY_SHARE: f64 = 0.12;
-// A buffer smaller than this frees too little to be worth moving.
-const MOVE_BUFFER_FROM_MB: i64 = 500;
-const MOVE_RETRY_AFTER: Duration = Duration::from_secs(60);
-
-/// During a game, when memory runs low, moves the buffer to disk so the game keeps its memory. Nothing in the
-/// buffer is lost, and it goes back into RAM the next time capture restarts, such as when the game closes.
-fn watch_memory(core: Shared) {
-    let mut low_readings = 0;
-    while !core.quitting.load(Ordering::SeqCst) {
-        thread::sleep(MEMORY_CHECK_EVERY);
-        // Files on disk are also checked here, so none outlives the buffer by more than a few seconds.
-        if core.engine.buffer_on_disk() {
-            core.engine.prune_disk();
-        }
-        let status = core.engine.status();
-        let capture = core.engine.current_settings();
-        let worth_it = core.settings.lock().unwrap().free_memory_in_games
-            && status.buffering
-            && !status.buffer_on_disk
-            && running_game(&core).is_some()
-            && estimate_buffer_mb(capture.buffer_seconds, capture.bitrate_kbps) >= MOVE_BUFFER_FROM_MB;
-        let low = worth_it && win32::memory_status().is_some_and(|(free, total)| free < LOW_MEMORY_BYTES.max((total as f64 * LOW_MEMORY_SHARE) as u64));
-        low_readings = if low { low_readings + 1 } else { 0 };
-        if low_readings < LOW_MEMORY_READINGS {
-            continue;
-        }
-        low_readings = 0;
-        match core.engine.move_buffer_to_disk() {
-            Ok(()) => {
-                let freed = estimate_buffer_mb(capture.buffer_seconds, capture.bitrate_kbps);
-                core.log_ui(&format!("memory was low during a game, so the buffer moved to disk, freeing about {freed} MB"));
-                let message = "Memory was low, so the buffer moved to disk. Nothing in it was lost.";
-                if core.settings.lock().unwrap().toast_enabled {
-                    win32::show_toast(message);
-                }
-                let _ = core.app.emit("feedback", json!({ "kind": "buffer-on-disk", "ok": true, "message": message }));
-            }
-            Err(e) => {
-                core.log_ui(&format!("memory was low, but the buffer couldn't move to disk: {e}"));
-                thread::sleep(MOVE_RETRY_AFTER);
-            }
-        }
-    }
-}
-
-// Readings while listening, and checks for whether to listen at all, which cost more.
-const LOUD_READ_EVERY: Duration = Duration::from_millis(100);
-const LOUD_CHECK_EVERY: Duration = Duration::from_secs(1);
-// Meters are found again this often, so a game that starts playing through another device is still heard.
-const LOUD_REOPEN_EVERY: Duration = Duration::from_secs(5);
-// An automatic clip ends this long after the moment, so the reaction is in it too.
-const LOUD_AFTER_SECONDS: i64 = 3;
-pub(crate) const AUTO_TAG: &str = "auto";
-
-/// What Clip loud moments listens to right now, or None if it shouldn't listen: it's off, no game is
-/// running, the buffer is stopped, or the mic it would listen to is muted in clips.
-fn loud_source(core: &Core) -> Option<loud::Source> {
-    let settings = core.settings.lock().unwrap().clone();
-    if !settings.auto_clip || core.paused.load(Ordering::SeqCst) || !core.engine.status().buffering {
-        return None;
-    }
-    let game = running_game(core)?;
-    loud_source_for(core, &settings, Some(&game))
-}
-
-fn loud_source_for(core: &Core, settings: &Settings, game: Option<&str>) -> Option<loud::Source> {
-    if settings.auto_clip_source == "game" {
-        let added: Vec<String> = settings.game_profiles.iter().map(|p| p.exe.clone()).collect();
-        let front = win32::foreground_game_app(&added)?;
-        // Only the game being captured counts, not whatever else is in front.
-        if game.is_some_and(|g| !front.exe.eq_ignore_ascii_case(g)) {
-            return None;
-        }
-        return Some(loud::Source::App(front.pid));
-    }
-    if core.mic_silenced(settings) {
-        return None;
-    }
-    let mic = settings.audio_sources.iter().find(|s| s.kind == "input").map(|s| s.device.clone())?;
-    Some(loud::Source::Mic(mic))
-}
-
-/// Clip loud moments: saves a clip, tagged #auto, when the mic or the game stays loud for a moment.
-fn watch_loud_moments(core: Shared) {
-    win32::init_com_for_thread();
-    let mut listener: Option<loud::Listener> = None;
-    // What was last tried, so a source with no meters yet, such as a game that hasn't played a sound, is only
-    // looked for again every few seconds rather than at every reading.
-    let mut tried: Option<loud::Source> = None;
-    let mut opened_at = Instant::now();
-    let mut checked_at = Instant::now() - LOUD_CHECK_EVERY;
-    let mut wanted: Option<loud::Source> = None;
-    let mut detector = loud::Detector::new();
-    let mut next_allowed = Instant::now();
-    let mut level_db = -6.0;
-    loop {
-        if checked_at.elapsed() >= LOUD_CHECK_EVERY {
-            checked_at = Instant::now();
-            wanted = loud_source(&core);
-            level_db = core.settings.lock().unwrap().auto_clip_level_db;
-            if wanted.is_none() {
-                listener = None;
-                detector.reset();
-            }
-        }
-        let Some(source) = wanted.clone() else {
-            thread::sleep(LOUD_CHECK_EVERY);
-            continue;
-        };
-        if tried.as_ref() != Some(&source) || opened_at.elapsed() >= LOUD_REOPEN_EVERY {
-            listener = loud::Listener::open(source.clone());
-            tried = Some(source);
-            opened_at = Instant::now();
-        }
-        if let Some(heard) = listener.as_ref() {
-            if detector.hear(heard.peak_db(), level_db) && Instant::now() >= next_allowed {
-                let (seconds, after) = {
-                    let s = core.settings.lock().unwrap();
-                    (s.auto_clip_seconds, s.clip_after_seconds)
-                };
-                // The next moment can't start before this clip ends, so automatic clips never overlap.
-                next_allowed = Instant::now() + Duration::from_secs((seconds + LOUD_AFTER_SECONDS).max(0) as u64);
-                let saver = Arc::clone(&core);
-                thread::spawn(move || {
-                    // Keep recording after you save already waits, so this only makes up the difference.
-                    let wait = (LOUD_AFTER_SECONDS - after).max(0);
-                    thread::sleep(Duration::from_secs(wait as u64));
-                    saver.log_ui("a loud moment was heard, so an automatic clip is being saved");
-                    let _ = saver.save_clip_as(seconds + LOUD_AFTER_SECONDS.max(after), false, Some(AUTO_TAG), "Auto clip saved");
-                });
-            }
-        }
-        thread::sleep(LOUD_READ_EVERY);
-    }
-}
-
-// Waits before each try at starting capture again after it stops by itself. A graphics driver update takes a
-// minute or two, during which capture can't start, so the tries spread over about seven minutes.
-const RECOVERY_DELAYS: [u64; 10] = [5, 10, 20, 30, 60, 60, 60, 60, 60, 60];
-// Running this long without a problem starts the count of tries again.
-const HEALTHY_AFTER: Duration = Duration::from_secs(10 * 60);
-const HEALTH_CHECK_EVERY: Duration = Duration::from_secs(1);
-// After falling back to the CPU, how long to wait between tries of the graphics card's encoder again.
-const ENCODER_RETRY_EVERY: Duration = Duration::from_secs(60);
-const ENCODER_RETRIES: u32 = 10;
-
-/// The encoder setting an engine encoder id belongs to: "nvenc", "amd", "qsv" or "x264".
-fn encoder_vendor(id: &str) -> &'static str {
-    if id.contains("nvenc") {
-        "nvenc"
-    } else if id.contains("amf") {
-        "amd"
-    } else if id.contains("qsv") {
-        "qsv"
-    } else {
-        "x264"
-    }
-}
-
-/// How far down the engine's order an encoder is: NVIDIA, AMD, Intel, then the CPU.
-fn encoder_rank(id: &str) -> usize {
-    ["nvenc", "amd", "qsv", "x264"].iter().position(|v| *v == encoder_vendor(id)).unwrap_or(3)
-}
-
-/// Whether capture fell back to a worse encoder than one that worked earlier, which is what happens if
-/// capture restarts while a graphics driver is being installed: to the CPU, or to another GPU such as the
-/// processor's own graphics. An encoder the settings chose by name is never a fallback.
-fn fell_back(chosen: &str, in_use: Option<&str>, best_seen: Option<&str>) -> bool {
-    let (Some(in_use), Some(best_seen)) = (in_use, best_seen) else { return false };
-    chosen != "x264" && encoder_vendor(in_use) != chosen && encoder_rank(in_use) > encoder_rank(best_seen)
-}
-
-impl Core {
-    /// Stops and starts capture with the current settings. The buffer starts again from empty.
-    fn restart_capture(&self) -> Result<(), String> {
-        let _one_at_a_time = self.restart_lock.lock().unwrap();
-        let settings = self.effective(&self.settings.lock().unwrap().clone());
-        self.engine.stop();
-        let started = self.engine.start(Some(settings));
-        self.allow_media_folders();
-        started
-    }
-}
-
-/// Starts capture again by itself when it stops without being asked, such as after an encoder error, an
-/// engine crash or a graphics driver update. It gives up after a while, so a broken setup can't loop forever.
-fn watch_engine(core: Shared) {
-    let mut tries = 0usize;
-    let mut failed_at: Option<Instant> = None;
-    let mut ready_since: Option<Instant> = None;
-    let mut hardware_seen: Option<String> = None;
-    let mut encoder_retries = 0u32;
-    let mut encoder_tried_at = Instant::now();
-    loop {
-        thread::sleep(HEALTH_CHECK_EVERY);
-        if core.quitting.load(Ordering::SeqCst) || core.paused.load(Ordering::SeqCst) {
-            failed_at = None;
-            continue;
-        }
-        let status = core.engine.status();
-        if status.state == "ready" {
-            failed_at = None;
-            let since = *ready_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= HEALTHY_AFTER {
-                tries = 0;
-            }
-            let in_use = core.engine.encoder_in_use();
-            let software_gpu = core.engine.on_software_gpu();
-            let chosen = core.settings.lock().unwrap().encoder.clone();
-            // Only a proper graphics driver counts, and only the best encoder seen, so a later fallback shows.
-            if let Some(e) = in_use.as_deref().filter(|e| *e != "obs_x264" && !software_gpu) {
-                if hardware_seen.as_deref().map_or(true, |best| encoder_rank(e) <= encoder_rank(best)) {
-                    hardware_seen = Some(e.to_string());
-                }
-            }
-            let fell = fell_back(&chosen, in_use.as_deref(), hardware_seen.as_deref());
-            if !software_gpu && !fell {
-                encoder_retries = 0;
-            }
-            let retry_due = encoder_tried_at.elapsed() >= ENCODER_RETRY_EVERY && since.elapsed() >= ENCODER_RETRY_EVERY;
-            if (software_gpu || fell) && retry_due && !status.recording {
-                if encoder_retries < ENCODER_RETRIES {
-                    encoder_retries += 1;
-                    encoder_tried_at = Instant::now();
-                    let why = if software_gpu { "on Windows' software renderer, with no graphics driver ready" } else { "on a worse encoder after a problem" };
-                    core.log_ui(&format!("capture is {why}, so trying the graphics card again ({encoder_retries} of {ENCODER_RETRIES})"));
-                    ready_since = None;
-                    let _ = core.restart_capture();
-                } else if software_gpu && status.message.is_none() {
-                    core.engine.set_message("Capture is running on the CPU because no graphics driver was ready. Restart Afterclip, or update your graphics driver.".into());
-                }
-            }
-            continue;
-        }
-        ready_since = None;
-        if status.state != "error" {
-            failed_at = None;
-            continue;
-        }
-        let problem = status.message.clone().unwrap_or_default();
-        let Some(&delay) = RECOVERY_DELAYS.get(tries) else {
-            if !problem.contains("Restart Afterclip") {
-                core.log_ui(&format!("capture could not start again after {tries} tries, so it stays stopped: {problem}"));
-                core.engine.set_message(format!("{problem}. Afterclip tried {tries} times to start it again. Restart Afterclip, or update your graphics driver."));
-            }
-            continue;
-        };
-        let since = match failed_at {
-            Some(at) => at,
-            None => {
-                core.log_ui(&format!("capture stopped by itself ({problem}), so it starts again in {delay}s"));
-                core.engine.set_message(format!("{problem}. Starting again in {delay} seconds."));
-                let _ = core.app.emit("feedback", json!({ "kind": "recovering", "ok": true, "seconds": delay }));
-                *failed_at.insert(Instant::now())
-            }
-        };
-        if since.elapsed() < Duration::from_secs(delay) {
-            continue;
-        }
-        tries += 1;
-        failed_at = None;
-        let started = core.restart_capture();
-        match &started {
-            Ok(()) => core.log_ui(&format!("capture started again (try {tries})")),
-            Err(e) => core.log_ui(&format!("capture could not start again (try {tries}): {e}")),
-        }
-        if started.is_ok() {
-            let _ = core.app.emit("feedback", json!({ "kind": "recovered", "ok": true }));
-        }
-    }
-}
-
-/// Applies per-game profiles and automatic recording as games come and go.
-fn watch_games(core: Shared) {
-    let mut last_seen = Instant::now();
-    let mut handled: Option<String> = None;
-    let mut started_recording = false;
-    let mut gone_polls = 0;
-    let mut session_start: Option<f64> = None;
-    let mut storage_polls = 0;
-    let mut warned_space = false;
-    loop {
-        thread::sleep(GAME_WATCH_EVERY);
-        storage_polls += 1;
-        if storage_polls >= STORAGE_CHECK_POLLS {
-            storage_polls = 0;
-            enforce_storage_rules(&core);
-        }
-        let base = core.settings.lock().unwrap().clone();
-        let game = running_game(&core);
-        let recording = core.engine.status().recording;
-        // A recording keeps the buffer going too, so the time without a game counts from when it ends.
-        if game.is_some() || recording {
-            last_seen = Instant::now();
-        }
-        check_free_space(&core, &base, recording, &mut warned_space);
-
-        // The buffer stops a while after the game closes, so its last moments can still be clipped.
-        if core.paused.load(Ordering::SeqCst) {
-            if !base.pauses_without_game() || game_in_front(&core, &base) {
-                if let Err(e) = core.wake_engine() {
-                    core.log_ui(&format!("capture could not start again: {e}"));
-                }
-                last_seen = Instant::now();
-            }
-            continue;
-        }
-        if base.pauses_without_game() && game.is_none() && !recording && last_seen.elapsed() >= profile_hold() && core.engine.status().state == "ready" {
-            core.pause_engine();
-            continue;
-        }
-
-        let active = core.active_profile.lock().unwrap().clone();
-        let wanted = match &game {
-            Some(exe) => Some(exe.clone()).filter(|e| base.game_profiles.iter().any(|p| &p.exe == e)),
-            None if last_seen.elapsed() < profile_hold() => active.clone(),
-            None => None,
-        };
-        // A restart would end a recording, so a change waits until it stops.
-        if wanted != active && !recording && core.engine.status().state == "ready" {
-            *core.active_profile.lock().unwrap() = wanted.clone();
-            let effective = core.effective(&base);
-            if core.engine.current_settings().needs_engine_restart(&effective) {
-                let _one_at_a_time = core.restart_lock.lock().unwrap();
-                core.engine.stop();
-                let _ = core.engine.start(Some(effective.clone()));
-                core.allow_media_folders();
-            } else {
-                core.engine.use_settings(effective.clone());
-            }
-            let _ = core.app.emit("profile", json!({ "game": wanted, "bufferSeconds": effective.buffer_seconds }));
-        }
-
-        match &game {
-            Some(exe) => {
-                gone_polls = 0;
-                session_start.get_or_insert_with(now_ms);
-                let wants_recording = base.game_profiles.iter().any(|p| &p.exe == exe && p.auto_record);
-                let settled = wanted == *core.active_profile.lock().unwrap() && core.engine.status().buffering;
-                if handled.as_ref() != Some(exe) && settled {
-                    handled = Some(exe.clone());
-                    if wants_recording && !recording && core.toggle_record().is_ok() {
-                        started_recording = true;
-                    }
-                }
-            }
-            None => {
-                gone_polls += 1;
-                if gone_polls >= GAME_GONE_POLLS {
-                    handled = None;
-                    if let Some(start) = session_start.take() {
-                        end_session(&core, start);
-                    }
-                    if started_recording {
-                        started_recording = false;
-                        if recording {
-                            let _ = core.toggle_record();
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// When a game closes having saved clips, says how many, so they can be looked over together.
-fn end_session(core: &Core, start_ms: f64) {
-    let end_ms = now_ms();
-    let clips = list_media(core).iter().filter(|m| m.kind == "clip" && m.mtime >= start_ms && m.mtime <= end_ms).count();
-    if clips == 0 {
-        return;
-    }
-    let session = GameSession { start_ms, end_ms, clips };
-    *core.last_session.lock().unwrap() = Some(session.clone());
-    if core.settings.lock().unwrap().toast_enabled {
-        win32::show_toast(&format!("{clips} {} saved this session", if clips == 1 { "clip" } else { "clips" }));
-    }
-    let _ = core.app.emit("session", &session);
-}
-
-/// Whether this is Clips, Recordings or Screenshots itself.
-fn in_media_folders(core: &Core, folder: Option<&Path>) -> bool {
-    [core.engine.clips_dir(), core.engine.recordings_dir(), core.engine.screenshots_dir()].iter().any(|dir| folder == Some(dir.as_path()))
-}
-
-/// The UI only gets to act on files inside our own output folders, or a game folder inside one.
-fn own_media(core: &Core, file: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(file);
-    let traversal = path.components().any(|c| matches!(c, Component::ParentDir));
-    let parent = path.parent();
-    let game_folder = parent.filter(|p| !p.file_name().unwrap_or_default().to_string_lossy().starts_with('.'));
-    let own_folder = in_media_folders(core, parent) || in_media_folders(core, game_folder.and_then(Path::parent));
-    if traversal || !own_folder {
-        return Err("Not a Afterclip file".into());
-    }
-    Ok(path)
-}
-
 fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
     text.encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -1731,6 +1013,12 @@ fn dismiss_session(core: tauri::State<Shared>) {
 #[tauri::command(async)]
 fn estimate(payload: EstimateArgs) -> i64 {
     estimate_buffer_mb(payload.buffer_seconds, payload.bitrate_kbps)
+}
+
+/// This PC's installed memory in MB, so Settings can warn about a buffer that takes too much of it.
+#[tauri::command(async)]
+fn installed_memory_mb() -> Option<u64> {
+    win32::memory_status().map(|(_, total)| total / 1024 / 1024)
 }
 
 #[tauri::command(async)]
@@ -1910,7 +1198,8 @@ fn clip_tracks(core: tauri::State<Shared>, payload: String) -> Result<i64, Strin
     core.engine.track_count(&own_media(&core, &payload)?)
 }
 
-const NO_WEBHOOK: &str = "Add your Discord webhook in Settings, under Clips and sharing.";
+const NO_UPLOAD_SERVER: &str = "Add your upload server's HTTPS address in Settings, under Clips and sharing.";
+const NO_WEBHOOK: &str ="Add your Discord webhook in Settings, under Clips and sharing.";
 
 /// Sends a file as it is if Discord will take it. Otherwise it sends a smaller copy, which isn't kept. Choosing
 /// tracks other than the main mix always makes a copy, because Discord only plays a video's first track.
@@ -2052,6 +1341,8 @@ fn run_share(core: &Shared, mut payload: ShareArgs) -> Result<Option<String>, St
             let _ = fs::remove_file(vertical);
             upload.map(|_| None)
         })(),
+        // Answers with the link rather than a file.
+        "upload" => core.upload(source).map(Some),
         other => Err(format!("Unknown action {other}")),
     };
     if let Some(part) = part {
@@ -2153,180 +1444,6 @@ fn dismiss_patch_notes(core: tauri::State<Shared>) -> Result<(), String> {
         settings.clone()
     };
     saved.save(&core.settings_file).map_err(|e| e.to_string())
-}
-
-fn jpeg_url(image: &Path) -> Option<String> {
-    let bytes = fs::read(image).ok()?;
-    Some(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
-}
-
-/// Returns a cached thumbnail and duration. They're generated one at a time, only for cards on screen, and
-/// ones already made are returned straight away rather than waiting behind one being made.
-#[tauri::command(async)]
-fn thumbnail(core: tauri::State<Shared>, payload: String) -> Option<Value> {
-    let path = own_media(&core, &payload).ok()?;
-    let mtime = modified_ms(&fs::metadata(&path).ok()?) as u64;
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let image = core.engine.thumbs_dir().join(format!("{name}-{mtime}.jpg"));
-    let length = core.engine.thumbs_dir().join(format!("{name}-{mtime}.txt"));
-    // A picture has no length to show.
-    let picture = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
-    let cached_duration = || {
-        fs::read_to_string(&length).ok().and_then(|t| t.trim().parse::<f64>().ok())
-            .or(picture.then_some(0.0))
-    };
-    // The media tool writes thumbnails under a temporary name and renames them, so one that exists is whole.
-    let ready = |duration: f64| jpeg_url(&image).map(|url| json!({ "url": url, "duration": duration }));
-    if image.exists() {
-        if let Some(duration) = cached_duration() {
-            return ready(duration);
-        }
-    }
-    let _one_at_a_time = core.thumbnail_lock.lock().unwrap();
-    if !image.exists() {
-        fs::create_dir_all(core.engine.thumbs_dir()).ok()?;
-        core.engine.make_thumbnail(&path, &image).ok()?;
-    }
-    let duration = match cached_duration() {
-        Some(seconds) => seconds,
-        None => {
-            let seconds = core.engine.duration(&path).ok()?;
-            let _ = fs::write(&length, seconds.to_string());
-            seconds
-        }
-    };
-    ready(duration)
-}
-
-/// A video's length, from the thumbnail cache when it's there, or read once and kept there.
-fn clip_seconds(core: &Core, path: &Path) -> Option<f64> {
-    let mtime = modified_ms(&fs::metadata(path).ok()?) as u64;
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let length = core.engine.thumbs_dir().join(format!("{name}-{mtime}.txt"));
-    if let Some(seconds) = fs::read_to_string(&length).ok().and_then(|t| t.trim().parse::<f64>().ok()) {
-        return Some(seconds);
-    }
-    let seconds = core.engine.duration(path).ok()?;
-    let _ = fs::create_dir_all(core.engine.thumbs_dir());
-    let _ = fs::write(&length, seconds.to_string());
-    Some(seconds)
-}
-
-// Levels drawn across the editor's trim bar.
-const WAVE_POINTS: usize = 400;
-// The media tool's audio extract is 16 kHz mono, and stops after 10 minutes.
-const WAVE_RATE: usize = 16000;
-const WAVE_FLOOR_DB: f64 = -50.0;
-
-/// How loud each part of 16-bit mono audio is, from 0 (silent or below the floor) to 1 (full scale).
-fn loudness_levels(samples: &[i16], points: usize) -> Vec<f32> {
-    if samples.is_empty() || points == 0 {
-        return Vec::new();
-    }
-    let per = samples.len().div_ceil(points).max(1);
-    samples.chunks(per).map(|chunk| {
-        let mean = chunk.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / chunk.len() as f64;
-        let db = if mean > 0.0 { 10.0 * mean.log10() } else { WAVE_FLOOR_DB };
-        (((db - WAVE_FLOOR_DB) / -WAVE_FLOOR_DB).clamp(0.0, 1.0) * 1000.0).round() as f32 / 1000.0
-    }).collect()
-}
-
-/// The main mix's loudness across a video, for the editor to draw under the trim handles, and how many
-/// seconds it covers. Made once in the background, then kept with the thumbnails.
-#[tauri::command(async)]
-fn clip_loudness(core: tauri::State<Shared>, payload: String) -> Result<Value, String> {
-    let path = own_media(&core, &payload)?;
-    let mtime = modified_ms(&fs::metadata(&path).map_err(|e| e.to_string())?) as u64;
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let cached = core.engine.thumbs_dir().join(format!("{name}-{mtime}-wave.json"));
-    if let Some(found) = fs::read_to_string(&cached).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
-        return Ok(found);
-    }
-    // Shares the scrub strips' lock: both are previews made in the background, one at a time.
-    let _one_at_a_time = core.strip_lock.lock().unwrap();
-    fs::create_dir_all(core.engine.thumbs_dir()).map_err(|e| e.to_string())?;
-    let wav = core.engine.thumbs_dir().join(format!("{name}-{mtime}-wave.wav"));
-    let made = core.engine.wave(&path, &wav, &[0]).and_then(|()| fs::read(&wav).map_err(|e| e.to_string()));
-    let _ = fs::remove_file(&wav);
-    let bytes = made?;
-    // A plain 44-byte header, as the media tool writes it, then the samples.
-    let samples: Vec<i16> = bytes.get(44..).unwrap_or_default().chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
-    let result = json!({
-        "levels": loudness_levels(&samples, WAVE_POINTS),
-        "seconds": samples.len() as f64 / WAVE_RATE as f64,
-    });
-    let _ = fs::write(&cached, result.to_string());
-    Ok(result)
-}
-
-// The longest a clip can be is the longest buffer, so clips saved further apart than this can't overlap.
-const OVERLAP_REACH_SECONDS: f64 = 1800.0 + 60.0;
-
-/// Clips saved so close together that they show the same moment, with the shorter one suggested to go.
-#[tauri::command(async)]
-fn find_overlaps(core: tauri::State<Shared>) -> Vec<Value> {
-    let (kept, favourites) = {
-        let library = core.library.lock().unwrap();
-        (library.kept_overlaps.clone(), library.favourites.clone())
-    };
-    let mut timed: Vec<(Media, f64)> = list_media(&core).into_iter()
-        .filter(|m| m.kind == "clip")
-        .filter_map(|m| overlaps::saved_at(&m.name).map(|at| (m, at)))
-        .collect();
-    timed.sort_by(|a, b| a.1.total_cmp(&b.1));
-    // Only clips with a neighbour close enough get their length read, so a tidy library costs nothing.
-    let near = |i: usize| {
-        let at = timed[i].1;
-        (i > 0 && at - timed[i - 1].1 <= OVERLAP_REACH_SECONDS) || timed.get(i + 1).is_some_and(|next| next.1 - at <= OVERLAP_REACH_SECONDS)
-    };
-    let files: std::collections::HashMap<String, String> = timed.iter().map(|(m, _)| (m.name.clone(), m.file.clone())).collect();
-    let clips: Vec<overlaps::SavedClip> = (0..timed.len()).filter(|&i| near(i)).filter_map(|i| {
-        let (m, at) = &timed[i];
-        Some(overlaps::SavedClip { name: m.name.clone(), ends: *at, seconds: clip_seconds(&core, Path::new(&m.file))?, favourite: favourites.contains(&m.name) })
-    }).collect();
-    overlaps::find(clips).into_iter()
-        .filter(|o| !kept.contains(&overlaps::pair_key(&o.keep, &o.covered)))
-        .map(|o| json!({
-            "keep": { "name": o.keep, "file": files.get(&o.keep) },
-            "covered": { "name": o.covered, "file": files.get(&o.covered) },
-            "sharedSeconds": o.shared_seconds.round(),
-        }))
-        .collect()
-}
-
-#[derive(Deserialize)]
-struct OverlapArgs {
-    keep: String,
-    covered: String,
-}
-
-/// Remembers that someone wants both clips of a pair, so it isn't suggested again.
-#[tauri::command(async)]
-fn keep_overlap(core: tauri::State<Shared>, payload: OverlapArgs) -> Result<(), String> {
-    let mut library = core.library.lock().unwrap();
-    library.kept_overlaps.insert(overlaps::pair_key(&payload.keep, &payload.covered));
-    library.save(&core.library_file)
-}
-
-/// A row of frames across a video, to scrub through on hover. Made once, then kept with the thumbnails.
-#[tauri::command(async)]
-fn preview_strip(core: tauri::State<Shared>, payload: String) -> Option<Value> {
-    let path = own_media(&core, &payload).ok()?;
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
-        return None;
-    }
-    let mtime = modified_ms(&fs::metadata(&path).ok()?) as u64;
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let image = core.engine.thumbs_dir().join(format!("{name}-{mtime}-strip.jpg"));
-    // One already made doesn't wait behind one being made for another clip.
-    if !image.exists() {
-        let _one_at_a_time = core.strip_lock.lock().unwrap();
-        if !image.exists() {
-            fs::create_dir_all(core.engine.thumbs_dir()).ok()?;
-            core.engine.make_preview_strip(&path, &image).ok()?;
-        }
-    }
-    Some(json!({ "url": jpeg_url(&image)?, "frames": engine::PREVIEW_FRAMES }))
 }
 
 /// Asks where to save a file, keeping the panel open behind the dialog. None if cancelled.
@@ -2717,6 +1834,7 @@ fn share_source(core: tauri::State<Shared>) -> Result<Value, String> {
         .collect();
     Ok(json!({
         "file": path, "name": path.file_name().unwrap_or_default().to_string_lossy(), "channels": channels,
+        "canUpload": !settings.upload_url.is_empty(),
         "game": source.game, "at": source.at, "even": settings.even_audio,
         "recipes": settings.share_recipes, "layout": settings.vertical_layouts.get(&source.game),
         "hasBookmarks": studio::bookmark_file(path).is_file()
@@ -2899,309 +2017,6 @@ fn new_api_key(core: tauri::State<Shared>) -> Value {
     remote_json(&core)
 }
 
-/// Reloads a window that never reported rendering, then shows it regardless, and logs both for diagnosis.
-fn watch_startup(core: &Shared, label: &'static str) {
-    core.ready_windows.lock().unwrap().retain(|l| l != label);
-    let core = Arc::clone(core);
-    thread::spawn(move || {
-        let is_ready = |core: &Core| core.ready_windows.lock().unwrap().iter().any(|l| l == label);
-        thread::sleep(READY_RELOAD_AFTER);
-        if is_ready(&core) {
-            return;
-        }
-        core.log_ui(&format!("{label} had not rendered after {READY_RELOAD_AFTER:?}, reloading"));
-        if let Some(window) = core.app.get_webview_window(label) {
-            let _ = window.eval("window.location.reload()");
-        }
-        thread::sleep(READY_SHOW_AFTER - READY_RELOAD_AFTER);
-        if is_ready(&core) {
-            core.log_ui(&format!("{label} rendered after reloading"));
-            return;
-        }
-        core.log_ui(&format!("{label} still had not rendered after {READY_SHOW_AFTER:?}, showing it anyway"));
-        if let Some(window) = core.app.get_webview_window(label) {
-            let _ = window.show();
-        }
-    });
-}
-
-fn local_app_data() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
-}
-
-/// Where everything except clips and recordings lives.
-fn home_dir() -> PathBuf {
-    std::env::var_os("AFTERCLIP_HOME").filter(|_| api::is_test_instance()).map(PathBuf::from).unwrap_or_else(|| local_app_data().join("Afterclip"))
-}
-
-/// Earlier versions kept settings in Roaming and the windows' data in a folder of its own.
-fn move_old_data(home: &Path, identifier: &str) {
-    if let Some(roaming) = std::env::var_os("APPDATA").map(PathBuf::from) {
-        data_move::move_files(&roaming.join("Afterclip"), home, &["settings.json", "library.json", "api-token.txt"]);
-    }
-    let old_windows = local_app_data().join(identifier);
-    thread::spawn(move || {
-        let _ = fs::remove_dir_all(old_windows.join("EBWebView"));
-        let _ = fs::remove_dir(old_windows);
-    });
-}
-
-fn build_window<'a>(app: &'a AppHandle, label: &str, page: &str) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
-        .title("Afterclip")
-        // Hidden until the page reports it has rendered, on a dark background rather than white.
-        .visible(false)
-        .background_color(BACKGROUND)
-        .data_directory(home_dir().join("webview"));
-    if api::is_test_instance() {
-        if let Ok(port) = std::env::var("AFTERCLIP_DEBUG_PORT") {
-            builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
-        }
-    }
-    builder
-}
-
-/// Docks the panel flush into the corner of the usable area beside the tray, touching the taskbar.
-fn position_panel(core: &Core, window: &WebviewWindow) {
-    let anchor = core.tray_anchor.lock().unwrap().or_else(|| {
-        let tray = core.app.tray_by_id("afterclip")?;
-        let rect = tray.rect().ok()??;
-        let position = rect.position.to_physical::<f64>(1.0);
-        let size = rect.size.to_physical::<f64>(1.0);
-        Some(((position.x + size.width / 2.0) as i32, (position.y + size.height / 2.0) as i32))
-    });
-    let (ax, ay) = anchor.unwrap_or_else(|| {
-        let (w, h) = win32::primary_monitor_size();
-        (w as i32, h as i32)
-    });
-    let (left, top, right, bottom) = win32::work_area_at(ax, ay);
-    let Ok(size) = window.outer_size() else { return };
-    let (w, h) = (size.width as i32, size.height as i32);
-    // Works for a taskbar on any edge: the corner nearest the tray icon.
-    let x = if ax > (left + right) / 2 { right - w } else { left };
-    let y = if ay > (top + bottom) / 2 { bottom - h } else { top };
-    let _ = window.set_position(PhysicalPosition::new(x, y));
-}
-
-/// Overlays like RivaTuner can crash the browser behind a window. The window stays, showing nothing, and
-/// would never paint again. Removing it means the next open builds a new one. A visible panel comes straight
-/// back, but not repeatedly, so something that crashes every browser can't start a loop.
-fn recover_from_browser_crash(core: &Shared, window: &WebviewWindow) {
-    let label = window.label().to_string();
-    let core = Arc::clone(core);
-    let _ = window.with_webview(move |webview| unsafe {
-        let Ok(browser) = webview.controller().CoreWebView2() else { return };
-        let handler = ProcessFailedEventHandler::create(Box::new(move |_, args| {
-            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
-            if let Some(args) = args {
-                args.ProcessFailedKind(&mut kind)?;
-            }
-            if [COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED].contains(&kind) {
-                let core = Arc::clone(&core);
-                let label = label.clone();
-                // Never from inside the browser's own event.
-                thread::spawn(move || {
-                    let Some(window) = core.app.get_webview_window(&label) else { return };
-                    core.log_ui(&format!("{label}'s browser stopped, so its window will be rebuilt"));
-                    let reopen = label == PANEL && window.is_visible().unwrap_or(false);
-                    let _ = window.destroy();
-                    let mut last = core.panel_recovered_at.lock().unwrap();
-                    if reopen && last.is_none_or(|at| at.elapsed() > PANEL_RECOVER_GAP) {
-                        *last = Some(Instant::now());
-                        drop(last);
-                        show_panel(&core);
-                    }
-                });
-            }
-            Ok(())
-        }));
-        let mut token = Default::default();
-        let _ = browser.add_ProcessFailed(&handler, &mut token);
-    });
-}
-
-/// The panel is the app's only front door. It's opened from the tray and closes when it loses focus.
-fn show_panel(core: &Shared) {
-    if let Some(window) = core.app.get_webview_window(PANEL) {
-        position_panel(core, &window);
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.emit("panel-shown", ());
-        return;
-    }
-    let built = build_window(&core.app, PANEL, "index.html")
-        .inner_size(420.0, 700.0)
-        .resizable(false)
-        .decorations(false)
-        .skip_taskbar(true)
-        .always_on_top(true)
-        // A shadow adds an invisible frame around the window, which would leave a gap from the taskbar.
-        .shadow(false)
-        // See-through outside the page's rounded corners.
-        .transparent(true)
-        .background_color(Color(0, 0, 0, 0))
-        .build();
-    match built {
-        Ok(window) => recover_from_browser_crash(core, &window),
-        Err(e) => {
-            core.log_ui(&format!("panel could not open: {e}"));
-            return;
-        }
-    }
-    watch_startup(core, PANEL);
-}
-
-fn toggle_panel(core: &Shared) {
-    let visible = core.app.get_webview_window(PANEL).is_some_and(|w| w.is_visible().unwrap_or(false));
-    if visible {
-        if let Some(window) = core.app.get_webview_window(PANEL) {
-            let _ = window.hide();
-        }
-        return;
-    }
-    // Clicking the tray takes focus from the panel first, which already hid it. This click means close.
-    let just_hidden = core.panel_hidden_at.lock().unwrap().is_some_and(|at| at.elapsed() < Duration::from_millis(300));
-    if !just_hidden {
-        show_panel(core);
-    }
-}
-
-fn show_editor(core: &Shared, files: Vec<String>) {
-    core.pending_editor_files.lock().unwrap().extend(files);
-    if let Some(window) = core.app.get_webview_window(EDITOR) {
-        let _ = window.emit("editor-files", ());
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-    let built = build_window(&core.app, EDITOR, "editor.html")
-        .title("Afterclip Editor")
-        .inner_size(1120.0, 740.0)
-        .min_inner_size(860.0, 600.0)
-        .build();
-    match built {
-        Ok(window) => recover_from_browser_crash(core, &window),
-        Err(e) => {
-            core.log_ui(&format!("editor could not open: {e}"));
-            return;
-        }
-    }
-    watch_startup(core, EDITOR);
-}
-
-fn on_panel_blur(core: &Shared) {
-    if core.keep_panel_open.load(Ordering::SeqCst) {
-        return;
-    }
-    let Some(window) = core.app.get_webview_window(PANEL) else { return };
-    let _ = window.hide();
-    *core.panel_hidden_at.lock().unwrap() = Some(Instant::now());
-    let hide = core.panel_hide_count.fetch_add(1, Ordering::SeqCst) + 1;
-    let core = Arc::clone(core);
-    thread::spawn(move || {
-        thread::sleep(PANEL_KEEP_ALIVE);
-        let still_hidden = core.panel_hide_count.load(Ordering::SeqCst) == hide;
-        if let Some(window) = core.app.get_webview_window(PANEL) {
-            if still_hidden && !window.is_visible().unwrap_or(true) {
-                let _ = window.destroy();
-            }
-        }
-    });
-}
-
-fn strip_verbatim(path: PathBuf) -> PathBuf {
-    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
-        Some(plain) => PathBuf::from(plain),
-        None => path,
-    }
-}
-
-/// Installed builds carry the engine in resources. Running from source uses vendor/engine.
-fn engine_root(app: &AppHandle) -> PathBuf {
-    if let Ok(resources) = app.path().resource_dir() {
-        let bundled = strip_verbatim(resources).join("engine");
-        if bundled.join("bin").exists() {
-            return bundled;
-        }
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("vendor").join("engine")
-}
-
-/// The drawing made for the display's scale, because Windows blurs an icon it has to resize.
-fn tray_icon() -> Image<'static> {
-    match win32::system_dpi() {
-        0..=108 => tauri::include_image!("icons/tray-16.png"),
-        109..=132 => tauri::include_image!("icons/tray-20.png"),
-        133..=168 => tauri::include_image!("icons/tray-24.png"),
-        _ => tauri::include_image!("icons/tray-32.png"),
-    }
-}
-
-/// The tray's menu. With a capture card chosen, it can switch between the card and this PC.
-fn tray_menu(app: &AppHandle, settings: &Settings) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let mut menu = MenuBuilder::new(app)
-        .text("show", "Open Afterclip")
-        .text("editor", "Open editor")
-        .text("clip", "Clip whole buffer")
-        .text("record", "Start / stop recording");
-    if !settings.capture_card_device.is_empty() {
-        menu = menu.text("card", if settings.capture_card { "Record this PC instead" } else { "Record the capture card" });
-    }
-    menu.separator().text("quit", "Quit").build()
-}
-
-/// Brings the tray's menu up to date after the capture card is switched on or off.
-fn refresh_tray(core: &Shared) {
-    let settings = core.settings.lock().unwrap().clone();
-    if let (Some(tray), Ok(menu)) = (core.app.tray_by_id("afterclip"), tray_menu(&core.app, &settings)) {
-        let _ = tray.set_menu(Some(menu));
-    }
-}
-
-fn create_tray(app: &AppHandle, core: Shared) -> tauri::Result<()> {
-    let menu = tray_menu(app, &core.settings.lock().unwrap().clone())?;
-    let menu_core = Arc::clone(&core);
-    TrayIconBuilder::with_id("afterclip")
-        .icon(tray_icon())
-        .tooltip("Afterclip")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            "show" => {
-                let core = Arc::clone(&menu_core);
-                thread::spawn(move || show_panel(&core));
-            }
-            "editor" => {
-                let core = Arc::clone(&menu_core);
-                thread::spawn(move || show_editor(&core, Vec::new()));
-            }
-            "clip" => {
-                let core = Arc::clone(&menu_core);
-                thread::spawn(move || { let _ = core.clip(0); });
-            }
-            "record" => {
-                let core = Arc::clone(&menu_core);
-                thread::spawn(move || { let _ = core.toggle_record(); });
-            }
-            "card" => {
-                let core = Arc::clone(&menu_core);
-                thread::spawn(move || { let _ = toggle_card(&core); });
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(move |_, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
-                let position = rect.position.to_physical::<f64>(1.0);
-                let size = rect.size.to_physical::<f64>(1.0);
-                *core.tray_anchor.lock().unwrap() = Some(((position.x + size.width / 2.0) as i32, (position.y + size.height / 2.0) as i32));
-                toggle_panel(&core);
-            }
-        })
-        .build(app)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3298,7 +2113,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            state, estimate, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, install_stream_deck_plugin, dismiss_stream_deck_plugin, thumbnail, preview_strip, find_overlaps, keep_overlap, clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
+            state, estimate, installed_memory_mb, clip, share_clip, toggle_record, toggle_mic, toggle_clean_mic, add_marker, screenshot, set_volume, set_meters, levels, loud_level, stats, close_panel, open, reveal, start_drag, trash, restore, dismiss_session, set_favourite, set_tags, rename_clip, clip_tracks, check_update, install_update, skip_update, dismiss_patch_notes, install_stream_deck_plugin, dismiss_stream_deck_plugin, media::thumbnail, media::preview_strip, media::find_overlaps, media::keep_overlap, media::clip_loudness, pick_folder, save_diagnostics, new_api_key, export_settings,
  import_settings, running_apps, pick_game, audio_choices, camera_choices, card_choices, card_preview, card_modes, display_info,
             save_settings, restart_admin, window_ready, open_editor, editor_files, export_edit,
             open_share, share_source, share_duration, save_share_recipe, delete_share_recipe,
@@ -3394,12 +2209,12 @@ fn main() {
 
                 api_error: Mutex::new(None),
                 hotkey_failures: Mutex::new(Vec::new()),
-                thumbnail_lock: Mutex::new(()),
+                thumbnails: previews::Gate::default(),
                 restart_lock: Mutex::new(()),
                 quitting: AtomicBool::new(false),
                 keep_panel_open: AtomicBool::new(false),
                 panel_hidden_at: Mutex::new(None),
-                panel_recovered_at: Mutex::new(None),
+                panel_recoveries: Mutex::new(Vec::new()),
                 panel_hide_count: AtomicU64::new(0),
                 tray_anchor: Mutex::new(None),
                 pending_editor_files: Mutex::new(Vec::new()),
@@ -3414,12 +2229,13 @@ fn main() {
                 test_game: Mutex::new(None),
                 deleted: Mutex::new(Vec::new()),
                 last_session: Mutex::new(None),
+                last_clip_press: Mutex::new(None),
                 controller: OnceLock::new(),
                 update: Mutex::new(updater::UpdateState { status: "idle".into(), ..Default::default() }),
                 update_ready: Mutex::new(None),
                 update_busy: AtomicBool::new(false),
                 storage_lock: Mutex::new(()),
-                strip_lock: Mutex::new(()),
+                strips: previews::Gate::default(),
                 paused: AtomicBool::new(false),
                 talking: AtomicBool::new(false),
                 test_talk: Mutex::new(None),
@@ -3518,6 +2334,13 @@ fn main() {
             thread::spawn(move || reel::watch(reeler));
             let saver = Arc::clone(&core);
             thread::spawn(move || watch_memory(saver));
+            let sweeper = Arc::clone(&core);
+            thread::spawn(move || loop {
+                // A while after starting, then daily, so it never slows startup.
+                thread::sleep(SWEEP_THUMBNAILS_AFTER);
+                sweep_thumbnails(&sweeper);
+                thread::sleep(SWEEP_THUMBNAILS_EVERY.saturating_sub(SWEEP_THUMBNAILS_AFTER));
+            });
             core.allow_media_folders();
             // Audio devices that got new ids, such as after a driver reinstall, are saved under them, so the
             // settings show what's really recorded. The engine finds them again by name on every start too.

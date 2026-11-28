@@ -1,0 +1,56 @@
+# Runs the tests that need no GPU, capture device or running copy of Afterclip. The capture, end-to-end and UI
+# tests drive the real engine, so they stay local: npm run test:e2e, test:ui, test:capture and test:disk.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # The bundle lists the engine, Studio and Stream Deck plugin as resources, which a test build doesn't
+      # need but Tauri checks are there. Empty stand-ins are enough.
+      - name: Stand in for bundled resources
+        shell: bash
+        run: |
+          mkdir -p vendor/engine vendor/studio streamdeck/dist
+          touch vendor/engine/.keep vendor/studio/.keep streamdeck/dist/com.afterclip.clips.streamDeckPlugin
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  node:
+    name: Node tests and checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Renderer and scripts parse
+        shell: bash
+        run: for f in src/renderer/*.js scripts/*.js streamdeck/com.afterclip.clips.sdPlugin/*.cjs streamdeck/com.afterclip.clips.sdPlugin/ui/*.js; do node --check "$f" || exit 1; done
+      - name: Usage worker
+        run: node --test server/usage/worker.test.mjs
+      - name: Stream Deck plugin
+        run: |
+          node scripts/build-plugin.js
+          node src/test/plugin-test.js

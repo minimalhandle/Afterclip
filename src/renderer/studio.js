@@ -3,6 +3,9 @@ const $ = (id) => document.getElementById(id);
 let state;
 let recipeNames = '';
 let initialized = false;
+// What the page last drew, so the once-a-second check only redraws when something changed, and the queue's
+// Retry buttons aren't rebuilt under the mouse.
+let shown = '';
 
 function note(text, warning = false) {
   $('studio-note').textContent = text;
@@ -15,7 +18,11 @@ function action(task) {
     if (button) button.disabled = true;
     try { await task(); }
     catch (error) { note(error.message, true); }
-    finally { if (button) button.disabled = false; }
+    finally {
+      if (button) button.disabled = false;
+      // The next check redraws, so buttons and boxes show the real state again after any action.
+      shown = '';
+    }
   };
 }
 
@@ -25,6 +32,9 @@ function fileName(path) {
 
 async function refreshStudio() {
   state = await api.invoke('studio-state');
+  const drawn = JSON.stringify(state);
+  if (drawn === shown) return;
+  shown = drawn;
   const { prefs, jobs, selection } = state;
   if (!initialized) {
     $('recovery-seconds').value = prefs.recoverySeconds;

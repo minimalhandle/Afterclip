@@ -3,10 +3,12 @@
 //   node scripts/build-release.js
 // The key is read from AFTERCLIP_SIGNING_KEY_FILE, or %USERPROFILE%\.afterclip\updater.key.
 // Write the patch notes in CHANGELOG.md first. Upload the installer, its .sig file and latest.json to the GitHub release.
+// With AFTERCLIP_SIGN_COMMAND set, the engine, the app and the installer are also code-signed (see codesign.js).
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { signCommand, signFiles, verifySigned } = require('./codesign');
 
 const root = path.join(__dirname, '..');
 const keyFile = process.env.AFTERCLIP_SIGNING_KEY_FILE ?? path.join(os.homedir(), '.afterclip', 'updater.key');
@@ -25,13 +27,28 @@ const env = {
   TAURI_SIGNING_PRIVATE_KEY: fs.readFileSync(keyFile, 'utf8').trim(),
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
 };
+const codeSigning = signCommand();
+console.log(codeSigning ? 'Code signing is on.' : 'Code signing is off: set AFTERCLIP_SIGN_COMMAND to sign the installer.');
 execSync('npm run build:engine', { cwd: root, stdio: 'inherit' });
-execSync('npx tauri build --config src-tauri/tauri.release.conf.json', { cwd: root, stdio: 'inherit', env });
+// Afterclip's own engine programs. The OBS programs and hooks beside them come signed already.
+const engineBin = path.join(root, 'vendor', 'engine', 'bin', '64bit');
+signFiles(['afterclip-engine.exe', 'afterclip-media.exe'].map((name) => path.join(engineBin, name)));
+
+// Tauri signs the app and the installer with the same command, before making the updater's signature.
+const configs = ['src-tauri/tauri.release.conf.json'];
+if (codeSigning) {
+  const signing = path.join(root, 'src-tauri', 'target', 'tauri.signing.conf.json');
+  fs.mkdirSync(path.dirname(signing), { recursive: true });
+  fs.writeFileSync(signing, `${JSON.stringify({ bundle: { windows: { signCommand: codeSigning } } })}\n`);
+  configs.push(signing);
+}
+execSync(`npx tauri build ${configs.map((c) => `--config "${c}"`).join(' ')}`, { cwd: root, stdio: 'inherit', env });
 
 const dir = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'nsis');
 const installer = `Afterclip_${version}_x64-setup.exe`;
 const signature = path.join(dir, `${installer}.sig`);
 if (!fs.existsSync(signature)) throw new Error(`The build didn't sign ${installer}`);
+if (codeSigning) verifySigned([path.join(dir, installer), path.join(root, 'src-tauri', 'target', 'release', 'afterclip.exe')]);
 
 // The address the updater reads ends in latest/download, so each release replaces this for everyone.
 const repository = plugins.updater.endpoints[0].split('/releases/')[0];

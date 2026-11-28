@@ -3,6 +3,21 @@
 Afterclip shows the section for its own version after an update, and the release script puts it in the
 update itself. Each version starts with `## ` and its number. Lines that start with `- ` show as a list.
 
+## 1.7.0
+
+- Press twice for a longer clip: pressing a clip key again within 10 seconds saves one clip from the first press to the second, instead of two that show the same moment. The shorter clip goes to the Recycle Bin, and the longer one keeps its star and tags. Turn it off in Settings > Video.
+- Upload and copy link: in Edit and share, send a clip to your own file host and copy the link it answers with. Set the HTTPS address, and a token if it needs one, in Settings > Clips and sharing. Both are left out of exported settings and diagnostics.
+- Settings warns when the buffer would take over a quarter of your PC's memory, which can slow games down.
+- View all fills in faster: new thumbnails and scrub previews are made a few at a time when no game is running, and one at a time during a game.
+- Cached thumbnails of clips you deleted or renamed in File Explorer are cleaned up by themselves.
+- Tools no longer rebuilds its list every second, so its buttons don't flicker under the mouse.
+- When the browser behind Afterclip's windows crashes again a few seconds after the first time, as a game overlay can cause, the panel still comes back by itself.
+- Capture cards: a console sending HDR records in the right colours with Console sends HDR on, in 10-bit where the card sends it, and Afterclip suggests turning it on when the picture looks washed out.
+- Capture cards: the card's sound is recorded through Windows' own device for it when there is one, the panel shows a small live preview of the card's picture, and Settings greys out sizes and frame rates the card can't send.
+- Capture cards: a card that wasn't ready when capture started, such as one still starting up, is opened again every 30 seconds until its picture arrives.
+- Audio sources whose device got a new id, such as after reinstalling Voicemeeter or VB-Cable, are found again by name. One that's really gone shows a warning instead of recording nothing.
+- Failed update checks wait longer after each failure instead of retrying every few minutes while offline.
+
 ## 1.6.0
 
 - Lighter on games: the game hook now copies frames only at your capture frame rate, so a game running at 144 or 240 fps no longer pays for frames Afterclip never uses.

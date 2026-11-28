@@ -1309,11 +1309,19 @@ async function renderEstimate() {
     note.classList.remove('warn');
     return;
   }
+  installedMb ??= await api.invoke('installed-memory-mb').catch(() => null);
+  // A quarter of this PC's memory, or a fixed size when that can't be read.
+  const large = installedMb ? mb >= installedMb * LARGE_BUFFER_SHARE : mb >= LARGE_BUFFER_MB;
   note.textContent = `Uses about ${size(mb)} of memory at this quality and length.`;
-  note.classList.toggle('warn', mb >= LARGE_BUFFER_MB);
+  if (large && installedMb) {
+    note.textContent += ` That's over a quarter of this PC's ${size(installedMb)}, so games may slow down. Shorten the buffer, lower the quality, or turn on Keep the buffer on disk.`;
+  }
+  note.classList.toggle('warn', large);
 }
 
 const LARGE_BUFFER_MB = 4096;
+const LARGE_BUFFER_SHARE = 0.25;
+let installedMb = null;
 const BITRATES = [[8000, 'Low (8 Mbps)'], [20000, 'Medium (20 Mbps)'], [40000, 'High (40 Mbps)'], [60000, 'Very high (60 Mbps)'], [80000, 'Ultra (80 Mbps)'], [100000, 'Extreme (100 Mbps)'], [150000, 'Maximum (150 Mbps)']];
 const HEIGHTS = [2160, 1440, 1080, 720];
 const QUALITY = {
@@ -1770,6 +1778,34 @@ function renderWebhooks() {
   $('add-webhook').disabled = hooks.length >= MAX_WEBHOOKS;
 }
 
+/** The upload server's address, token and form field, with a warning for an address that isn't HTTPS. */
+function renderUpload() {
+  for (const key of ['uploadUrl', 'uploadToken', 'uploadField']) {
+    const input = $(key);
+    input.value = settings[key] ?? '';
+    input.oninput = () => {
+      settings[key] = input.value.trim();
+      checkUpload();
+      scheduleSave(TYPING_DELAY_MS);
+    };
+  }
+  checkUpload();
+}
+
+function checkUpload() {
+  const typed = $('uploadUrl').value.trim();
+  let warning = '';
+  if (typed) {
+    try {
+      if (new URL(typed).protocol !== 'https:') warning = 'The address must start with https://, so your clips and token are never sent unencrypted.';
+    } catch {
+      warning = "That doesn't look like a web address. It starts with https://";
+    }
+  }
+  $('upload-warning').textContent = warning;
+  $('upload-warning').hidden = !warning;
+}
+
 function fillForm() {
   for (const k of ['encoder', 'outputDir', 'quality', 'codec', 'encoderPreset']) $(k).value = settings[k];
   ensureOption($('storageLimitGb'), settings.storageLimitGb, `${settings.storageLimitGb} GB`);
@@ -1777,6 +1813,7 @@ function fillForm() {
   ensureOption($('deleteAfterDays'), settings.deleteAfterDays, `After ${settings.deleteAfterDays} days`);
   $('deleteAfterDays').value = settings.deleteAfterDays;
   renderWebhooks();
+  renderUpload();
   ensureOption($('starClipSeconds'), settings.starClipSeconds, `${settings.starClipSeconds} seconds`);
   $('starClipSeconds').value = settings.starClipSeconds;
   ensureOption($('markerClipSeconds'), settings.markerClipSeconds, `${settings.markerClipSeconds} seconds`);
@@ -1821,7 +1858,7 @@ function fillForm() {
 
 const SWITCHES = ['gameAudio', 'gameAudioOwnTrack', 'runAsAdmin', 'toastEnabled', 'beepEnabled', 'launchOnStartup', 'startMinimized', 'closeToTray', 'autoUpdate',
   'bufferOnlyInGames', 'cameraEnabled', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'remoteStreamDeck', 'verticalMode', 'evenAudio', 'autoClip', 'keepTagged',
-  'diskBuffer', 'freeMemoryInGames', 'hdrCapture', 'weeklyReel', 'captureCard'];
+  'diskBuffer', 'freeMemoryInGames', 'hdrCapture', 'weeklyReel', 'captureCard', 'extendOnDoublePress'];
 const TYPING_DELAY_MS = 1000; // Long enough to finish typing, because a restart clears the buffer.
 const NOTE_DEFAULT = 'Changes save automatically.';
 let saveTimer = null;
@@ -1997,6 +2034,8 @@ api.on('feedback', (f) => {
     showBanner(webhooks().length > 1 && f.name ? `Sent to ${f.name}` : 'Sent to Discord', 'good');
   } else if (f.kind === 'trimmed' && f.ok) {
     showBanner('Your trimmed copy is ready to drag into any app.', 'good');
+  } else if (f.kind === 'clip-extended' && f.ok) {
+    showBanner('Pressed twice, so you get one longer clip. The shorter one is in the Recycle Bin.', 'good');
   } else if (f.kind === 'starred-clip' && f.ok) {
     shineBuffer();
     showBanner('Saved and starred', 'good');
@@ -2111,7 +2150,7 @@ $('cleanMicSwitch').onchange = () => api.invoke('toggle-clean-mic').catch(() => 
 $('marker').onclick = () => api.invoke('add-marker').catch(() => undefined);
 $('screenshot').onclick = () => api.invoke('screenshot').catch(() => undefined);
 for (const id of ['recordSplit', 'gameAudio','gameAudioOwnTrack', 'encoder', 'toastEnabled', 'beepEnabled', 'startMinimized', 'closeToTray', 'launchOnStartup',
-  'clipAfterSeconds', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize', 'verticalMode', 'evenAudio']) $(id).onchange = () => scheduleSave();
+  'clipAfterSeconds', 'extendOnDoublePress', 'bufferOnlyInGames', 'verticalFaceCam', 'pushToTalk', 'gameFolders', 'lowSpaceWarnGb', 'cameraCorner', 'cameraSize', 'verticalMode', 'evenAudio']) $(id).onchange = () => scheduleSave();
 $('cameraEnabled').onchange = () => { renderCamera(); scheduleSave(); };
 $('verticalMode').addEventListener('change', () => { renderCamera(); renderSummary(); });
 $('remoteStreamDeck').onchange = () => { remote.on = $('remoteStreamDeck').checked; renderRemote(); scheduleSave(); };

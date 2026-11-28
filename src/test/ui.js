@@ -313,6 +313,9 @@ async function main() {
     await panel.shot('2a-panel-five-clips');
     await waitFor(() => panel.eval("document.querySelectorAll('#media .thumb img[src]').length === 5"), 8000, 'all five thumbnails').catch(() => undefined);
     check('all five home clips show a thumbnail', (await panel.eval("document.querySelectorAll('#media .thumb img[src]').length")) === 5);
+    // Drawn, not just asked for: a blocked or broken picture leaves the src set with nothing drawn.
+    await waitFor(() => panel.eval("[...document.querySelectorAll('#media .thumb img[src]')].every((i) => i.complete && i.naturalWidth > 0)"), 8000, 'the thumbnails to load').catch(() => undefined);
+    check('the thumbnails are drawn', await panel.eval("[...document.querySelectorAll('#media .thumb img[src]')].every((i) => i.complete && i.naturalWidth === 320)"));
     await panel.eval("document.getElementById('view-all').click()");
     const library = await panel.eval("({ items: document.querySelectorAll('#media .item').length, grid: getComputedStyle(document.getElementById('media')).display, ring: getComputedStyle(document.getElementById('capture-card')).display, editor: !document.getElementById('open-editor').hidden })");
     check('View all opens every clip in a grid, with the editor link', library.items === 6 && library.grid === 'grid' && library.ring === 'none' && library.editor, JSON.stringify(library));
@@ -857,6 +860,8 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('an old favourite is kept', fs.existsSync(oldFavourite));
     check('a new clip is kept', fs.existsSync(discordFile));
     await panel.eval("(() => { const s = document.getElementById('deleteAfterDays'); s.value = '0'; s.dispatchEvent(new Event('change')); })()");
+    // Saved before the reload below, which would otherwise drop the save still waiting to go out.
+    await waitFor(() => JSON.parse(fs.readFileSync(path.join(session.home, 'userData', 'settings.json'), 'utf8')).deleteAfterDays === 0, 5000, 'clean-up to turn off');
     await panel.eval("document.getElementById('go-back').click(); document.getElementById('go-back').click()");
 
     // Back to the starting 720p, because the colour card at Full quality barely reaches a recording, which then never stops.
@@ -955,6 +960,7 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     // Hovering over a video scrubs through it.
     const strip = await panel.eval(`window.afterclip.invoke('preview-strip', ${JSON.stringify(inFolder.file)})`);
     check('a preview strip is made for a clip', /^data:image\/jpeg;base64,/.test(strip?.url) && strip.frames === 10);
+    check('the preview strip is a picture that loads', await panel.eval(`new Promise((done) => { const i = new Image(); i.onload = () => done(i.naturalWidth === 1600); i.onerror = () => done(false); i.src = ${JSON.stringify(strip?.url)}; })`));
     await panel.eval("(() => { const t = [...document.querySelectorAll('#media .thumb')].find((b) => b.dataset.file.includes('pretend')); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('mouseenter')); t.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + r.width * 0.75, clientY: r.top + 5 })); })()");
     await waitFor(() => panel.eval("!!document.querySelector('#media .thumb .scrub')?.style.backgroundImage.includes('data:image/jpeg')"), 5000, 'the scrub preview');
     const scrubbed = await panel.eval("parseFloat(document.querySelector('#media .thumb .scrub').style.backgroundPositionX)");
@@ -1024,7 +1030,9 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('a file that is not settings is refused', /isn't an Afterclip settings file/.test(await panel.eval(`window.afterclip.invoke('import-settings', ${JSON.stringify(notSettings)}).then(() => 'loaded', (e) => e.message)`)));
     fs.writeFileSync(exported, JSON.stringify(exportedSettings));
     await panel.eval(`window.afterclip.invoke('import-settings', ${JSON.stringify(exported)})`);
-    check('importing again puts them back', savedSettings().clipAfterSeconds === 0 && savedSettings().deleteAfterDays === 0);
+    // Back to what was exported, which an earlier step may have left at something other than the defaults.
+    const putBack = savedSettings();
+    check('importing again puts them back', putBack.clipAfterSeconds === exportedSettings.clipAfterSeconds && putBack.deleteAfterDays === exportedSettings.deleteAfterDays, JSON.stringify({ clip: putBack.clipAfterSeconds, days: putBack.deleteAfterDays, exportedClip: exportedSettings.clipAfterSeconds, exportedDays: exportedSettings.deleteAfterDays }));
     check('General has the export and import buttons', await panel.eval("!!document.querySelector('[data-pane=general] #export-settings') && !!document.querySelector('[data-pane=general] #import-settings')"));
 
     // The webcam, as a colour card in its corner: in clips, and on top in a vertical copy.
@@ -1081,6 +1089,22 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     check('and pressing again takes the star off', (await (await api.call('/last-clip/star', 'POST')).json()).favourite === false);
     const tallLast = await (await api.call('/last-clip/vertical', 'POST')).json();
     check('Vertical Copy of Last Clip makes a copy of the newest clip', tallLast.file === camBack.file.replace(/\.mp4$/, '_vertical.mp4'), JSON.stringify(tallLast));
+
+    // A quick second press saves one longer clip in place of the first.
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, extendOnDoublePress: true }))");
+    const firstPress = await api.clip(2);
+    await panel.eval(`window.afterclip.invoke('set-tags', { file: ${JSON.stringify(firstPress.file)}, tags: ['pressed'] })`);
+    await sleep(2000);
+    const secondPress = await api.clip(2);
+    await waitFor(() => !fs.existsSync(firstPress.file), 5000, 'the shorter clip to go').catch(() => undefined);
+    check('a quick second press reaches back to the first', secondPress.actualSeconds >= 4.5, `${secondPress.actualSeconds.toFixed(2)}s`);
+    check('and the shorter clip goes to the Recycle Bin', !fs.existsSync(firstPress.file) && fs.existsSync(secondPress.file));
+    const longerTags = await panel.eval(`window.afterclip.invoke('state').then((s) => s.media.find((m) => m.file === ${JSON.stringify(secondPress.file)})?.tags)`);
+    check('the longer clip keeps the shorter one\'s tags', JSON.stringify(longerTags) === '["pressed"]', JSON.stringify(longerTags));
+    await sleep(11000);
+    const laterPress = await api.clip(2);
+    check('a press after 10 seconds is its own clip', laterPress.actualSeconds < 3.5 && fs.existsSync(secondPress.file), `${laterPress.actualSeconds.toFixed(2)}s`);
+    await panel.eval("window.afterclip.invoke('state').then((s) => window.afterclip.invoke('save-settings', { ...s.settings, extendOnDoublePress: false }))");
 
 
     // Vertical mode: a 9:16 picture, with the webcam across the top and the game below it, or filling it all.
@@ -1210,6 +1234,17 @@ foreach ($i in 1..10) { [void][N.M]::SetCursorPos(${from.x} + (250 - ${from.x}) 
     panel = await Page.open(PANEL_URL);
     await waitFor(() => panel.eval("document.readyState === 'complete' && !!document.getElementById('open-settings')"), 15000, 'the panel page');
     check('the panel opens again after a browser crash', browserPids() !== killed && (await panel.eval('1 + 1')) === 2);
+    // A fresh browser sometimes crashes again seconds later. The panel was open, so it must come back by itself.
+    const stops = () => (fs.readFileSync(path.join(session.home, 'ui.log'), 'utf8').match(/panel's browser stopped/g) ?? []).length;
+    const stoppedBefore = stops();
+    const again = browserPids();
+    panel.close();
+    powershell(`Stop-Process -Id ${again} -Force`);
+    await waitFor(() => stops() > stoppedBefore, 10000, 'the second crash to be noticed');
+    await waitFor(async () => browserPids() && browserPids() !== again && (await pagesOpen()).some((u) => PANEL_URL.test(u)), 20000, 'the panel to come back by itself');
+    panel = await Page.open(PANEL_URL);
+    await waitFor(() => panel.eval("document.readyState === 'complete' && !!document.getElementById('open-settings')"), 15000, 'the panel page after the second crash');
+    check('the panel comes back by itself after a second crash soon after', (await panel.eval('1 + 1')) === 2);
     check('capture keeps running through a browser crash', (await api.status()).buffering);
     await api.call('/test/open/editor', 'POST');
     await waitFor(async () => (await pagesOpen()).some((u) => /editor\.html/.test(u)), 20000, 'the editor after a browser crash');

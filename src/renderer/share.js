@@ -17,7 +17,7 @@ function note(message, warn = false) {
 
 function renderActions() {
   $('share-trim').disabled = busy || !hasTrim();
-  for (const id of ['share-compress', 'share-vertical', 'share-discord', 'share-vertical-discord']) $(id).disabled = busy;
+  for (const id of ['share-compress', 'share-vertical', 'share-upload', 'share-discord', 'share-vertical-discord']) $(id).disabled = busy;
 }
 
 function renderPlayhead() {
@@ -74,6 +74,7 @@ async function loadClip() {
     video.src = api.videoUrl(clip.file);
     $('share-webhook').replaceChildren(...clip.channels.map((channel) => new Option(channel.name, channel.index)));
     $('share-webhook').hidden = clip.channels.length < 2;
+    $('share-upload').hidden = !clip.canUpload;
     const [length, tracks] = await Promise.all([
       api.invoke('share-duration', clip.file),
       api.invoke('clip-tracks', clip.file).catch(() => 1),
@@ -119,7 +120,14 @@ async function runShare(action, working, success, recipe) {
   note(working);
   try {
     const output = await api.invoke('share-clip', payload);
-    if (generation === request) note(output ? success + ' ' + output.split(/[\\/]/).at(-1) : success);
+    if (generation !== request) return;
+    if (action === 'upload') {
+      // The answer is the link, which goes on the clipboard, ready to paste.
+      const copied = await navigator.clipboard.writeText(output).then(() => true, () => false);
+      note(`${copied ? 'Uploaded, and the link is copied' : 'Uploaded'}: ${output}`);
+    } else {
+      note(output ? success + ' ' + output.split(/[\\/]/).at(-1) : success);
+    }
   } catch (error) {
     if (generation === request) note(error.message, true);
   } finally {
@@ -165,6 +173,7 @@ video.addEventListener('error', () => {
 $('share-trim').onclick = () => runShare('trim', 'Saving trimmed copy…', 'Saved');
 $('share-compress').onclick = () => runShare('compress', 'Compressing…', 'Saved');
 $('share-vertical').onclick = () => runShare('vertical', 'Making vertical copy…', 'Saved');
+$('share-upload').onclick = () => runShare('upload', 'Uploading…', 'Uploaded.');
 $('share-discord').onclick = () => runShare('discord', 'Sending to Discord…', 'Sent to Discord.');
 $('share-vertical-discord').onclick = () => runShare('vertical-discord', 'Making and sending a vertical copy…', 'Sent vertical clip to Discord.');
 window.addEventListener('DOMContentLoaded', () => {

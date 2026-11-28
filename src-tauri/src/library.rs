@@ -55,6 +55,18 @@ impl LibraryData {
         }
     }
 
+    /// Gives `to` the star and tags `from` has, keeping any it already has, for a clip that replaces another.
+    pub fn carry_over(&mut self, from: &str, to: &str) {
+        if self.favourites.contains(from) {
+            self.favourites.insert(to.to_string());
+        }
+        if let Some(earlier) = self.tags.get(from).cloned() {
+            let mut tags = self.tags.get(to).cloned().unwrap_or_default();
+            tags.extend(earlier);
+            self.set_tags(to, &tags);
+        }
+    }
+
     pub fn rename(&mut self, from: &str, to: &str, game: Option<String>) {
         if self.favourites.remove(from) {
             self.favourites.insert(to.to_string());
@@ -191,6 +203,19 @@ mod tests {
         data.set_tags("b.mp4", &[]);
         data.forget("b.mp4");
         assert!(data.tags.is_empty() && data.cameras.is_empty());
+    }
+
+    #[test]
+    fn a_replacing_clip_gets_the_star_and_tags() {
+        let mut library = LibraryData::default();
+        library.favourites.insert("a.mp4".into());
+        library.set_tags("a.mp4", &["funny".into(), "clutch".into()]);
+        library.set_tags("b.mp4", &["Funny".into(), "auto".into()]);
+        library.carry_over("a.mp4", "b.mp4");
+        assert!(library.favourites.contains("b.mp4"));
+        assert_eq!(library.tags["b.mp4"], ["Funny", "auto", "clutch"]);
+        library.carry_over("none.mp4", "c.mp4");
+        assert!(!library.favourites.contains("c.mp4") && !library.tags.contains_key("c.mp4"));
     }
 
     #[test]

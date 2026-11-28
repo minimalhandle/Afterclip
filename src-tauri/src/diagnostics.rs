@@ -33,6 +33,12 @@ fn settings_without_secrets(file: &Path) -> Option<String> {
     let mut settings: Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
     if let Some(map) = settings.as_object_mut() {
         map.remove("discordWebhook");
+        // The upload server's address and token let anyone upload to it.
+        for key in ["uploadUrl", "uploadToken"] {
+            if map.get(key).and_then(Value::as_str).is_some_and(|v| !v.is_empty()) {
+                map.insert(key.into(), Value::String("(left out)".into()));
+            }
+        }
         if let Some(Value::Array(hooks)) = map.get_mut("discordWebhooks") {
             for hook in hooks.iter_mut() {
                 if let Some(hook) = hook.as_object_mut() {
@@ -82,9 +88,10 @@ mod tests {
     #[test]
     fn the_webhook_is_left_out() {
         let file = std::env::temp_dir().join(format!("afterclip-diagnostics-{}.json", std::process::id()));
-        fs::write(&file, r#"{"discordWebhook":"https://discord.com/api/webhooks/1/secret","discordWebhooks":[{"name":"Clips","url":"https://discord.com/api/webhooks/2/hidden"}],"fps":60}"#).unwrap();
+        fs::write(&file, r#"{"discordWebhook":"https://discord.com/api/webhooks/1/secret","discordWebhooks":[{"name":"Clips","url":"https://discord.com/api/webhooks/2/hidden"}],"uploadUrl":"https://clips.example/private","uploadToken":"tokenvalue","fps":60}"#).unwrap();
         let settings = settings_without_secrets(&file).unwrap();
         let _ = fs::remove_file(&file);
+        assert!(!settings.contains("private") && !settings.contains("tokenvalue"), "{settings}");
         assert!(!settings.contains("secret") && !settings.contains("hidden") && settings.contains("\"fps\": 60") && settings.contains("Clips"), "{settings}");
     }
 }

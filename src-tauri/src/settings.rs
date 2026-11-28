@@ -36,6 +36,10 @@ fn full_volume() -> f64 {
     1.0
 }
 
+fn upload_field() -> String {
+    crate::upload::DEFAULT_FIELD.into()
+}
+
 /// A Discord channel that Send to Discord can post to. The address is a secret, so it stays out of logs and messages.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Webhook {
@@ -141,6 +145,15 @@ pub struct Settings {
     pub discord_webhook: String,
     /// Where Send to Discord can post. The first is used by the Stream Deck key and the API.
     pub discord_webhooks: Vec<Webhook>,
+    /// Where Upload sends clips, such as a self-hosted file host. HTTPS only. A secret, like the webhooks.
+    #[serde(default)]
+    pub upload_url: String,
+    /// Sent as a bearer token with each upload, when set. A secret.
+    #[serde(default)]
+    pub upload_token: String,
+    /// The form field the file goes in.
+    #[serde(default = "upload_field")]
+    pub upload_field: String,
     #[serde(default)]
     pub share_recipes: Vec<crate::advanced::Recipe>,
     #[serde(default)]
@@ -181,6 +194,9 @@ pub struct Settings {
     pub controller_clip_seconds: i64,
     /// Keeps capturing this long after a clip is asked for, so the moment isn't cut off. 0 saves straight away.
     pub clip_after_seconds: i64,
+    /// Pressing a clip key again soon after makes one longer clip reaching back to the first press, in place
+    /// of the first clip, which goes to the Recycle Bin.
+    pub extend_on_double_press: bool,
     /// Stops the buffer while no game is running, and starts it again when one opens.
     pub buffer_only_in_games: bool,
     /// The mute-key sources are only recorded while this key is held.
@@ -313,6 +329,9 @@ impl Settings {
             screenshot_hotkey: "Alt+Shift+S".into(),
             discord_webhook: String::new(),
             discord_webhooks: Vec::new(),
+            upload_url: String::new(),
+            upload_token: String::new(),
+            upload_field: upload_field(),
             share_recipes: Vec::new(),
             vertical_layouts: Default::default(),
             even_audio: true,
@@ -335,6 +354,7 @@ impl Settings {
             controller_screenshot: String::new(),
             controller_clip_seconds: 30,
             clip_after_seconds: 0,
+            extend_on_double_press: true,
             // No capture on the desktop: the GPU, encoder and memory are only used while a game is open.
             buffer_only_in_games: true,
             push_to_talk: false,
@@ -552,6 +572,9 @@ impl Settings {
         if !legacy.trim().is_empty() && !self.discord_webhooks.iter().any(|w| w.url.trim() == legacy.trim()) {
             self.discord_webhooks.insert(0, Webhook { name: "Discord".into(), url: legacy });
         }
+        self.upload_url = self.upload_url.trim().to_string();
+        self.upload_token = self.upload_token.trim().to_string();
+        self.upload_field = crate::upload::clean_field(&self.upload_field);
         self.discord_webhooks.truncate(MAX_WEBHOOKS);
         for (i, hook) in self.discord_webhooks.iter_mut().enumerate() {
             hook.url = hook.url.trim().to_string();
@@ -687,6 +710,10 @@ impl Settings {
         }
         let mut settings = Settings::load(file, self.clone());
         settings.discord_webhooks = self.discord_webhooks.clone();
+        // Like the webhooks, the upload server and its token stay this PC's own.
+        settings.upload_url = self.upload_url.clone();
+        settings.upload_token = self.upload_token.clone();
+        settings.upload_field = self.upload_field.clone();
         settings.skipped_update = self.skipped_update.clone();
         settings.seen_version = self.seen_version.clone();
         settings.stream_deck_offer_seen = self.stream_deck_offer_seen.clone();
@@ -708,7 +735,7 @@ impl Settings {
     pub fn exported(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         if let Some(map) = value.as_object_mut() {
-            for key in ["discordWebhook", "discordWebhooks", "skippedUpdate", "seenVersion", "testPattern", "micMuted", "usagePing"] {
+            for key in ["discordWebhook", "discordWebhooks", "uploadUrl", "uploadToken", "skippedUpdate", "seenVersion", "testPattern", "micMuted", "usagePing"] {
                 map.remove(key);
             }
         }

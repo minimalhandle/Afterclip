@@ -18,7 +18,8 @@ $k = 0x11,0x12,0x10,0x78; foreach ($v in $k) { [N.K]::keybd_event($v,0,0,[UIntPt
 
 async function main() {
   const session = await startApp({
-    bufferSeconds: 25, width: 1280, height: 720, fps: 30, bitrateKbps: 6000, testPattern: true, audioSources: [], micHotkey: '', markerHotkey: '',
+    // Default hotkeys left on are taken by a real copy running beside the test, so they're all set or off here.
+    bufferSeconds: 25, width: 1280, height: 720, fps: 30, bitrateKbps: 6000, testPattern: true, audioSources: [], micHotkey: '', markerHotkey: '', starClipHotkey: '',
     presets: [{ seconds: 5, hotkey: HOTKEY }, { seconds: 7, hotkey: 'Alt+Shift+F10' }, { seconds: 8, hotkey: 'Ctrl+Alt+Numpad7' }],
     recordHotkey: 'Ctrl+Alt+Shift+F8',
   });
