@@ -244,6 +244,9 @@ pub struct Settings {
     /// The card's sound: how loud, and whether it also gets an audio track of its own.
     pub card_audio_volume: f64,
     pub card_audio_own_track: bool,
+    /// Whether the console sends HDR. It's the card's picture, apart from hdr_capture, which is the recording's:
+    /// HDR read as SDR looks grey and washed out, and SDR read as HDR too bright.
+    pub card_hdr: bool,
     /// Pauses the buffer while the card shows only a still, plain picture, such as its own NO SIGNAL screen,
     /// so nothing is encoded while the console is off. It starts again as soon as a picture arrives.
     pub card_pause_without_signal: bool,
@@ -365,6 +368,7 @@ impl Settings {
             card_bitrate_kbps: 60000,
             card_audio_volume: 1.0,
             card_audio_own_track: false,
+            card_hdr: false,
             card_pause_without_signal: true,
             card_hotkey: String::new(),
             weekly_reel: false,
@@ -593,6 +597,10 @@ impl Settings {
             if saved.get("frameRate").is_none() {
                 settings.frame_rate = match settings.fps { 60 => "60", 120 => "120", _ => "custom" }.into();
             }
+            // The card's HDR used to follow the HDR switch.
+            if saved.get("cardHdr").is_none() {
+                settings.card_hdr = settings.hdr_capture;
+            }
             if saved.get("encoderPreset").is_none() && settings.quality == "full" {
                 settings.encoder_preset = "p5".into();
                 settings.multipass = true;
@@ -632,6 +640,7 @@ impl Settings {
             || self.game_profiles.iter().any(|profile| profile.capture_privacy) != other.game_profiles.iter().any(|profile| profile.capture_privacy)
             || self.card() != other.card()
             || self.card_track() != other.card_track()
+            || (self.card().is_some() && self.card_hdr != other.card_hdr)
             || self.camera_box() != other.camera_box()
             || (self.camera_box().is_some() && self.camera_device != other.camera_device)
     }
@@ -719,6 +728,24 @@ mod tests {
         assert_eq!(tracked.track_names().last().map(String::as_str), Some("Capture card"));
         assert!(card.needs_engine_restart(&tracked), "a new track needs a restart");
         assert!(!tracked.needs_engine_restart(&Settings { card_audio_volume: 0.5, ..tracked.clone() }), "volume changes live");
+    }
+
+    #[test]
+    fn the_cards_hdr_is_its_own_and_starts_out_following_the_hdr_switch() {
+        let card = Settings { capture_card: true, capture_card_device: "Elgato 4K X:path".into(), ..sample() };
+        assert!(card.needs_engine_restart(&Settings { card_hdr: !card.card_hdr, ..card.clone() }), "the card reopens in its new colour space");
+        assert!(!sample().needs_engine_restart(&Settings { card_hdr: !sample().card_hdr, ..sample() }), "no card, nothing to reopen");
+
+        let dir = std::env::temp_dir().join(format!("afterclip-card-hdr-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        for hdr in [false, true] {
+            fs::write(&file, format!(r#"{{"hdrCapture": {hdr}, "bufferSeconds": 120}}"#)).unwrap();
+            assert_eq!(Settings::load(&file, sample()).card_hdr, hdr, "from before it existed, it follows HDR");
+        }
+        fs::write(&file, r#"{"hdrCapture": false, "cardHdr": true, "bufferSeconds": 120}"#).unwrap();
+        assert!(Settings::load(&file, sample()).card_hdr, "once saved, it's its own");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -892,7 +892,8 @@ function renderCard() {
   const on = $('captureCard').checked;
   device.disabled = !on || !device.value;
   sound.disabled = !on || !device.value;
-  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps', 'cardAudioOwnTrack', 'cardPauseWithoutSignal']) $(id).disabled = !on;
+  for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps', 'cardHdr', 'cardAudioOwnTrack', 'cardPauseWithoutSignal']) $(id).disabled = !on;
+  $('cardHdr').checked = settings.cardHdr;
   $('cardAudioOwnTrack').checked = settings.cardAudioOwnTrack;
   $('cardPauseWithoutSignal').checked = settings.cardPauseWithoutSignal;
   if (!$('card-level').childElementCount) {
@@ -1812,6 +1813,7 @@ function readForm() {
   settings.cardResolution = $('cardResolution').value;
   settings.cardFps = Number($('cardFps').value);
   settings.cardBitrateKbps = Number($('cardBitrateKbps').value);
+  settings.cardHdr = $('cardHdr').checked;
   settings.cardAudioOwnTrack = $('cardAudioOwnTrack').checked;
   settings.cardPauseWithoutSignal = $('cardPauseWithoutSignal').checked;
   settings.multipass = $('multipass').value === 'true';
@@ -2058,6 +2060,7 @@ $('captureCardDevice').onchange = () => {
 $('captureCardAudio').onchange = () => { settings.captureCardAudio = $('captureCardAudio').value; scheduleSave(); };
 for (const id of ['cardResolution', 'cardFps', 'cardBitrateKbps']) $(id).onchange = () => { renderSummary(); renderEstimate(); scheduleSave(); };
 $('cardAudioOwnTrack').onchange = () => scheduleSave();
+$('cardHdr').onchange = () => scheduleSave();
 $('cardPauseWithoutSignal').onchange = () => scheduleSave();
 for (const id of ['resolution', 'frameRate', 'bitrateKbps', 'encoderPreset', 'multipass', 'codec']) $(id).onchange = videoFieldChanged;
 $('runAsAdmin').onchange = async () => {

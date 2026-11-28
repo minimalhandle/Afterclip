@@ -282,7 +282,7 @@
     <div class="card">
       <div class="card-title">Capture card</div>
       <div class="setting">
-        <div class="setting-text"><div class="setting-name">Record a capture card</div><div class="setting-desc">Records a capture card, such as an Elgato 4K X, instead of this PC's screen and games, for a console or a second PC. Clips, recordings, screenshots and markers work as usual, with your mic and other sources mixed in, and the buffer runs all the time. Close the card in other apps, such as OBS, first. It uses its own resolution, frame rate and quality below, not your monitor's, so your settings for PC games stay as they are. With HDR on, an HDR signal is captured in HDR. Switching restarts capture, which clears the buffer.</div></div>
+        <div class="setting-text"><div class="setting-name">Record a capture card</div><div class="setting-desc">Records a capture card, such as an Elgato 4K X, instead of this PC's screen and games, for a console or a second PC. Clips, recordings, screenshots and markers work as usual, with your mic and other sources mixed in, and the buffer runs all the time. Close the card in other apps, such as OBS, first. It uses its own resolution, frame rate and quality below, not your monitor's, so your settings for PC games stay as they are. If your console sends HDR, say so below. Switching restarts capture, which clears the buffer.</div></div>
         <input id="captureCard" class="switch" type="checkbox" aria-label="Record a capture card">
       </div>
       <div class="setting">
@@ -302,6 +302,10 @@
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Card frame rate</div><div class="setting-desc">The 4K X records up to 60 fps at 4K, and 120 fps at 1440p and below.</div></div>
         <select id="cardFps" aria-label="Capture card frame rate"><option value="30">30 fps</option><option value="60">60 fps</option><option value="120">120 fps</option></select>
+      </div>
+      <div class="setting">
+        <div class="setting-text"><div class="setting-name">Console sends HDR</div><div class="setting-desc">Turn on while HDR is on in your console's video settings, or clips look grey and washed out. Turn off for SDR, or they look too bright. Clips are recorded in HDR only with HDR on above; otherwise the picture is turned into SDR. Switching restarts capture, which clears the buffer.</div></div>
+        <input id="cardHdr" class="switch" type="checkbox" aria-label="Console sends HDR">
       </div>
       <div class="setting">
         <div class="setting-text"><div class="setting-name">Card visual quality</div><div class="setting-desc">4K needs more than 1080p to look as sharp. HEVC, under Codec, keeps more detail at the same size.</div></div>

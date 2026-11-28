@@ -483,7 +483,7 @@ impl Engine {
             "cleanMic": s.clean_mic,
             "testPattern": s.test_pattern,
             "noMonitorFallback": card.is_none() && s.game_profiles.iter().any(|profile| profile.capture_privacy),
-            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio, "volume": s.card_audio_volume, "ownTrack": s.card_audio_own_track })),
+            "card": card.map(|(device, audio)| json!({ "device": device, "audio": audio, "volume": s.card_audio_volume, "ownTrack": s.card_audio_own_track, "hdr": s.card_hdr })),
             "camera": s.camera_box().map(|(x, y, width, height)| json!({ "device": s.camera_device, "x": x, "y": y, "width": width, "height": height, "on": s.camera_enabled })),
         }))?;
         *self.encoder_in_use.lock().unwrap() = started["encoder"].as_str().map(str::to_string);

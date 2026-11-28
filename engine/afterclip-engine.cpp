@@ -74,6 +74,8 @@ obs_source_t *g_privacyCard = nullptr;
 obs_source_t *g_captureCard = nullptr;
 obs_sceneitem_t *g_captureCardItem = nullptr;
 bool g_captureCardHasAudio = false;
+// Whether the card receives HDR. Apart from g_hdr, as a console can send HDR into an SDR recording or SDR into HDR.
+bool g_cardHdr = false;
 const int CARD_AUDIO_INDEX = -2;
 obs_sceneitem_t *g_privacyItem = nullptr;
 std::atomic<DWORD> g_privatePid{0};
@@ -623,27 +625,18 @@ void addCamera(obs_data_t *camera, bool testPattern)
 	obs_sceneitem_set_visible(g_cameraItem, on);
 }
 
-/** The value of a dshow_input list property whose name contains the text, or fallback if none does. */
-long long dshowListValue(obs_properties_t *props, const char *property, const char *text, long long fallback)
-{
-	obs_property_t *list = obs_properties_get(props, property);
-	const size_t count = list ? obs_property_list_item_count(list) : 0;
-	for (size_t i = 0; i < count; i++) {
-		const char *name = obs_property_list_item_name(list, i);
-		if (name && strstr(name, text))
-			return obs_property_list_item_int(list, i);
-	}
-	return fallback;
-}
-
 /**
  * Chooses the card's largest picture that fits the canvas, at the frame rate nearest the canvas's, and puts
  * them in its settings. A card lists what it can send for the signal coming in, so this is read from the card
- * rather than assumed. With HDR on it asks for 10-bit P010, which is how HDR arrives, and the colour space
- * follows the format. It asks a closed copy, because each change to an open card reopens it, which takes seconds.
+ * rather than assumed. The card chooses the format. An HDR signal is marked Rec. 2100 PQ, and SDR Rec. 709: the
+ * 4K X sends HDR as PQ in 8-bit NV12, which looks grey and washed out when read as SDR, and sends only black when
+ * asked for 10-bit P010. The colour space is the console's, not the recording's: libobs turns one into the other.
+ * It asks a closed copy, because each change to an open card reopens it, which takes seconds.
  */
 void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint32_t fps, bool hdr)
 {
+	obs_data_set_string(settings, "color_space", hdr ? "2100PQ" : "709");
+	obs_data_set_int(settings, "video_format", 0); // The card's choice.
 	obs_data_t *closed = obs_data_create();
 	obs_data_apply(closed, settings);
 	obs_data_set_bool(closed, "active", false);
@@ -682,9 +675,10 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 		return;
 	}
 
-	// The frame rates and formats on offer depend on the size, so they're read after it's chosen.
+	// The frame rates on offer depend on the size, so they're read after it's chosen, for any format.
 	obs_data_set_int(closed, "res_type", 1);
 	obs_data_set_string(closed, "resolution", best.c_str());
+	obs_data_set_int(closed, "video_format", 0);
 	obs_source_update(probe, closed);
 	props = obs_source_properties(probe);
 	list = props ? obs_properties_get(props, "frame_interval") : nullptr;
@@ -701,7 +695,6 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 			interval = value;
 		}
 	}
-	const long long format = hdr ? dshowListValue(props, "video_format", "P010", 0) : 0;
 	obs_properties_destroy(props);
 	obs_source_release(probe);
 	obs_data_release(closed);
@@ -709,8 +702,7 @@ void tuneCaptureCard(obs_data_t *settings, uint32_t width, uint32_t height, uint
 	obs_data_set_int(settings, "res_type", 1); // Custom, so the size and frame rate below apply.
 	obs_data_set_string(settings, "resolution", best.c_str());
 	obs_data_set_int(settings, "frame_interval", interval);
-	obs_data_set_int(settings, "video_format", format); // 0 lets the card choose.
-	blog(LOG_INFO, "Capture card at %s, frame interval %lld, format %lld", best.c_str(), interval, format);
+	blog(LOG_INFO, "Capture card at %s, frame interval %lld, %s", best.c_str(), interval, hdr ? "HDR" : "SDR");
 }
 
 // Whether the capture card shows a real picture, or only one that is plain and still, such as an Elgato's own
@@ -803,7 +795,7 @@ void probeCard(void *)
 }
 
 /** Records a capture card's picture, filling the canvas, and its sound in the main mix. */
-bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t fps, bool hdr, std::string &error)
+bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t fps, std::string &error)
 {
 	const std::string device = obs_data_get_string(card, "device");
 	const std::string audio = obs_data_get_string(card, "audio");
@@ -816,7 +808,8 @@ bool addCaptureCard(obs_data_t *card, uint32_t width, uint32_t height, uint32_t 
 	obs_data_set_bool(s, "use_custom_audio_device", !audio.empty());
 	obs_data_set_string(s, "audio_device_id", audio.c_str());
 	obs_data_set_int(s, "audio_output_mode", 0); // Into the recording, not out of the speakers.
-	tuneCaptureCard(s, width, height, fps, hdr);
+	g_cardHdr = obs_data_get_bool(card, "hdr");
+	tuneCaptureCard(s, width, height, fps, g_cardHdr);
 	g_captureCard = createSource("dshow_input", "Capture card", s);
 	obs_data_release(s);
 	if (!g_captureCard) {
@@ -853,7 +846,7 @@ bool cmdReopenCard(std::string &error)
 	obs_data_t *s = obs_source_get_settings(g_captureCard);
 	obs_data_set_int(s, "res_type", 0); // The card's own choice, unless it now lists its sizes.
 	obs_data_set_bool(s, "active", true);
-	tuneCaptureCard(s, ovi.base_width, ovi.base_height, ovi.fps_num, g_hdr);
+	tuneCaptureCard(s, ovi.base_width, ovi.base_height, ovi.fps_num, g_cardHdr);
 	obs_source_update(g_captureCard, s);
 	obs_data_release(s);
 	blog(LOG_INFO, "Capture card opened again, as it had sent no picture");
@@ -923,9 +916,11 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 	obs_data_set_bool(reply, "softwareGpu", softwareGpu);
 	// On an HDR monitor, Windows shows ordinary content at the SDR brightness its slider sets. Matching it keeps
 	// the desktop and SDR games at the brightness you see, in an HDR picture and when HDR is turned into SDR.
+	// Otherwise libobs's own defaults. They must always be set: libobs starts both at 0, and an HDR picture, such
+	// as a console's through a capture card, is divided by the SDR white level, which leaves it black.
 	const double sdrWhite = obs_data_get_double(c, "sdrWhiteNits");
-	if (sdrWhite >= 80.0 && sdrWhite <= 480.0)
-		obs_set_video_levels((float)sdrWhite, obs_get_video_hdr_nominal_peak_level());
+	const float HDR_PEAK_NITS = 1000.0f, DEFAULT_SDR_WHITE_NITS = 300.0f;
+	obs_set_video_levels(sdrWhite >= 80.0 && sdrWhite <= 480.0 ? (float)sdrWhite : DEFAULT_SDR_WHITE_NITS, HDR_PEAK_NITS);
 	obs_data_set_bool(reply, "hdr", g_hdr);
 	obs_audio_info2 oai = {};
 	oai.samples_per_sec = 48000;
@@ -951,7 +946,7 @@ bool cmdStart(obs_data_t *c, obs_data_t *reply, std::string &error)
 		obs_data_release(s);
 		g_cardItem = obs_scene_add(g_scene, g_card);
 	} else if (obs_data_t *card = obs_data_get_obj(c, "card")) {
-		const bool added = addCaptureCard(card, width, height, ovi.fps_num, g_hdr, error);
+		const bool added = addCaptureCard(card, width, height, ovi.fps_num, error);
 		obs_data_release(card);
 		if (!added)
 			return false;
